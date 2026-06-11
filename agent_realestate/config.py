@@ -6,8 +6,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# EXT_SSD 미연결 시 거부 (APFS 사고 재발 방지, ~/.claude/CLAUDE.md 2026-04-21).
-EXT_ROOT = Path("/Volumes/EXT_SSD/bot/agent_realestate")
+# 데이터 루트 — RE_DATA_ROOT env 로 override 가능 (범용화 2026-06-11: 타 머신은 클론 디렉토리 등
+# 자유 지정). 기본값은 운영 머신의 EXT_SSD (APFS 사고 재발 방지 mount guard, ~/.claude/CLAUDE.md 2026-04-21).
+EXT_ROOT = Path(os.environ.get("RE_DATA_ROOT", "/Volumes/EXT_SSD/bot/agent_realestate"))
 DATA_DIR = EXT_ROOT / "data"
 CACHE_DB = DATA_DIR / "realestate_cache.sqlite"
 REPORT_DIR = Path.cwd() / "report"   # 리포트 출력 — 작업 디렉토리 하위 report/ (전역 규칙 통일, ~/.claude/CLAUDE.md 필수작업규칙 #6, 2026-05-30). 데이터·캐시는 APFS 가드대로 EXT_ROOT 유지.
@@ -49,9 +50,9 @@ def smtp_config() -> SmtpConfig:
 
 
 def assert_mount() -> None:
-    """EXT_SSD 가 마운트되어 있지 않으면 즉시 중단."""
-    if not Path("/Volumes/EXT_SSD").is_mount() and not EXT_ROOT.exists():
-        raise SystemExit("EXT_SSD 미연결 — agent_realestate 중단 (mount guard)")
+    """데이터 루트가 없으면 즉시 중단 (기본: EXT_SSD mount guard / RE_DATA_ROOT 지정 시 그 경로)."""
+    if not EXT_ROOT.exists():
+        raise SystemExit(f"데이터 루트 미존재({EXT_ROOT}) — agent_realestate 중단 (mount guard)")
 
 
 def ensure_data_dir() -> Path:
