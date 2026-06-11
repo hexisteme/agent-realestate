@@ -24,7 +24,7 @@ from . import config
 from .analysts.finance import build_finance_plan
 from .analysts.redev import score_redev
 from .analysts.risk import assess_flags, penalty_product, ranking_key, RiskFlag
-from .analysts.scoring import score_candidates
+from .analysts.scoring import merge_axis_weights, score_candidates
 from .analysts.sensitivity import sensitivity_analysis
 from .analysts.trend import compute_trend
 from .cache import store
@@ -126,8 +126,11 @@ def produce_report(*, profile: dict, input_path: str, insight: str | None = None
 
     strats = [strat_for(c) for c in candidates] if _mix else None
     redevs = [score_redev(c) for c in candidates]
-    axes = score_candidates(candidates, redevs, strategy, strategies=strats,
-                            reference_candidates=reference)
+    # ★범용화(2026-06-12): profile["axis_weights"] 부분 override (병합+재정규화). mixed_strategy 와
+    #   동시 사용 시 모든 후보에 동일 적용되므로 단일 전략에서 권장.
+    eff_weights = merge_axis_weights(strategy, profile.get("axis_weights"))
+    axes = score_candidates(candidates, redevs, strategy, weights=eff_weights,
+                            strategies=strats, reference_candidates=reference)
 
     evaluated: list[Evaluated] = []
     for c, r, a in zip(candidates, redevs, axes):
@@ -219,7 +222,8 @@ def produce_report(*, profile: dict, input_path: str, insight: str | None = None
     score_top = max(evaluated,
                     key=lambda e: ranking_key(e.flags, e.adjusted_fundamental)
                     ).candidate.listing.complex_name
-    sens = sensitivity_analysis(candidates, strategy, [e.flags for e in evaluated], score_top)
+    sens = sensitivity_analysis(candidates, strategy, [e.flags for e in evaluated], score_top,
+                                base_weights=eff_weights)
     base_top = score_top
     html = build_report(profile=profile_disp, strategy=strategy, evaluated=evaluated,
                         policies=store.latest_policies(conn), today=today,

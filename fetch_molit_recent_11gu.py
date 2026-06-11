@@ -1,14 +1,36 @@
-"""오늘자 전수 스크린용 — 11개구 최근 12개월 MOLIT 매매 실거래 수집(예산필터·ghost제거용 median).
-출력: examples/molit_recent_11gu_20260606.json {lawd: [{apt, area, price, ym}]}. resumable. stdlib + MOLIT_API_KEY."""
+"""지역 스캔용 — 최근 12개월(rolling) MOLIT 매매 실거래 수집(예산필터·ghost제거용 median).
+출력: examples/molit_recent_11gu_20260606.json {lawd: [{apt, area, price, ym}]}. resumable. stdlib + MOLIT_API_KEY.
+범용화(2026-06-12): ① MONTHS = 오늘 기준 직전 12개 완결월 rolling(기존 고정 윈도우는 장기 cron 시
+점차 노후 — 알려진 버그 해소) ② 지역 = RE_DISTRICTS env(쉼표 구 이름, lawd 자동 해석)로 override."""
 import os, json, time, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
+from datetime import date
 from agent_realestate import config; config.load_env_file()
+from agent_realestate.collectors.lawd import lawd_for_district
 
 K = os.environ["MOLIT_API_KEY"]
 EP = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
-LAWD = {"양천":"11470","강서":"11500","구로":"11530","노원":"11350","도봉":"11320","동대문":"11230",
-        "동작":"11590","마포":"11440","성북":"11290","영등포":"11560","종로":"11110"}
-MONTHS = [f"2025{m:02d}" for m in range(6,13)] + [f"2026{m:02d}" for m in range(1,6)]  # 2025-06 ~ 2026-05
+_DEFAULT_DISTRICTS = "양천,강서,구로,노원,도봉,동대문,동작,마포,성북,영등포,종로"
+LAWD = {}
+for _gu in os.environ.get("RE_DISTRICTS", _DEFAULT_DISTRICTS).split(","):
+    _gu = _gu.strip()
+    _code = lawd_for_district(_gu)
+    if _code is None:
+        raise SystemExit(f"[RE_DISTRICTS] 알 수 없는 구: {_gu} (서울 25구 이름만 지원 — collectors/lawd.py)")
+    LAWD[_gu] = _code
+
+def _rolling_months(n=12):
+    """직전 n개 완결월 (당월 제외 — 미완결 월의 표본 왜곡 방지)."""
+    y, m = date.today().year, date.today().month
+    out = []
+    for _ in range(n):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        out.append(f"{y}{m:02d}")
+    return sorted(out)
+
+MONTHS = _rolling_months()
 OUT = "examples/molit_recent_11gu_20260606.json"
 
 def _t(it, tag):

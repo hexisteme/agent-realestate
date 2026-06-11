@@ -283,3 +283,17 @@ def test_report_has_sections():
     assert "전 매물 4요소·NAVER_LIVE_CHROME 검증 ✓" in html    # 옛 §9 자기진단
     assert "후보 1~2개로 좁히면" in html                        # 옛 §11 다음 질문
     assert "NAVER_LIVE_CHROME" in html
+
+
+def test_merge_axis_weights_override():
+    # 범용화(2026-06-12): profile axis_weights 부분 override — 병합+재정규화(합=1), 미지 축은 거부
+    from agent_realestate.analysts.scoring import merge_axis_weights
+    assert merge_axis_weights(ExitStrategy.HOLD_AND_RENT, None) is None
+    w = merge_axis_weights(ExitStrategy.HOLD_AND_RENT, {"학군": 0.30})
+    assert abs(sum(w.values()) - 1.0) < 1e-9
+    base = merge_axis_weights(ExitStrategy.HOLD_AND_RENT, {})
+    assert base is None  # 빈 dict = override 없음
+    assert w["학군"] > 0.20          # 0.08 → 0.30 주입 후 재정규화돼도 크게 상승
+    import pytest
+    with pytest.raises(SystemExit):
+        merge_axis_weights(ExitStrategy.HOLD_AND_RENT, {"없는축": 0.5})

@@ -40,18 +40,20 @@ def _rank_top(candidates: list[Candidate], strategy: ExitStrategy,
     return candidates[best_i].listing.complex_name, adjs[best_i]
 
 
-def _reweight(strategy: ExitStrategy, axis: str, factor: float) -> dict:
+def _reweight(base: dict, axis: str, factor: float) -> dict:
     """한 축 가중치를 factor 배 한 뒤 합=1 로 재정규화 (가중치 교란용)."""
-    w = dict(WEIGHTS[strategy])
+    w = dict(base)
     w[axis] = w[axis] * factor
     s = sum(w.values())
     return {k: v / s for k, v in w.items()}
 
 
 def sensitivity_analysis(candidates: list[Candidate], strategy: ExitStrategy,
-                         flags_by_idx: list[tuple], base_top: str) -> list[SensitivityRow]:
+                         flags_by_idx: list[tuple], base_top: str,
+                         base_weights: dict | None = None) -> list[SensitivityRow]:
     """순위를 실제로 지배하는 변수 = 가중치(설계자 판단)만 교란한다.
-    매매가/전세 교란은 호가무관 순위에 구조상 inert — 표시하면 '가짜 robust'라 제거(3차 감사 A)."""
+    매매가/전세 교란은 호가무관 순위에 구조상 inert — 표시하면 '가짜 robust'라 제거(3차 감사 A).
+    base_weights: profile axis_weights override 적용 시 그 실효 가중을 기준으로 교란(범용화 2026-06-12)."""
     rows: list[SensitivityRow] = []
     # 유효 경쟁자 공시: 통과(비하드페일) 후보 ≤1 이면 어떤 교란도 1위를 못 바꿈 — 검정 전제 붕괴.
     n_pass = sum(1 for fl in flags_by_idx if not has_hard_fail(fl))
@@ -60,12 +62,12 @@ def sensitivity_analysis(candidates: list[Candidate], strategy: ExitStrategy,
             label=f"⚠ 유효 경쟁자 없음(하드페일 제외 통과 {n_pass}곳) — 민감도 검정 무의미(robust 아님)",
             new_top=base_top, new_top_adjusted=0.0, flipped=False))
     # 가중치 교란: 비중 가장 큰 두 축을 ±30% (가중치는 설계자 판단 → 결론의 진짜 구속 변수)
-    w = WEIGHTS[strategy]
+    w = base_weights or WEIGHTS[strategy]
     top_axes = sorted(AXES, key=lambda a: w[a], reverse=True)[:2]
     for ax in top_axes:
         for factor, lbl in ((0.70, "-30%"), (1.30, "+30%")):
             top, adj = _rank_top(candidates, strategy, flags_by_idx,
-                                 _reweight(strategy, ax, factor))
+                                 _reweight(w, ax, factor))
             rows.append(SensitivityRow(label=f"가중치 {ax} {lbl}", new_top=top,
                                        new_top_adjusted=adj, flipped=(top != base_top)))
     return rows

@@ -46,6 +46,23 @@ WEIGHTS: dict[ExitStrategy, dict[str, float]] = {
     ExitStrategy.PRIMARY_ONLY:   {"전세수요": 0.05, "환금성": 0.11, "가격방어": 0.15, "상승여력": 0.04, "토지지분": 0.03, "가격메리트": 0.18, "출퇴근": 0.12, "학군": 0.23, "경사": 0.04, "후기": 0.05},
 }
 
+def merge_axis_weights(strategy: ExitStrategy, override: dict | None) -> dict | None:
+    """profile["axis_weights"] 부분 override 를 전략 기본 가중과 병합 후 합=1 재정규화 (범용화 2026-06-12).
+    기본 WEIGHTS 는 운영자(이 repo 사용자)의 백테스트 보정값 — 타 사용자는 profile JSON 만으로
+    자기 선호(예: 학군 0.2)를 주입한다. 알 수 없는 축 이름은 시끄럽게 거부(silent 무시 금지)."""
+    if not override:
+        return None
+    unknown = set(override) - set(AXES)
+    if unknown:
+        raise SystemExit(f"[axis_weights] 알 수 없는 축: {sorted(unknown)} — 유효 축: {AXES}")
+    w = dict(WEIGHTS[strategy])
+    w.update({k: float(v) for k, v in override.items()})
+    s = sum(w.values())
+    if s <= 0:
+        raise SystemExit("[axis_weights] 가중 합이 0 이하")
+    return {k: v / s for k, v in w.items()}
+
+
 @dataclass(frozen=True)
 class AxisScores:
     candidate: Candidate

@@ -20,6 +20,7 @@ from agent_realestate.domain import ExitStrategy
 import blog.daily_publisher as dp
 import blog.tistory_draft as td
 
+# 기본 발행 구 — --districts "양천,강서,…" 인자로 override (범용화 2026-06-12, lawd 자동 해석)
 GU_LAWD={"양천":"11470","강서":"11500","구로":"11530","동대문":"11230","마포":"11440",
          "성북":"11290","영등포":"11560","종로":"11110","동작":"11590"}
 AXK={"전세수요":"전세","환금성":"환금","가격방어":"방어","상승여력":"상승","토지지분":"토지",
@@ -59,10 +60,19 @@ def main():
     ap.add_argument("--universe",default="examples/candidates_universe159_20260606.json")
     ap.add_argument("--molit",default="examples/molit_recent_11gu_20260606.json")
     ap.add_argument("--out",default="report/blog"); ap.add_argument("--block-stale",action="store_true")
+    ap.add_argument("--districts",help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 9구")
     a=ap.parse_args(); today=a.today or date.today().isoformat()
+    gu_lawd=GU_LAWD
+    if a.districts:
+        from agent_realestate.collectors.lawd import lawd_for_district
+        gu_lawd={}
+        for g in a.districts.split(","):
+            g=g.strip(); c=lawd_for_district(g)
+            if c is None: raise SystemExit(f"[--districts] 알 수 없는 구: {g}")
+            gu_lawd[g]=c
     molit=json.load(open(a.molit)); uni=load_candidates(a.universe)
     results=[]; llms_lines=[]
-    for gu,lawd in GU_LAWD.items():
+    for gu,lawd in gu_lawd.items():
         r=gen_gu(gu,lawd,molit,uni,a.asof,today,a.out,a.block_stale)
         if r: results.append(r); llms_lines+=[r["llms"]] if r.get("llms") else []
     # llms.txt 재작성
