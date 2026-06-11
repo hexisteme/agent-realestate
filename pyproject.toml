@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent_realestate"
+version = "3.0.0"
+description = "한국 부동산 매수 의사결정 리포트 시스템 (라이브 호가 + 정책/재건축 캐시 + 결정론 계산, 토큰-제로 코어)"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+agent-realestate = "agent_realestate.cli:main"
+
+[tool.setuptools]
+packages = [
+    "agent_realestate",
+    "agent_realestate.collectors",
+    "agent_realestate.analysts",
+    "agent_realestate.synthesis",
+    "agent_realestate.cache",
+    "agent_realestate.notify",
+]

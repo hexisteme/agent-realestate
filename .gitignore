@@ -1,0 +1,37 @@
+# 시크릿 (MOLIT 키 등) — 절대 커밋 금지
+.env
+*.key
+
+# 로컬 데이터 — 네이버 호가 원본은 DB권 리스크로 repo 제외(블로그 법적 가드와 동일 원칙)
+# 단 regime 공공 통계 시계열 2종(미분양·전세가율, 공공데이터·출처첨부)은 테스트 픽스처로 포함.
+examples/*
+!examples/regime_inputs_20260604.json
+!examples/jeonse_ratio_ts_20260604.json
+data/
+report/
+site/
+
+# 개인 프로필 (소득·자본)
+**/profile_user.json
+
+# 파생물·백업·세션 로컬
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+*.bak*
+.DS_Store
+intel_*.json
+intel_*.log
+build/
+dist/
+.claude/
+
+# 개인 운영 레이어 — 공개 제외 (의사결정 로그·일회성 분석 스크립트, 로컬 유지. 2026-06-11 범용화)
+/AGENTS.md
+/AGENT_CAPABILITIES.md
+/USAGE.md
+/*.py
+!/regen_reports.py
+!/fetch_molit_recent_11gu.py
