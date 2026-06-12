@@ -688,8 +688,19 @@ def cmd_daily(args) -> None:
         # 커밋 정체성은 site repo 로컬 git config 사용 (하드코딩 제거 — 범용화 2026-06-11)
         subprocess.run(["git", "-C", str(site),
                         "commit", "-q", "-m", f"daily snapshot {today}"], check=True)
-        r = subprocess.run(["git", "-C", str(site), "push", "-q", "origin", "main"])
-        print("[daily] site push " + ("OK" if r.returncode == 0 else "실패 — 다음 실행에서 재시도"))
+        # ★push 재시도 + stderr 로깅(2026-06-12: 07:08 cron 에서 무출력 실패 — 일시 장애 추정이나
+        #   원인 텍스트가 없어 진단 불가였음. 실패 시 에러를 시끄럽게 남긴다. Loud Failure.)
+        import time as _time
+        for _try in range(3):
+            r = subprocess.run(["git", "-C", str(site), "push", "-q", "origin", "main"],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                print("[daily] site push OK")
+                break
+            print(f"[daily] push 시도 {_try + 1}/3 실패(rc={r.returncode}): {r.stderr.strip()[:300]}")
+            _time.sleep(10)
+        else:
+            print("[daily] site push 실패 — 커밋은 로컬 보존, 다음 실행에서 재시도")
     else:
         print("[daily] 실거래 무변동 — 무발행(정상)")
     # 플래그십 리포트 — 게이트 미달이면 차단되는 게 정상이라 비치명
