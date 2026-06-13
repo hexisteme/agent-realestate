@@ -11,8 +11,14 @@
 cron 예: `5 7 * * *  cd <repo> && python -m blog.run_daily --asof <scan_date>`  (매일 07:05, 신선도 통과분만 발행)
 """
 from __future__ import annotations
-import json, re, os, statistics as st, argparse
+import json, re, os, glob, statistics as st, argparse
 from datetime import date
+
+
+def _latest_or(pattern: str, fallback: str) -> str:
+    """glob으로 최신 파일 탐색 — RE_UNIVERSE/RE_MOLIT env var 없을 때 fallback."""
+    files = sorted(glob.glob(pattern))
+    return files[-1] if files else fallback
 from agent_realestate.collectors.naver_live import load_candidates
 from agent_realestate.analysts.scoring import score_candidates
 from agent_realestate.analysts.redev import score_redev
@@ -60,8 +66,14 @@ def gen_gu(gu, lawd, molit, uni, asof, today, outdir, block_stale=False):
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--asof",required=True); ap.add_argument("--today")
-    ap.add_argument("--universe",default="examples/candidates_universe159_20260606.json")
-    ap.add_argument("--molit",default="examples/molit_recent_11gu_20260606.json")
+    _uni_default = (os.environ.get("RE_UNIVERSE") or
+                    _latest_or("examples/candidates_universe[0-9][0-9][0-9]_*.json",
+                               "examples/candidates_universe159_20260606.json"))
+    _molit_default = (os.environ.get("RE_MOLIT") or
+                      _latest_or("examples/molit_recent*.json",
+                                 "examples/molit_recent_11gu_20260606.json"))
+    ap.add_argument("--universe", default=_uni_default)
+    ap.add_argument("--molit", default=_molit_default)
     ap.add_argument("--out",default="report/blog"); ap.add_argument("--block-stale",action="store_true")
     ap.add_argument("--districts",help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 9구")
     a=ap.parse_args(); today=a.today or date.today().isoformat()
