@@ -61,6 +61,18 @@ def assess_flags(c: Candidate, strategy: ExitStrategy, today: date | None = None
             "F_NORENT", "전세 호가 미확보 — 임대 수요/전환 가능성 직접 확인 필요"
             "(신뢰도 '전세호가=없음' 반영, 점수 비차감).", 1.0,
         ))
+    # ★4차 감사 A(2026-06-13): 토지거래허가구역 HOLD_AND_RENT 전략 충돌 경고.
+    # 토허구역 = 강남4구·목동·성수 등 지정 구역(서울 전역 아님 — assembler 구텍스트 정정).
+    # 취득일로부터 2년 실거주의무 → 이 기간 전세·임대 불가. '2년 거주 후 임대' 타이밍 제약.
+    # penalty=1.0: 전략 선택 제약이지 단지 가치 훼손 아님 — soft flag(정보 표시만, 순위 불변).
+    if strategy is ExitStrategy.HOLD_AND_RENT and getattr(c, "toher_zone", False):
+        flags.append(RiskFlag(
+            "F_TOHER_RENT",
+            "토지거래허가구역 — 취득일로부터 2년 실거주의무(이 기간 전세·임대 불가). "
+            "HOLD_AND_RENT 실행 제약: 2년 실거주 후 임대 가능하나 '취득 즉시 갭·전세 끼기' 불가 "
+            "→ 자기자본 2년 잠김·현금흐름 계획 수정 필요. (land.seoul.go.kr 구역 확인)",
+            1.0,
+        ))
     return flags
 
 

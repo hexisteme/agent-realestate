@@ -183,6 +183,9 @@ class Candidate:
     gu_ipsi_academy: int | None = None  # 그 자치구 입시.검정 및 보습 학원 수(개원)([사실] 서울 OpenAPI neisAcademyInfo) — 구 학군강도(양천1421 vs 종로96)
     dev_catalyst: str | None = None     # 외부 개발호재(인근 대형부지 개발 등) — binary 촉매 watchlist용, 출처 필수. 점수 미반영(decision_prior 촉매). 2026-06-07
     redev_infeasible: bool = False       # 재개발 난망(고밀·신축·인근 불가 등) — True 면 토지지분 realizability haircut + 재건축잠재 0. opt-in(기본 False). 2026-06-07
+    toher_zone: bool = False             # 토지거래허가구역 지정 여부 — 강남4구·목동·성수·잠실 등 지정구역(서울 전역 아님).
+                                         # True 면 HOLD_AND_RENT 시 F_TOHER_RENT soft flag(2년 실거주의무·즉시갭 불가).
+                                         # land.seoul.go.kr 로 구역 확인 후 입력. opt-in(기본 False). 2026-06-13.
 
     def __post_init__(self) -> None:
         # R4: 입력 sanity — 비논리/오타 차단 (수동주입 신뢰성 보강)

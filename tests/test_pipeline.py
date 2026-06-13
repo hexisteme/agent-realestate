@@ -3,7 +3,7 @@ from datetime import date
 
 from agent_realestate.analysts.finance import build_finance_plan
 from agent_realestate.analysts.redev import score_redev
-from agent_realestate.analysts.risk import assess_flags, penalty_product
+from agent_realestate.analysts.risk import assess_flags, penalty_product, has_hard_fail
 from agent_realestate.analysts.scoring import AXES, WEIGHTS, score_candidates
 from agent_realestate.analysts.sensitivity import sensitivity_analysis
 from agent_realestate.domain import (Candidate, DataSource, ExitStrategy, Listing,
@@ -189,6 +189,25 @@ def test_residence_conflict_guard():
     assert assess_flags(s3, ExitStrategy.HOLD_AND_RENT) == []
     # PRIMARY_ONLY(거주 필요)도 강등, but 매도 안 하는 전략 외엔 거주 전제이므로 모두 적용
     assert any(f.code == "F_MOVEOUT" for f in assess_flags(sangye5, ExitStrategy.PRIMARY_ONLY))
+
+
+def test_toher_rent_flag():
+    """★4차 감사 A(2026-06-13): 토허구역 HOLD_AND_RENT → F_TOHER_RENT soft flag(penalty=1.0)."""
+    from dataclasses import replace
+    base = _cand("강남아파트", 1_500_000_000, 84, 500, 200, 15, RedevStage.NONE, 800_000_000, "역삼역 2호선")
+    # toher_zone=True + HOLD_AND_RENT → 플래그 발생
+    toher = replace(base, toher_zone=True)
+    flags = assess_flags(toher, ExitStrategy.HOLD_AND_RENT)
+    assert any(f.code == "F_TOHER_RENT" for f in flags)
+    # soft flag — penalty 1.0(순위 무변)
+    assert all(f.penalty == 1.0 for f in flags if f.code == "F_TOHER_RENT")
+    # has_hard_fail 에 영향 없음
+    assert not has_hard_fail(flags)
+    # 다른 전략에선 미발생
+    assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(toher, ExitStrategy.LIVE_THEN_SELL))
+    assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(toher, ExitStrategy.PRIMARY_ONLY))
+    # toher_zone=False(기본값)이면 미발생
+    assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(base, ExitStrategy.HOLD_AND_RENT))
 
 
 def test_ten_axes_primary_scoring_matrix():

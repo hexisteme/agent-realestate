@@ -25,7 +25,7 @@ def test_ascending_activates_volume_signal():
 
 def test_current_regime_is_latest():
     c = current_regime()
-    assert c.year == 2025 and c.phase == "OVERHEATED"   # 2025 재과열·재긴축
+    assert c.year == 2026 and c.phase == "OVERHEATED"   # 2026 재과열·재긴축지속(★4차 감사 C)
 
 
 def test_phase_volume_ic_matches_finding():

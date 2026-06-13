@@ -19,6 +19,7 @@ from agent_realestate.analysts.redev import score_redev
 from agent_realestate.domain import ExitStrategy
 import blog.daily_publisher as dp
 import blog.tistory_draft as td
+import blog.naver_teaser as nt
 
 # 기본 발행 구 — --districts "양천,강서,…" 인자로 override (범용화 2026-06-12, lawd 자동 해석)
 GU_LAWD={"양천":"11470","강서":"11500","구로":"11530","동대문":"11230","마포":"11440",
@@ -52,8 +53,10 @@ def gen_gu(gu, lawd, molit, uni, asof, today, outdir, block_stale=False):
     open(f"{outdir}/posts/{today}-{gu}.html","w").write(post["html"])
     with open(f"{outdir}/posts/{today}-{gu}.claims.jsonl","w") as f:
         for cl in post["claims"]: f.write(json.dumps(cl,ensure_ascii=False)+"\n")
+    top_row = rows[0] if rows else {}
     return {"gu":gu,"n":len(rows),"stale":post["stale"],"llms":post["llms_line"],
-            "tistory_sec":td.build_tistory_section(gu,rows)}
+            "tistory_sec":td.build_tistory_section(gu,rows),
+            "top_fund":top_row.get("fund",0),"top_eok_band":dp._eok_band(top_row.get("eff_eok"))}
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--asof",required=True); ap.add_argument("--today")
@@ -84,6 +87,8 @@ def main():
     if secs:
         draft=td.write_daily_draft(secs,today,a.asof,a.out)
         print(f"티스토리 원고: {draft}  (브라우저로 열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
+        naver=nt.write_naver_teaser(pub,today,a.asof,outdir=a.out)
+        print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 블로그 등록)")
     print(f"발행 {len(pub)}구 / 스킵(STALE) {len(sk)}구 · today={today} asof={a.asof}")
     for r in results: print(" ", r)
 
