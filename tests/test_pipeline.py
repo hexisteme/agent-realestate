@@ -192,22 +192,40 @@ def test_residence_conflict_guard():
 
 
 def test_toher_rent_flag():
-    """★4차 감사 A(2026-06-13): 토허구역 HOLD_AND_RENT → F_TOHER_RENT soft flag(penalty=1.0)."""
+    """★4차 감사 A 재수정(2026-06-13): 서울 전역 아파트 토허(2025.10.20~2026.12.31).
+    서울 district 자동감지 + toher_zone 수동 override 두 경로 모두 검증."""
     from dataclasses import replace
+    # ① toher_zone=True 수동 — 비서울 후보도 발화 (경기 등 추가 지정 시 사용)
     base = _cand("강남아파트", 1_500_000_000, 84, 500, 200, 15, RedevStage.NONE, 800_000_000, "역삼역 2호선")
-    # toher_zone=True + HOLD_AND_RENT → 플래그 발생
     toher = replace(base, toher_zone=True)
     flags = assess_flags(toher, ExitStrategy.HOLD_AND_RENT)
     assert any(f.code == "F_TOHER_RENT" for f in flags)
-    # soft flag — penalty 1.0(순위 무변)
-    assert all(f.penalty == 1.0 for f in flags if f.code == "F_TOHER_RENT")
-    # has_hard_fail 에 영향 없음
+    assert all(f.penalty == 1.0 for f in flags if f.code == "F_TOHER_RENT")  # soft — 순위 무변
     assert not has_hard_fail(flags)
-    # 다른 전략에선 미발생
+    # 다른 전략에선 미발생(서울 아님 + toher_zone=True)
     assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(toher, ExitStrategy.LIVE_THEN_SELL))
     assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(toher, ExitStrategy.PRIMARY_ONLY))
-    # toher_zone=False(기본값)이면 미발생
+    # 비서울 + toher_zone=False → 미발생
     assert not any(f.code == "F_TOHER_RENT" for f in assess_flags(base, ExitStrategy.HOLD_AND_RENT))
+    # ② 서울 district 자동감지 — toher_zone=False 이더라도 서울이면 발화
+    from agent_realestate.domain import Listing, PriceKind, DataSource
+    from datetime import date
+    _listing_seoul = Listing(
+        complex_name="강남아파트", dong_ho="101동 301호", area_exclusive_m2=84,
+        floor="3/15층", facing="남향", price_krw=1_500_000_000,
+        price_kind=PriceKind.ASKING_LIVE, agent_name="테스트공인", confirmed_date=date(2026, 6, 13),
+        source=DataSource.NAVER_LIVE_CHROME,
+    )
+    from agent_realestate.domain import Candidate, RedevStage as RS
+    seoul_cand = Candidate(
+        listing=_listing_seoul, units=500, built_year=2000, far_pct=250,
+        land_share_pyeong=10.0, land_share_is_estimate=False, redev_stage=RS.NONE,
+        jeonse_krw=800_000_000, transit="역삼역 2호선", district="서울 강남구",
+        toher_zone=False,  # 명시적 False — district 자동감지로 발화해야 함
+    )
+    seoul_flags = assess_flags(seoul_cand, ExitStrategy.HOLD_AND_RENT)
+    assert any(f.code == "F_TOHER_RENT" for f in seoul_flags)  # 서울 자동감지
+    assert not has_hard_fail(seoul_flags)
 
 
 def test_ten_axes_primary_scoring_matrix():

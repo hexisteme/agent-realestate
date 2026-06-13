@@ -61,15 +61,18 @@ def assess_flags(c: Candidate, strategy: ExitStrategy, today: date | None = None
             "F_NORENT", "전세 호가 미확보 — 임대 수요/전환 가능성 직접 확인 필요"
             "(신뢰도 '전세호가=없음' 반영, 점수 비차감).", 1.0,
         ))
-    # ★4차 감사 A(2026-06-13): 토지거래허가구역 HOLD_AND_RENT 전략 충돌 경고.
-    # 토허구역 = 강남4구·목동·성수 등 지정 구역(서울 전역 아님 — assembler 구텍스트 정정).
-    # 취득일로부터 2년 실거주의무 → 이 기간 전세·임대 불가. '2년 거주 후 임대' 타이밍 제약.
-    # penalty=1.0: 전략 선택 제약이지 단지 가치 훼손 아님 — soft flag(정보 표시만, 순위 불변).
-    if strategy is ExitStrategy.HOLD_AND_RENT and getattr(c, "toher_zone", False):
+    # ★4차 감사 A 재수정(2026-06-13 웹검증): 서울 전역 아파트 토허(2025.10.20~2026.12.31, 10.15 대책).
+    # 수집 근거: korea.kr 정책브리핑 — "서울특별시 전 지역 아파트 2025.10.20~2026.12.31 토허구역 지정".
+    # 4차 감사 최초 수정("서울 전역 아님")은 역오류 — 원문 "서울 전역"이 사실이고 날짜(10.15→10.20)만 틀렸음.
+    # district에 "서울" 포함 → 자동 발화 / toher_zone=True → 비서울 추가 지정 시 수동 override.
+    # penalty=1.0: 전략 제약이지 단지 가치 훼손 아님(soft flag, 순위 불변).
+    _in_toher = getattr(c, "toher_zone", False) or ("서울" in (c.district or ""))
+    if strategy is ExitStrategy.HOLD_AND_RENT and _in_toher:
         flags.append(RiskFlag(
             "F_TOHER_RENT",
-            "토지거래허가구역 — 취득일로부터 2년 실거주의무(이 기간 전세·임대 불가). "
-            "HOLD_AND_RENT 실행 제약: 2년 실거주 후 임대 가능하나 '취득 즉시 갭·전세 끼기' 불가 "
+            "토지거래허가구역(서울 전역 아파트 2025.10.20~2026.12.31, 10.15 대책) — "
+            "① 매수 시 허가 취득 필요 · ② 취득일로부터 2년 실거주의무(이 기간 전세·임대 불가). "
+            "HOLD_AND_RENT 실행 제약: '2년 실거주 후 임대' 타이밍 제약·즉시 갭투자 불가 "
             "→ 자기자본 2년 잠김·현금흐름 계획 수정 필요. (land.seoul.go.kr 구역 확인)",
             1.0,
         ))
