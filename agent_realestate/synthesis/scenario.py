@@ -157,9 +157,11 @@ def compute_break_even(
     is_one_home: bool = True, resident_years: float = 1,
 ) -> BreakEven:
     from ..analysts.finance import compute_capital_gains_tax
+    # ★5차 감사(2026-06-14): 기회비용 복리 통일 — project_networth_15yr 와 일관성.
+    # 단리(rate×years) vs 복리 차이: 1년=0, 3년=0.37%p. break_even years≤3이 전형이나 정합성 우선.
     costs = (acquisition_tax_krw + broker_fee_krw * 2
              + annual_interest_krw * years + property_tax_krw * years
-             + int(equity_krw * opportunity_rate * years))
+             + int(equity_krw * ((1 + opportunity_rate) ** years - 1)))
     sell5 = int(price_krw * (1.05 ** years))
     cgt = compute_capital_gains_tax(price_krw, sell5, years, is_one_home, resident_years)
     return BreakEven(costs_krw=costs, break_even_price_krw=price_krw + costs,

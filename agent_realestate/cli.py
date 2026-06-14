@@ -6,6 +6,7 @@
   update-prices --input prices.json       MOLIT 실거래 시계열 캐시 (② §1 추세)
   update-land   --input land.json         등기부 대지지분 실측 캐시 (③)
   backfill                                (placeholder)
+  doc-sync                                capability 상수 → AGENT_CAPABILITIES auto-capabilities 재생성
 
 candidates/profile/policies/prices/land JSON 은 Claude 가 라이브 수집/WebSearch 후 구조화해
 주입(agent_money MCP-주입 패턴). report 는 결정론 계산만 한다 (G3).
@@ -32,6 +33,7 @@ from .collectors import molit
 from .collectors.naver_live import load_candidates
 from .domain import ExitStrategy
 from .notify.email_report import compose_summary, send_report
+from .notify.telegram import notify_daily_result, notify_step_failure
 from .policy_params import PolicyParams
 from .synthesis.assembler import Evaluated, build_report
 from .synthesis.scenario import compute_break_even, compute_hold
@@ -645,6 +647,25 @@ def cmd_backfill(args) -> None:
     print("backfill: 실거래는 update-prices(JSON 주입) 또는 fetch-molit(API 직접) 로 적재.")
 
 
+def cmd_doc_sync(args) -> None:
+    """capability.py 상수에서 AGENT_CAPABILITIES.md auto-capabilities 블록을 재생성.
+
+    코드(금융공식·평가축·신뢰등급·데이터소스 실상태)가 문서의 단일소스 — 손정합 drift 방지.
+    특히 '입력 진위검증' 역량이 DataSourceStatus 에서 파생되어 overstatement 가 구조적으로 차단."""
+    config.assert_mount()
+    from .capability import capability_reference_md
+    path = config.EXT_ROOT / "AGENT_CAPABILITIES.md"
+    text = path.read_text(encoding="utf-8")
+    begin, end = "<!-- BEGIN:auto-capabilities", "<!-- END:auto-capabilities -->"
+    bi, ei = text.find(begin), text.find(end)
+    if bi == -1 or ei == -1:
+        raise SystemExit("AGENT_CAPABILITIES.md 에 auto-capabilities 마커 없음 — 구조 누락")
+    bi_end = text.find("-->", bi) + 3
+    new = text[:bi_end] + "\n\n" + capability_reference_md() + "\n\n" + text[ei:]
+    path.write_text(new, encoding="utf-8")
+    print(f"[doc-sync] AGENT_CAPABILITIES.md auto-capabilities 갱신: {path}")
+
+
 def cmd_run(args) -> None:
     from agent_realestate.bus import run_task
     print(f"[result] {run_task(args.task_file)}")
@@ -671,6 +692,8 @@ def cmd_daily(args) -> None:
         if r.returncode != 0:
             print(f"[daily] ❌ {label} 실패(rc={r.returncode})" + ("" if fatal else " — 비치명, 계속"))
             if fatal:
+                # ★Task I(2026-06-14): 치명 실패 시 텔레그램 알림 (TELEGRAM_BOT_TOKEN/CHAT_ID 미설정이면 무음)
+                notify_step_failure(label, r.returncode, date.today().isoformat())
                 sys.exit(r.returncode)
 
     today = date.today().isoformat()
@@ -705,7 +728,49 @@ def cmd_daily(args) -> None:
         print("[daily] 실거래 무변동 — 무발행(정상)")
     # 플래그십 리포트 — 게이트 미달이면 차단되는 게 정상이라 비치명
     step("플래그십 리포트 regen(게이트)", ["python3", "regen_reports.py"], fatal=False)
+    # ★Task I(2026-06-14): 정상 완료 텔레그램 알림
+    notify_daily_result(ok=True, today=today, detail="daily pipeline 완료")
     print(f"[daily] done {today}")
+
+
+def cmd_scan_regime(args) -> None:
+    """★Task J(2026-06-14): 현 국면 진단 + BOK 금리 갱신 필요 여부 체크.
+    네트워크 0 — regime.py 상수만으로 결정론 출력.
+    BOK 결정일 전후(1월/2월/4월/5월/7월/8월/10월/11월 마지막 목요일 전후)에 수동 실행 권장.
+    갱신 필요 시: regime.py BOK_RATE[year] 와 _TIMELINE[year] 를 검증된 사실로 업데이트 후 pytest 실행."""
+    from .analysts.regime import (current_regime, classify_regime, BOK_RATE, POLICY_STANCE,
+                                  _TIMELINE, regime_entry_read)
+    rc = current_regime()
+    yr = rc.year
+    print(f"\n=== scan-regime {date.today()} ===")
+    print(f"현 국면: {yr}년 {rc.phase} / {rc.policy_stance} 스탠스 / {rc.sentiment}")
+    print(f"  {rc.note}")
+    print()
+    print(f"BOK 기준금리(연말값):")
+    for y in sorted(k for k in BOK_RATE if k >= yr - 2):
+        flag = " ★현재" if y == yr else ""
+        src = "(FACT: bok.or.kr 웹검증 2026-06-13)" if y == 2026 else ""
+        print(f"  {y}: {BOK_RATE[y]:.2f}%{flag} {src}")
+    print()
+    # 갱신 필요 감지: 올해 금리=작년 금리이고 타임라인 rate 표기가 '동결추정' 포함
+    prev_rate = BOK_RATE.get(yr - 1)
+    cur_rate = BOK_RATE.get(yr)
+    tl = _TIMELINE.get(yr, ())
+    rate_label = tl[3] if len(tl) > 3 else ""
+    if "추정" in rate_label or "가정" in rate_label:
+        print(f"⚠️  {yr} BOK_RATE 표기가 '{rate_label}' — 실측으로 갱신 권장")
+        print(f"   bok.or.kr 기준금리 결정 결과 확인 후:")
+        print(f"   regime.py BOK_RATE[{yr}] = <실측값>  # 소수점 둘째자리")
+        print(f"   regime.py _TIMELINE[{yr}] 의 rate 문자열도 동결/인하/인상으로 수정")
+    else:
+        print(f"✅ {yr} BOK_RATE={cur_rate}% 확정값({rate_label}) — 갱신 불필요")
+    print()
+    er = regime_entry_read(yr)
+    if er:
+        print(f"진입환경: {er.get('read')}  위험={er.get('risk')}")
+        print(f"전세가율: {er.get('jeonse_ratio')}%  추세={er.get('jeonse_trend')}")
+    print()
+    print("[hint] BOK 결정일: 연 8회(1/2/4/5/7/8/10/11월 마지막 목요일 전후). 결정 후 이 명령 재실행 + regime.py 수정 + pytest.")
 
 
 def main(argv=None) -> None:
@@ -759,10 +824,12 @@ def main(argv=None) -> None:
     scr.set_defaults(fn=cmd_scan_region)
     fkb = sub.add_parser("fetch-kb-sise"); fkb.add_argument("--code", required=True, help="kbland.kr/c/{code} 단지코드"); fkb.add_argument("--complex"); fkb.add_argument("--area", type=float); fkb.add_argument("--store", action="store_true"); fkb.set_defaults(fn=cmd_fetch_kb_sise)
     sub.add_parser("backfill").set_defaults(fn=cmd_backfill)
+    sub.add_parser("doc-sync", help="capability 상수 → AGENT_CAPABILITIES auto-capabilities 블록 재생성(drift 방지)").set_defaults(fn=cmd_doc_sync)
     rn = sub.add_parser("run", help="버스 워커 모드 (Task v1 → Result v1)")
     rn.add_argument("--task-file", required=True, dest="task_file"); rn.set_defaults(fn=cmd_run)
     sub.add_parser("register", help=".orchestra 레지스트리 등록").set_defaults(fn=cmd_register)
     sub.add_parser("daily", help="일일 토큰-제로 오케스트레이터(MOLIT fresh→블로그→site push→리포트 regen)").set_defaults(fn=cmd_daily)
+    sub.add_parser("scan-regime", help="현 국면 진단 + BOK 금리 갱신 필요 여부 체크(네트워크 0, BOK 결정일 전후 수동 실행)").set_defaults(fn=cmd_scan_regime)
     config.load_env_file()   # .env 의 MOLIT_API_KEY 등 주입 (시크릿 비노출)
     args = p.parse_args(argv)
     args.fn(args)

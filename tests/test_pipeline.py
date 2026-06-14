@@ -223,9 +223,16 @@ def test_toher_rent_flag():
         jeonse_krw=800_000_000, transit="역삼역 2호선", district="서울 강남구",
         toher_zone=False,  # 명시적 False — district 자동감지로 발화해야 함
     )
-    seoul_flags = assess_flags(seoul_cand, ExitStrategy.HOLD_AND_RENT)
-    assert any(f.code == "F_TOHER_RENT" for f in seoul_flags)  # 서울 자동감지
+    seoul_flags = assess_flags(seoul_cand, ExitStrategy.HOLD_AND_RENT, today=date(2026, 6, 14))
+    assert any(f.code == "F_TOHER_RENT" for f in seoul_flags)  # 서울 자동감지 (정책 기간 내)
     assert not has_hard_fail(seoul_flags)
+    # ③ ★5차 개선 C: 정책 만료 후(2027-01-01) — 서울 district 자동감지는 비활성
+    expired_flags = assess_flags(seoul_cand, ExitStrategy.HOLD_AND_RENT, today=date(2027, 1, 1))
+    assert not any(f.code == "F_TOHER_RENT" for f in expired_flags), "만료 후 서울 자동감지는 꺼져야 함"
+    # ④ toher_zone=True 수동 override는 만료 후에도 발화(비서울 추가 지정 or 정책연장 시나리오)
+    toher_post = replace(toher, district="경기 성남시")  # 비서울 + toher_zone=True
+    toher_post_flags = assess_flags(toher_post, ExitStrategy.HOLD_AND_RENT, today=date(2027, 1, 1))
+    assert any(f.code == "F_TOHER_RENT" for f in toher_post_flags), "수동 override(toher_zone=True)는 만료 후도 유지"
 
 
 def test_ten_axes_primary_scoring_matrix():

@@ -184,11 +184,21 @@ def compute_comprehensive_tax(price_krw: int, num_homes: int = 1,
     return int(_marginal_tax(base, params.jongbu_brackets))   # R11 데이터화
 
 
+def _ltc_rate_1home(hold_years: float, resident_years: float) -> float:
+    """1세대1주택 장기보유특별공제율 (소득세법 §95②, 5차 감사 H 정정 2026-06-14).
+    조건: 보유 3년 이상 AND 거주 2년 이상. 미충족이면 0.
+    공제율: 보유 min(hold_years,10)×4% + 거주 min(resident_years,10)×4%, 합산 최대 80%."""
+    if hold_years < 3 or resident_years < 2:
+        return 0.0
+    return min(0.80, 0.04 * min(hold_years, 10) + 0.04 * min(resident_years, 10))
+
+
 def compute_capital_gains_tax(buy_krw: int, sell_krw: int, hold_years: float,
                               is_one_home: bool = True, resident_years: float = 0,
                               params: PolicyParams = _P) -> int:
     """양도소득세 (R8, 간이). 1세대1주택 12억 이하 비과세 / 12억 초과 안분 / 장기보유특별공제 /
-    단기(<2년) 중과 / 2년+ 누진. 필요경비·지방소득세는 단순화. LIVE_THEN_SELL 용."""
+    단기(<2년) 중과 / 2년+ 누진. 필요경비·지방소득세는 단순화. LIVE_THEN_SELL 용.
+    ★5차 감사 H(2026-06-14): 1세대1주택 장특공 조건 정정 — 보유 3년+ AND 거주 2년+ (기존: 거주 2년+ 단독)."""
     gain = max(0, sell_krw - buy_krw)
     if gain <= 0:
         return 0
@@ -197,10 +207,10 @@ def compute_capital_gains_tax(buy_krw: int, sell_krw: int, hold_years: float,
     taxable = gain
     if is_one_home and sell_krw > 1_200_000_000:         # 12억 초과 안분 과세
         taxable = gain * (sell_krw - 1_200_000_000) / sell_krw
-    if is_one_home and resident_years >= 2:              # 장특공: 거주+보유 최대 80%
-        ltc = min(0.80, 0.04 * min(hold_years, 10) + 0.04 * min(resident_years, 10))
+    if is_one_home:
+        ltc = _ltc_rate_1home(hold_years, resident_years)
     else:
-        ltc = min(0.30, 0.02 * min(hold_years, 15))
+        ltc = min(0.30, 0.02 * min(hold_years, 15))     # 다주택·일반: 보유만 2%/년, 최대 30%
     base = max(0.0, taxable * (1 - ltc) - 2_500_000)     # 기본공제 250만
     if base <= 0:
         return 0
@@ -211,6 +221,24 @@ def compute_capital_gains_tax(buy_krw: int, sell_krw: int, hold_years: float,
     brackets = [(14_000_000, 0.06), (50_000_000, 0.15), (88_000_000, 0.24), (150_000_000, 0.35),
                 (300_000_000, 0.38), (500_000_000, 0.40), (1_000_000_000, 0.42), (float("inf"), 0.45)]
     return int(_marginal_tax(base, brackets))            # 2년+ 누진
+
+
+def capital_gains_tax_schedule(
+    buy_krw: int,
+    sell_rate: float = 0.03,
+    hold_years_list: tuple = (3, 5, 10),
+    resident_years: float = 2.0,
+    params: PolicyParams = _P,
+) -> list[dict]:
+    """장기보유특별공제 공제율 + 양도세 시나리오 테이블 — LIVE_THEN_SELL 보조(5차 감사 H 신규).
+    sell_rate: 연 가격 상승률 가정(기본 3%). 반환: [{years, sell_krw, ltc_pct, cgt_krw}]"""
+    rows = []
+    for yrs in hold_years_list:
+        sell = int(buy_krw * (1 + sell_rate) ** yrs)
+        ltc = _ltc_rate_1home(yrs, resident_years)
+        cgt = compute_capital_gains_tax(buy_krw, sell, yrs, True, resident_years, params)
+        rows.append({"years": yrs, "sell_krw": sell, "ltc_pct": round(ltc * 100), "cgt_krw": cgt})
+    return rows
 
 
 def build_finance_plan(

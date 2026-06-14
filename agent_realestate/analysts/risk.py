@@ -15,6 +15,18 @@ from ..domain import Candidate, ExitStrategy
 # 1년 실거주(이후 임대/매도/거주)를 전제하는 전략들
 RESIDENCE_NEEDING = {ExitStrategy.HOLD_AND_RENT, ExitStrategy.LIVE_THEN_SELL, ExitStrategy.PRIMARY_ONLY}
 
+# ★5차 개선 C(2026-06-14): 서울 전역 토허 정책 기간 파라미터화 — 만료 후 자동 비활성.
+# 출처: 정책브리핑 korea.kr "2025.10.20~2026.12.31 서울 전역 아파트 토허".
+# 이후 정책 연장·변경 시 이 상수만 수정(코드 전체 영향 없음).
+_SEOUL_TOHER_START = date(2025, 10, 20)
+_SEOUL_TOHER_END   = date(2026, 12, 31)
+
+
+def _seoul_toher_active(check_date: date | None = None) -> bool:
+    """서울 전역 토허 정책 기간 내인지 판별. check_date=None → date.today() 사용."""
+    d = check_date if check_date is not None else date.today()
+    return _SEOUL_TOHER_START <= d <= _SEOUL_TOHER_END
+
 
 @dataclass(frozen=True)
 class RiskFlag:
@@ -62,11 +74,13 @@ def assess_flags(c: Candidate, strategy: ExitStrategy, today: date | None = None
             "(신뢰도 '전세호가=없음' 반영, 점수 비차감).", 1.0,
         ))
     # ★4차 감사 A 재수정(2026-06-13 웹검증): 서울 전역 아파트 토허(2025.10.20~2026.12.31, 10.15 대책).
+    # ★5차 개선 C(2026-06-14): 정책 만료 후 자동 비활성 — _seoul_toher_active(today) 기간 게이트 추가.
     # 수집 근거: korea.kr 정책브리핑 — "서울특별시 전 지역 아파트 2025.10.20~2026.12.31 토허구역 지정".
-    # 4차 감사 최초 수정("서울 전역 아님")은 역오류 — 원문 "서울 전역"이 사실이고 날짜(10.15→10.20)만 틀렸음.
-    # district에 "서울" 포함 → 자동 발화 / toher_zone=True → 비서울 추가 지정 시 수동 override.
+    # district에 "서울" 포함 → 기간 내에만 자동 발화 / toher_zone=True → 비서울 or 정책연장 수동 override(기간무관).
     # penalty=1.0: 전략 제약이지 단지 가치 훼손 아님(soft flag, 순위 불변).
-    _in_toher = getattr(c, "toher_zone", False) or ("서울" in (c.district or ""))
+    _in_toher = getattr(c, "toher_zone", False) or (
+        "서울" in (c.district or "") and _seoul_toher_active(today)
+    )
     if strategy is ExitStrategy.HOLD_AND_RENT and _in_toher:
         flags.append(RiskFlag(
             "F_TOHER_RENT",

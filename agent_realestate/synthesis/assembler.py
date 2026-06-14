@@ -12,7 +12,7 @@ from ..analysts.compset_signals import fitness_facts, mean_reversion_signal
 from ..analysts.decision_prior import (EMP_NOTE, catalyst_flags,
                                        district_prior, employment_corridor,
                                        liquidity_tailwind)
-from ..analysts.finance import FinancePlan, assess_policy_loans
+from ..analysts.finance import FinancePlan, assess_policy_loans, capital_gains_tax_schedule
 from ..analysts.regime import (KEY_POLICY, current_regime,
                                jeonse_value_timing, regime_conditional_guidance,
                                regime_entry_read, regime_evidence,
@@ -1201,6 +1201,19 @@ th a:hover{background:#E4EAF0}
             cgt = (f" · 예상 양도세(+5% 매도, 1세대1주택 거주2년+): {_eok(b.capital_gains_tax_5pct_krw)}"
                    if b.capital_gains_tax_5pct_krw > 0 else " · 양도세 0(1세대1주택 12억 이하 비과세)")
             H.append(f"[사실] 1년 손익분기 매도가 {_eok(b.break_even_price_krw)} (상승률 {b.break_even_rate*100:.1f}%), 거래비용 {_eok(b.costs_krw)}{cgt}<br>")
+            # ★5차 감사 H(2026-06-14): 장기보유특별공제 3/5/10년 시나리오 테이블
+            # 1세대1주택 거주2년+: 보유3년=20%(12+8), 보유5년=36%(20+16), 보유10년=80%(40+40). 조건: 보유3년+AND거주2년+.
+            ltc_rows = capital_gains_tax_schedule(e.candidate.listing.price_krw,
+                                                  sell_rate=0.03, hold_years_list=(3, 5, 10))
+            H.append("<b>장기보유특별공제(LIVE_THEN_SELL, +3%/년 가정 · 1세대1주택 거주2년+ 기준)</b> "
+                     "<span style='color:#888;font-size:0.9em'>[사실] 간이 추정 — 지방세·필요경비 단순화. 실제 세액은 세무사 확인 필수.</span><br>")
+            H.append("<table>" + _row(["보유기간", "장특공제율", "+3%/년 매도가", "예상 양도세"], "th"))
+            for lr in ltc_rows:
+                H.append(_row([f"{lr['years']}년",
+                               f"{lr['ltc_pct']}%" if lr['ltc_pct'] > 0 else "미적용(보유3년 미충족)",
+                               _eok(lr['sell_krw']),
+                               "0 (12억 이하 비과세)" if lr['cgt_krw'] == 0 else _eok(lr['cgt_krw'])]))
+            H.append("</table>")
         H.append("</div>")
     if len(ev) > _S6_OPEN:
         H.append("</details>")

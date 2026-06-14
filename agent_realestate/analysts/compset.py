@@ -45,10 +45,14 @@ def lookup_band(compset: dict | None, sg: str | None, area: float):
         return None
     lr = compset.get("longrun") or {}
     band = bucket_area(area)
+    # ★5차 감사 C1-1(2026-06-14): cagrs 가 있어도 n<8이면 base_rate_band→None — 반환하지 말고
+    # 다음 fallback 시도. 이전 코드는 n<8인 primary band에서 조기 None 반환으로 fallback 체인 절단.
     for b in (band, 84, 72, 110, 59, 135):     # 요청 band 우선, 없으면 84 등 폴백
         cagrs = lr.get(f"{sg}|{b}")
         if cagrs:
-            return base_rate_band(sg, b, cagrs)
+            result = base_rate_band(sg, b, cagrs)
+            if result is not None:
+                return result
     return None
 
 
