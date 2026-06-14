@@ -697,10 +697,33 @@ def cmd_daily(args) -> None:
                 sys.exit(r.returncode)
 
     today = date.today().isoformat()
+    import shutil
+
+    def _molit_total(p: Path) -> int:
+        try:
+            c = json.load(open(p)); return sum(len(v) for k, v in c.items() if k != "_done")
+        except Exception:
+            return 0
+
+    # ★2026-06-14 데이터손실 방지: 기존엔 캐시를 unlink 후 fresh 재수집 → DNS/네트워크 플레이크가
+    #   끼면 좋은 캐시(수만건)를 지운 채 대량실패 → 빈 결과(수십~백건)로 영구 회귀(06-14 사고: 43,046→148).
+    #   수정: 삭제 대신 .daybak 백업 후 비우고, 재수집 결과가 직전 대비 급감(<70%)하면 백업 복원.
     molit_json = root / "examples/molit_recent_11gu_20260606.json"
+    molit_bak = molit_json.with_name(molit_json.name + ".daybak")
+    prev_total = _molit_total(molit_json) if molit_json.exists() else 0
     if molit_json.exists():
-        molit_json.unlink()   # 캐시 비우고 fresh 재수집 (cron_daily.sh 로직 이관)
-    step("MOLIT 실거래 fresh 재수집", ["python3", "fetch_molit_recent_11gu.py"])
+        shutil.copy(molit_json, molit_bak)   # 백업 후 비움(fresh 재수집 유도)
+        molit_json.unlink()
+    step("MOLIT 실거래 fresh 재수집", ["python3", "fetch_molit_recent_11gu.py"], fatal=False)
+    new_total = _molit_total(molit_json) if molit_json.exists() else 0
+    if prev_total > 1000 and new_total < prev_total * 0.7:
+        print(f"[daily] ⚠️ MOLIT 재수집 회귀 ({new_total} ≪ 직전 {prev_total}) — DNS/네트워크 의심. "
+              f"직전 캐시 복원, 블로그는 보존 데이터로 진행")
+        if molit_bak.exists():
+            shutil.copy(molit_bak, molit_json)
+        notify_step_failure("MOLIT 재수집 회귀(직전 캐시 복원)", 1, today)
+    if molit_bak.exists():
+        molit_bak.unlink()
     step("블로그 포스트 생성", ["python3", "-m", "blog.run_daily",
                           "--asof", today, "--today", today, "--block-stale"])
     step("사이트 조립", ["python3", "-m", "blog.build_site"])
