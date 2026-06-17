@@ -27,6 +27,10 @@ def build(today=None):
     # 1) 포스트·claims·llms.txt 복사
     for f in glob.glob(f"{SRC}/posts/*"): shutil.copy(f,f"{SITE}/posts/")
     if os.path.exists(f"{SRC}/llms.txt"): shutil.copy(f"{SRC}/llms.txt",f"{SITE}/llms.txt")
+    # 탐색기(방문자 필터형, 2026-06-16) — dataset.json + explorer.html 를 site/ 루트로 복사.
+    #   posts/ 밖이라 sitemap/RSS 의 posts/*.html glob 에 안 걸려 자연 제외(JS 렌더=색인부적합, SEO 본체는 정적 포스트).
+    for f in ("dataset.json","explorer.html"):
+        if os.path.exists(f"{SRC}/{f}"): shutil.copy(f"{SRC}/{f}",f"{SITE}/{f}")
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
     # 2) 랜딩 index.html
     items=""
@@ -44,6 +48,7 @@ def build(today=None):
 <h1>서울 부동산 데이터 스냅샷</h1>
 <p>서울 자치구 단지의 <b>자체 결정론 10축 구조점수</b>(호가무관) + 국토부 공공 실거래 band. 단지명 익명·통계·방법론 공개.</p>
 <p class=d style="border:0">⚖ 개인 연구·정보 공유이며 투자자문·매수권유 아님. 부동산은 자본시장법 금융투자상품이 아님. 수치는 게시 시점 기준 — 거래 전 원출처 재확인.</p>
+<p style="font-size:17px"><a href="explorer.html"><b>🔎 탐색기 — 내 기준으로 필터</b></a> <span style="color:#666;font-size:13px">예산·평형·연식·유형 + 내 우선순위로 세그먼트 적합도 탐색</span></p>
 <p><a href="methodology.html">방법론 — 왜 이 숫자를 믿을 수 있나</a></p>
 <h2>최근 포스트</h2><ul>{items}</ul>
 <div class=d>방법론: 결정론 파이프라인(LLM 재계산 0)·호가무관 fundamental 랭킹·국토부 RTMS 12개월 중위(이상치 −40%컷). 사설 시세 원본은 DB권 보호로 미재게시(band만). AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0.</div>

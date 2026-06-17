@@ -1,110 +1,75 @@
-"""일일 자동 발행 오케스트레이터 — 신선도-임계 이벤트 발행(매일 강제 X).
+"""일일 자동 발행 오케스트레이터 — A모델(실명 사실 레이어, 자체 점수 없음).
 
-흐름(각 구):
-  1) MOLIT 최신 실거래 refresh(공공데이터) + 네이버 호가 스냅샷 asof 확인
-  2) 결정론 재채점(자체 10축) → 익명화 + 부정판정 제외
-  3) daily_publisher 로 인간 HTML + JSON-LD + claims.jsonl + llms.txt 생성
-  4) 신선도 게이트: asof 가 today-FRESH_DAYS 초과면 STALE 워터마크(차단 옵션 가능)
-  5) publish hook: 정적사이트(git push) / 수동 cross-post 큐
+흐름(2026-06-17 재설계 — 익명+점수 → 실명 사실):
+  1) build_explorer.build_dataset: 공공 실거래(국토부 RTMS) + 단지정보(세대수·연식·전용·유형) 실명 수집
+     + 사용자 고정 제외규칙(세대수≥200·corridor) 적용.
+  2) write_out: dataset.json + explorer.html(방문자 필터형 탐색기).
+  3) write_posts: 자치구별 실명 사실 포스트(SEO 본체) + claims.jsonl + llms.txt.
+  4) 신선도 게이트: data_asof 초과면 STALE(차단 옵션).
+  5) 티스토리 완성원고 + 네이버 티저(실명 사실).
 
-가드(코드 강제, ConductionReport): 익명화·부정판정 제외·원본시세 미재게시(band)·면책·신선도.
-cron 예: `5 7 * * *  cd <repo> && python -m blog.run_daily --asof <scan_date>`  (매일 07:05, 신선도 통과분만 발행)
+가드: 사설 호가 미게재(공공 실거래만)·자체 평가/점수/순위 없음·면책·출처·이의제기(takedown).
+cron: `5 7 * * *  agent-realestate daily` (cli.cmd_daily 가 호출).
 """
 from __future__ import annotations
-import json, re, os, glob, statistics as st, argparse
+import os, glob, argparse
 from datetime import date
+from collections import defaultdict
 
-
-def _latest_or(pattern: str, fallback: str) -> str:
-    """glob으로 최신 파일 탐색 — RE_UNIVERSE/RE_MOLIT env var 없을 때 fallback."""
-    files = sorted(glob.glob(pattern))
-    return files[-1] if files else fallback
-from agent_realestate.collectors.naver_live import load_candidates
-from agent_realestate.analysts.scoring import score_candidates
-from agent_realestate.analysts.redev import score_redev
-from agent_realestate.domain import ExitStrategy
-import blog.daily_publisher as dp
+import blog.build_explorer as be
 import blog.tistory_draft as td
 import blog.naver_teaser as nt
 
-# 기본 발행 구 — --districts "양천,강서,…" 인자로 override (범용화 2026-06-12, lawd 자동 해석)
-# ★Task D(2026-06-14): 노원·도봉 추가 — universe159에 각 30/13건 실데이터 확인.
-# 관악·성동은 universe 데이터 없어 추가 보류(Naver 스크래핑 필요).
-GU_LAWD={"양천":"11470","강서":"11500","구로":"11530","동대문":"11230","마포":"11440",
-         "성북":"11290","영등포":"11560","종로":"11110","동작":"11590",
-         "노원":"11350","도봉":"11320"}
-AXK={"전세수요":"전세","환금성":"환금","가격방어":"방어","상승여력":"상승","토지지분":"토지",
-     "가격메리트":"메리트","출퇴근":"출퇴근","학군":"학군","경사":"경사","후기":"후기"}
-def core(nm): return re.sub(r"[\(\[].*?[\)\]]","",nm).replace(" ","")
 
-def gen_gu(gu, lawd, molit, uni, asof, today, outdir, block_stale=False):
-    def med(c):
-        cn=core(c.listing.complex_name); ar=c.listing.area_exclusive_m2
-        px=[r['price'] for r in molit.get(lawd,[]) if r.get('price') and abs(r['area']-ar)<=3.5
-            and (core(r['apt']) in cn or cn in core(r['apt']) or core(r['apt'])[:4]==cn[:4])]
-        if len(px)<2: return None,0
-        m0=st.median(px); px=[p for p in px if p>=m0*0.6]
-        return (st.median(px) if px else None),len(px)
-    pool=[c for c in uni if gu in c.district]
-    if not pool: return None
-    ax=score_candidates(pool,[score_redev(c) for c in pool],ExitStrategy.HOLD_AND_RENT,reference_candidates=uni)
-    rows=[]
-    for i,a in enumerate(sorted(ax,key=lambda x:-x.fundamental_total),1):
-        c=a.candidate; md,n=med(c); eff=md if md else c.listing.price_krw
-        rows.append({"id":dp.anonymize(gu,c.saenghwalgwon,i),"area":round(c.listing.area_exclusive_m2),
-            "eff_eok":round(eff/1e8,2),"src":"실거래" if md else "호가","n":n,"fund":a.fundamental_total,
-            "strong":[AXK[x] for x in dp.top_axes(a.scores,2)],"units":c.units,"built":c.built_year,
-            "prov_eff":"F" if md else "I"})
-    post=dp.build_post(gu,rows,asof,today)
-    if post["stale"] and block_stale:
-        return {"gu":gu,"skipped":"STALE","asof":asof}
-    os.makedirs(f"{outdir}/posts",exist_ok=True)
-    open(f"{outdir}/posts/{today}-{gu}.html","w").write(post["html"])
-    with open(f"{outdir}/posts/{today}-{gu}.claims.jsonl","w") as f:
-        for cl in post["claims"]: f.write(json.dumps(cl,ensure_ascii=False)+"\n")
-    top_row = rows[0] if rows else {}
-    return {"gu":gu,"n":len(rows),"stale":post["stale"],"llms":post["llms_line"],
-            "tistory_sec":td.build_tistory_section(gu,rows),
-            "top_fund":top_row.get("fund",0),"top_eok_band":dp._eok_band(top_row.get("eff_eok"))}
+def _latest_or(pattern: str, fallback: str) -> str:
+    files = sorted(glob.glob(pattern))
+    return files[-1] if files else fallback
+
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--asof",required=True); ap.add_argument("--today")
-    _uni_default = (os.environ.get("RE_UNIVERSE") or
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--asof", required=True)
+    ap.add_argument("--today")
+    ap.add_argument("--universe", default=(os.environ.get("RE_UNIVERSE") or
                     _latest_or("examples/candidates_universe[0-9][0-9][0-9]_*.json",
-                               "examples/candidates_universe159_20260606.json"))
-    _molit_default = (os.environ.get("RE_MOLIT") or
-                      _latest_or("examples/molit_recent*.json",
-                                 "examples/molit_recent_11gu_20260606.json"))
-    ap.add_argument("--universe", default=_uni_default)
-    ap.add_argument("--molit", default=_molit_default)
-    ap.add_argument("--out",default="report/blog"); ap.add_argument("--block-stale",action="store_true")
-    ap.add_argument("--districts",help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 9구")
-    a=ap.parse_args(); today=a.today or date.today().isoformat()
-    gu_lawd=GU_LAWD
-    if a.districts:
-        from agent_realestate.collectors.lawd import lawd_for_district
-        gu_lawd={}
-        for g in a.districts.split(","):
-            g=g.strip(); c=lawd_for_district(g)
-            if c is None: raise SystemExit(f"[--districts] 알 수 없는 구: {g}")
-            gu_lawd[g]=c
-    molit=json.load(open(a.molit)); uni=load_candidates(a.universe)
-    results=[]; llms_lines=[]
-    for gu,lawd in gu_lawd.items():
-        r=gen_gu(gu,lawd,molit,uni,a.asof,today,a.out,a.block_stale)
-        if r: results.append(r); llms_lines+=[r["llms"]] if r.get("llms") else []
-    # llms.txt 재작성
-    hdr="# 서울 부동산 데이터 스냅샷 (개인 연구)\n\n> 자체 결정론 10축 구조점수 + 국토부 공공 실거래 band. 익명·통계·방법론. 투자자문 아님. CC-BY-NC.\n\n## Posts\n"
-    open(f"{a.out}/llms.txt","w").write(hdr+"\n".join(llms_lines)+"\n")
-    pub=[r for r in results if not r.get("skipped")]; sk=[r for r in results if r.get("skipped")]
-    # 티스토리 반자동 원고 (일일 통합 1포스트 — 사용자는 헬퍼 페이지에서 복사 → 등록만)
-    secs=[r["tistory_sec"] for r in pub if r.get("tistory_sec")]
-    if secs:
-        draft=td.write_daily_draft(secs,today,a.asof,a.out)
-        print(f"티스토리 원고: {draft}  (브라우저로 열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
-        naver=nt.write_naver_teaser(pub,today,a.asof,outdir=a.out)
-        print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 블로그 등록)")
-    print(f"발행 {len(pub)}구 / 스킵(STALE) {len(sk)}구 · today={today} asof={a.asof}")
-    for r in results: print(" ", r)
+                               "examples/candidates_universe159_20260606.json")))
+    ap.add_argument("--molit", default=(os.environ.get("RE_MOLIT") or
+                    _latest_or("examples/molit_recent*.json", "examples/molit_recent_11gu_20260606.json")))
+    ap.add_argument("--out", default="report/blog")
+    ap.add_argument("--block-stale", action="store_true")
+    ap.add_argument("--districts", help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 전체")
+    a = ap.parse_args()
+    today = a.today or date.today().isoformat()
+    from agent_realestate import config
+    config.load_env_file()   # .env 의 RE_EMAIL_TO(takedown 연락처) 주입 — standalone 실행 보장(cmd_daily 경유시는 이미 주입됨)
 
-if __name__=="__main__": main()
+    ds = be.build_dataset(a.universe, a.molit, a.asof, today)
+    if a.districts:
+        keep = {g.strip() for g in a.districts.split(",")}
+        ds["complexes"] = [r for r in ds["complexes"] if r["gu"] in keep]
+        ds["count"] = len(ds["complexes"])
+
+    stale = (date.fromisoformat(today) - date.fromisoformat(a.asof)).days > be.FRESH_DAYS
+    if stale and a.block_stale:
+        print(f"[run_daily] STALE (asof {a.asof}, D-{(date.fromisoformat(today)-date.fromisoformat(a.asof)).days}) + --block-stale → 발행 스킵")
+        return
+
+    be.write_out(ds, a.out)                 # dataset.json + explorer.html
+    summaries = be.write_posts(ds, a.out)   # 자치구별 실명 포스트 + claims + llms.txt
+
+    # 티스토리 완성원고 + 네이버 티저 (실명 사실)
+    by = defaultdict(list)
+    for r in ds["complexes"]:
+        by[r["gu"]].append(r)
+    secs = [td.build_tistory_section(gu, by[gu]) for gu in sorted(by) if by[gu]]
+    if secs:
+        draft = td.write_daily_draft(secs, today, a.asof, a.out)
+        print(f"티스토리 원고: {draft}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
+        naver = nt.write_naver_teaser(summaries, today, a.asof, outdir=a.out)
+        print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 등록)")
+    print(f"발행 {len(by)}구 / {ds['count']}단지 · today={today} asof={a.asof} · 제외 {ds.get('excluded')}"
+          + (" · ⚠STALE" if stale else ""))
+
+
+if __name__ == "__main__":
+    main()

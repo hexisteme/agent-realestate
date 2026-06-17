@@ -724,7 +724,9 @@ def cmd_daily(args) -> None:
         notify_step_failure("MOLIT 재수집 회귀(직전 캐시 복원)", 1, today)
     if molit_bak.exists():
         molit_bak.unlink()
-    step("블로그 포스트 생성", ["python3", "-m", "blog.run_daily",
+    # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
+    #   (자체 점수 없음·공공 실거래만·세대수200/corridor 제외). build_site 가 site/ 로 조립.
+    step("블로그 생성(실명 포스트+탐색기)", ["python3", "-m", "blog.run_daily",
                           "--asof", today, "--today", today, "--block-stale"])
     step("사이트 조립", ["python3", "-m", "blog.build_site"])
     site = root / "site"

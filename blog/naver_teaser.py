@@ -25,27 +25,22 @@ def build_teaser_text(today: str, gu_results: list[dict], tistory_url: str = "")
     gu_results 각 항목에서 사용하는 키:
       n      : 구 내 단지 수
       gu     : 구 이름
-      top_fund   : 구 내 최고 구조점수 (float)
-      top_eok_band : 구 내 상위 단지 실거래 coarse band (str, 예: "12억대 초반")
+      top_eok : 구 내 최고 공공 실거래(억, float)
     """
-    n_gu = len([r for r in gu_results if not r.get("skipped")])
-    n_complex = sum(r.get("n", 0) for r in gu_results if not r.get("skipped"))
-    top = max((r for r in gu_results if not r.get("skipped") and r.get("top_fund", 0) > 0),
-              key=lambda r: r.get("top_fund", 0), default=None)
+    active = [r for r in gu_results if not r.get("skipped")]
+    n_gu = len(active)
+    n_complex = sum(r.get("n", 0) for r in active)
+    top = max((r for r in active if r.get("top_eok")), key=lambda r: r.get("top_eok") or 0, default=None)
 
     url = tistory_url or _PH
     lines = [
-        f"[{today}] 서울 아파트 결정론 구조점수 + 실거래 band 스냅샷 📊",
-        f"{n_gu}개 구 {n_complex}개 단지 집계(국토부 공공데이터·세대수≥200).",
+        f"[{today}] 서울 아파트 국토부 공공 실거래 + 단지정보 스냅샷 📊",
+        f"{n_gu}개 구 {n_complex}개 단지(세대수 200+ · 안전제외 반영).",
     ]
     if top:
-        band = top.get("top_eok_band", "")
-        lines.append(
-            f"구조점수 상위: {top['gu']} {top['top_fund']:.2f}/5.0"
-            + (f" · 실거래 {band}" if band else "") + "."
-        )
+        lines.append(f"실거래 상위: {top['gu']} {top['top_eok']}억대.")
     lines += [
-        "호가무관 10축 자체 평가. 투자자문 아님.",
+        "자체 평가·점수 없이 공개된 사실 수치만. 투자자문 아님.",
         "",
         f"👉 전체 분석:\n{url}",
         "",
