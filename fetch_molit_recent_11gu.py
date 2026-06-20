@@ -2,6 +2,7 @@
 출력: examples/molit_recent_11gu_20260606.json {lawd: [{apt, area, price, ym}]}. resumable. stdlib + MOLIT_API_KEY.
 범용화(2026-06-12): ① MONTHS = 오늘 기준 직전 12개 완결월 rolling(기존 고정 윈도우는 장기 cron 시
 점차 노후 — 알려진 버그 해소) ② 지역 = RE_DISTRICTS env(쉼표 구 이름, lawd 자동 해석)로 override."""
+from __future__ import annotations  # cron python(/usr/bin/python3=3.9.6)에서 PEP604 `str | None` 런타임 평가 회피
 import os, json, time, socket, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date
