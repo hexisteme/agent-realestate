@@ -22,6 +22,9 @@ __pycache__/
 .pytest_cache/
 *.bak*
 .DS_Store
+.last-published
+.last-tistory-*
+.pw-profile/
 intel_*.json
 intel_*.log
 build/
