@@ -186,6 +186,14 @@ class Candidate:
     toher_zone: bool = False             # 토지거래허가구역 지정 여부 — 강남4구·목동·성수·잠실 등 지정구역(서울 전역 아님).
                                          # True 면 HOLD_AND_RENT 시 F_TOHER_RENT soft flag(2년 실거주의무·즉시갭 불가).
                                          # land.seoul.go.kr 로 구역 확인 후 입력. opt-in(기본 False). 2026-06-13.
+    heating: str | None = None           # 난방방식(K-apt) — 개별/지역/중앙난방
+    corridor_type: str | None = None     # 복도유형(K-apt) — 계단식/복도식/혼합
+    parking_per_unit: float | None = None  # 세대당 주차대수(K-apt 파생) — 주차난 프록시
+    builder: str | None = None           # 시공사(K-apt) — 삼성물산·현대건설 등
+    # ── 학군·공시가 사실 필드(2026-07-03) ──
+    nearest_elem_school: str | None = None  # 인근 초등학교명(KAKAO SC4 최근접) — 학군 팩트(배정 아님, 근접성)
+    gongsi_man: int | None = None           # 공동주택 공시가격(만원) — 국토부 공시가(OfficialPrice), 재산세/종부세 산정 기준
+    maint_fee_won: int | None = None     # K-apt 세대당 월 관리비(원) — 실거주 총비용 팩트
 
     def __post_init__(self) -> None:
         # R4: 입력 sanity — 비논리/오타 차단 (수동주입 신뢰성 보강)

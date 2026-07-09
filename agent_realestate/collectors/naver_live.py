@@ -147,6 +147,14 @@ def _candidate_from_dict(d: dict) -> Candidate:
         gu_ipsi_academy=(int(d["gu_ipsi_academy"]) if d.get("gu_ipsi_academy") is not None else None),
         dev_catalyst=d.get("dev_catalyst"),
         redev_infeasible=bool(d.get("redev_infeasible", False)),
+        toher_zone=bool(d.get("toher_zone", False)),
+        heating=d.get("heating"),
+        corridor_type=d.get("corridor_type"),
+        parking_per_unit=(float(d["parking_per_unit"]) if d.get("parking_per_unit") is not None else None),
+        builder=d.get("builder"),
+        nearest_elem_school=d.get("nearest_elem_school"),
+        gongsi_man=(int(d["gongsi_man"]) if d.get("gongsi_man") is not None else None),
+        maint_fee_won=(int(d["maint_fee_won"]) if d.get("maint_fee_won") is not None else None),
     )
 
 
