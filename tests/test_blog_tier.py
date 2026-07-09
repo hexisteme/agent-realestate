@@ -4,6 +4,22 @@
 대상: blog.build_explorer._pctile / _month_windows / derive_tier_now.
 """
 from blog.build_explorer import _pctile, _month_windows, derive_tier_now
+from blog.tistory_draft import build_tistory_section, build_daily_body
+
+
+def test_tistory_interleaved_colspan_and_daily_body():
+    """단지 상세가 요약 tr 바로 아래 colspan=4 행으로 인터리브되고, 탐색기 링크 텍스트≠URL,
+    일일 본문에 '데이터 생성 과정' 라벨이 포함되는지 — paste 생존 구조 회귀방지."""
+    rows = [dict(name="샘플단지", saeng="노원구 상계동", area_m2=79.0, pyeong=24,
+                 units_band="2600세대", decade="1980년대", product_type="아파트",
+                 molit_recent_eok=8.5, molit_n=12, pyeong_price_man=3541,
+                 subway_m=350, gu_jeonse_ratio_pct=61, complex_no=12345)]
+    sec = build_tistory_section("노원구", rows)
+    assert '<td colspan="4"' in sec                     # (a) colspan 상세행 존재
+    assert sec.rstrip().endswith("</table>")            # 표 뒤 별도 상세블록 없음
+    body = build_daily_body([sec], "2026-07-09", "2026-07-08")
+    assert "explorer.html</a>" not in body              # (b) 링크 텍스트가 bare URL 아님
+    assert "데이터 생성 과정" in body                    # (c) 생성 과정 라벨
 
 
 def _rec(eok: float, ym: str = "202605") -> dict:
