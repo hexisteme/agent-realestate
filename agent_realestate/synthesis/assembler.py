@@ -12,7 +12,8 @@ from ..analysts.compset_signals import fitness_facts, mean_reversion_signal
 from ..analysts.decision_prior import (EMP_NOTE, catalyst_flags,
                                        district_prior, employment_corridor,
                                        liquidity_tailwind)
-from ..analysts.finance import FinancePlan, assess_policy_loans, capital_gains_tax_schedule
+from ..analysts.finance import (FINANCE_CONFIRM_NOTICE, FinancePlan, assess_policy_loans,
+                                capital_gains_tax_schedule)
 from ..analysts.regime import (KEY_POLICY, current_regime,
                                jeonse_value_timing, regime_conditional_guidance,
                                regime_entry_read, regime_evidence,
@@ -946,6 +947,12 @@ th a:hover{background:#E4EAF0}
              "<b>★예산선 역산(자본 4.0억): 서울·대구 모두 ~9.65억</b> — DSR 스트레스가 대출을 ~6억에 먼저 묶어 "
              "<b>대구 80% LTV가 고가구간에선 무력화</b>(범어롯데캐슬 10.4억은 자기자본 4.78억 필요=예산 초과 F_OVERBUDGET). "
              "단 <b>DSR 미적용 저가구간(대구 메트로팔레스·e편한범어 ~6억대)은 80% LTV 작동 → 자기자본 1.0~1.4억으로 여유 大</b>.</div>")
+    # ★금융기관확인고지(2026-07-10, 사용자 요청) — 모든 대출·자기자본 산출 표면에 병기 의무.
+    H.append("<div class='box' style='border-left:5px solid #B7791F;background:#FBF3E4'>"
+             "<b>⚠️ 금융기관 확인 필수</b> — " + FINANCE_CONFIRM_NOTICE + " "
+             "본 표는 프로필 소득·금리 가정 기준이다. 개별 주담대 상품(디딤돌·신생아특례·보금자리)과 "
+             "기존 신용대출(잔액·금리)의 DSR 산입까지 반영한 정밀 계산은 정밀 모드"
+             "(build_finance_plan_actual)로 수행하며, 그 결과에도 동일 고지가 적용된다.</div>")
 
     # ── §4.1 정책대출 적격 + 토지거래허가구역 게이트 (사용자 맞춤 법규, 2026-06-05) ──
     _inc = int(profile.get("annual_income_krw", 0))
@@ -970,6 +977,7 @@ th a:hover{background:#E4EAF0}
     H.append("<div class=src>[사실] 출처: 주택도시기금 디딤돌/신생아특례 · 한국주택금융공사 보금자리론(확인 2026-06-05). "
              "요건(2026-06-06 적대감사 갱신): 디딤돌 생애최초 소득≤0.7억·주택≤5억(신혼 8.5천 별도) / 신생아특례 ≤1.3억·주택≤9억 / 보금자리론 ≤0.7억·≤6억. "
              "적격이면 시장금리 대신 정책금리로 §4 대출·자기자본 재계산.</div>")
+    H.append("<div class=src>⚠️ " + FINANCE_CONFIRM_NOTICE + "</div>")
     # ★4차 감사 A 재수정(2026-06-13 웹검증): 구 텍스트 "서울 전역, 2025.10.15~"에서
     # 날짜만 틀림(10.15 발표→10.20 시행). 내용(서울 전역 아파트)은 사실.
     # 출처: 정책브리핑 korea.kr "서울특별시 전 지역 아파트 2025.10.20~2026.12.31 토허구역 지정".

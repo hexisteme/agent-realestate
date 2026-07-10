@@ -98,6 +98,13 @@ def capability_reference_md() -> str:
         "× [1 − (1+r/12)^−(term×12)] / (r/12) |",
         f"| dsr_stress | DSR 을 r + stress_rate_addon({p.stress_rate_addon:.3f}, 가산금리)로 재계산 — 보수 한도 |",
         "| loan_binding | min(LTV, stress DSR, 절대한도) — 3중 binding 명시 |",
+        "| loan_abs_cap | 수도권·규제 절대한도 10.15 차등: ≤15억→6억 / 15~25억→4억 / >25억→2억 (resolve_loan_abs_cap) |",
+        "| mortgage_program | 주담대상품(디딤돌·신생아특례·보금자리·일반) 자격·캡·금리범위 데이터화(출처+확인일) — "
+        "정밀 모드 build_finance_plan_actual 의 상품 분기. 정책모기지는 스트레스 DSR 미적용(기금 DTI 심사는 미계산 — 정직 한계) |",
+        "| credit_loan_burden | 기존 신용대출 DSR 산입(결정론 근사): 만기일시=원금/5년+이자(5년 분할 간주), "
+        "총잔액 1억 초과 시 스트레스 가산 1.5%p (compute_credit_loan_annual_service) |",
+        "| finance_confirm_notice | 모든 대출·자기자본 산출 표면에 '실제 한도·금리·승인은 은행 등 금융기관 직접 확인 필수' "
+        "고지 병기 의무 (FINANCE_CONFIRM_NOTICE, 2026-07-10 사용자 지시) |",
         f"| acquisition_tax | 구간세율(≤{p.acq_low_threshold_eok}억→{p.acq_low_rate:.0%} / "
         f"{p.acq_low_threshold_eok}~{p.acq_high_threshold_eok}억→선형 / "
         f">{p.acq_high_threshold_eok}억→{p.acq_high_rate:.0%}) + 지방교육세×{p.acq_edu_ratio:.0%} "

@@ -38,12 +38,22 @@ def main():
     ap.add_argument("--out", default="report/blog")
     ap.add_argument("--block-stale", action="store_true")
     ap.add_argument("--districts", help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 전체")
+    ap.add_argument("--public-frame",
+                    help="WS-0 public-only 경로: 지정 시 frame(공공 enumeration JSON) + --molit 로 "
+                         "build_dataset_public 사용(호가 Listing 불필요). 미지정 시 기존 --universe 경로 그대로.")
+    ap.add_argument("--survivors",
+                    help="public 경로 발행 풀 제한 — 스캔 생존 JSON(screen_25gu_survivors 등)의 complexNo 만 발행.")
     a = ap.parse_args()
     today = a.today or date.today().isoformat()
     from agent_realestate import config
     config.load_env_file()   # .env 의 RE_EMAIL_TO(takedown 연락처) 주입 — standalone 실행 보장(cmd_daily 경유시는 이미 주입됨)
 
-    ds = be.build_dataset(a.universe, a.molit, a.asof, today)
+    if a.public_frame:
+        # anchor_universe=a.universe — 기존 발행 단지의 면적 앵커(수치 연속성). 신규 단지는 최다거래 평형.
+        ds = be.build_dataset_public(a.public_frame, a.molit, a.asof, today,
+                                     survivors_path=a.survivors, anchor_universe=a.universe)
+    else:
+        ds = be.build_dataset(a.universe, a.molit, a.asof, today)
     if a.districts:
         keep = {g.strip() for g in a.districts.split(",")}
         ds["complexes"] = [r for r in ds["complexes"] if r["gu"] in keep]
