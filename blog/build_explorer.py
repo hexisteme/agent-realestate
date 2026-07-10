@@ -313,7 +313,8 @@ def product_type_from_frame(ftype: str, name: str) -> str:
 
 def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str,
                          survivors_path: str | None = None,
-                         anchor_universe: str | None = None) -> dict:
+                         anchor_universe: str | None = None,
+                         gu_allowlist: set[str] | None = None) -> dict:
     """public-only 발행 경로(WS-0 v3, 2026-07-10) — 두 파트 병합.
 
     (A) 연속성 파트: anchor_universe(기존 발행 유니버스 JSON)를 기존 경로 build_dataset 으로
@@ -333,6 +334,10 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     공통: 세대수≥200·구로 corridor 제외(build_dataset 동일). survivors_path 지정 시 (B)를 스캔 생존
     complexNo 로 제한(발행 풀 = 스캔 레이어 단일 진실; (A)는 기존 발행 유지라 미적용). 매칭 0(ghost)
     제외. (B)의 호가·enrichment 필드는 None(문자열 ""). A모델 가드(점수·순위·사설호가 없음) 동일.
+
+    gu_allowlist(2026-07-10, 풀확대 3단계 구별 단계오픈): 지정 시 (B) 는 이 구 목록만 생성 —
+    enrichment 백필 완료 전 구를 실수로 노출하지 않는 안전판. (A) 는 이미 검증된 발행분이라 미적용.
+    None(기본)이면 frame 의 모든 구 생성(제한 없음 — 호출측이 --public-gu-allow 로 명시할 책임).
     """
     frame = json.load(open(frame_path, encoding="utf-8"))
     molit = json.load(open(molit_path))
@@ -378,6 +383,8 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         for c in by_cno[cno]:
             gu = c.get("gu")
             if gu not in GU_LAWD:
+                continue
+            if gu_allowlist is not None and gu not in gu_allowlist:   # ⓪ 구별 단계오픈 안전판(2026-07-10)
                 continue
             if (c.get("households") or 0) < MIN_UNITS:            # ① 세대수 하한 — build_dataset 과 동일
                 under_units_hit = True
@@ -473,6 +480,106 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 가격 세그먼트 + 유동성(C)·전세 갭(D) 파생 사실 (2026-07-10, 풀확대 2단계)
+# 전부 post-process(ds["complexes"] 를 직접 채움) — build_dataset/build_dataset_public 양쪽에
+# 동일 함수를 적용해 경로에 무관하게 같은 사실을 얹는다(run_daily.py 단일 호출점).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 가격대는 정책 대출한도(15억 이하 6억/초과 4억, 10.15 대책)와 무관하게 매매 중위의 단순
+# 사실 구간화다 — "이 가격대는 이 대출을 받을 수 있다"를 암시하지 않는다(개별 소득·상품 요건은
+# build_finance_plan_actual/§4 정밀모드가 담당, FINANCE_CONFIRM_NOTICE 로 은행 확인 의무 고지).
+PRICE_SEGMENTS = [(6.0, "6억 이하"), (10.0, "6~10억"), (15.0, "10~15억"), (float("inf"), "15억 초과")]
+
+
+def price_segment(molit_recent_eok: float | None) -> str | None:
+    if molit_recent_eok is None:
+        return None
+    for hi, label in PRICE_SEGMENTS:
+        if molit_recent_eok <= hi:
+            return label
+    return PRICE_SEGMENTS[-1][1]
+
+
+def add_price_segment(ds: dict) -> dict:
+    """가격 세그먼트(F, 사실 구간화) — 매매 중위 기준. 추천·적격 판정 아님(disclaimer 동봉 의무)."""
+    for r in ds["complexes"]:
+        r["price_segment"] = price_segment(r.get("molit_recent_eok"))
+    return ds
+
+
+def _norm_exact(nm: str) -> str:
+    """enrich_finalists.py trade_annual() 과 동일한 exact-match 정규화(괄호 이후 절단+공백/'단지' 제거)."""
+    return str(nm).split("(")[0].replace(" ", "").replace("단지", "")
+
+
+def _trade_annual_public(name: str, gu: str, molit: dict) -> float | None:
+    """단지 12개월 실거래 건수(전 평형, 이름 exact-match) — enrich_finalists.py trade_annual() 과
+    동일 규칙(정규화 exact-match, 밴드/면적 무관 — 거래회전율은 '그 단지 전체'가 분모라 밴드 제한 금지)."""
+    lawd = GU_LAWD.get(gu)
+    if not lawd:
+        return None
+    cnt = sum(1 for r in molit.get(lawd, []) if _norm_exact(r.get("apt", "")) == _norm_exact(name))
+    return float(cnt) if cnt else None
+
+
+def add_liquidity_facts(ds: dict, molit_path: str) -> dict:
+    """거래회전율(C, 2026-07-10) = 연 거래건수(전 평형)/세대수×100. molit_path 는 그 dataset 빌드에
+    실제 사용한 MOLIT 파일과 동일해야 한다(호출측 책임 — run_daily.py 가 자신의 a.molit 을 그대로 전달).
+    '회전율 낮음=환금성 나쁨' 으로 읽히지 않도록 UI 방어문구 동반(foot 참조)."""
+    molit = json.load(open(molit_path))
+    for r in ds["complexes"]:
+        ta = _trade_annual_public(r["name"], r["gu"], molit)
+        r["trade_annual"] = ta
+        r["turnover_pct"] = round(ta / r["units"] * 100, 1) if (ta and r.get("units")) else None
+    return ds
+
+
+def add_jeonse_facts(ds: dict, jeonse_path: str) -> dict:
+    """전세가율·갭(D, 2026-07-10) — 매매·전세 모두 국토부 RTMS 공공 실거래 기반 사실.
+    jeonse_path 스키마는 매매(molit_recent_*)와 동일({lawd: [{"apt","area","price"(보증금),"ym"}]}) —
+    _match_records_public/_median_of 를 그대로 재사용(동일평형 ±3.5㎡·이름매칭, 게시 방법론과 동일).
+    jeonse_path 미존재 시 조용히 스킵(gongsi_man 류와 동일한 '승인/수집 대기' 패턴 — 후속 배치가 채움)."""
+    if not jeonse_path or not os.path.exists(jeonse_path):
+        return ds
+    jeonse = json.load(open(jeonse_path))
+    for r in ds["complexes"]:
+        lawd = GU_LAWD.get(r["gu"])
+        jm = jn = None
+        if lawd and r.get("area_m2"):
+            recs = _match_records_public(r["name"], r["area_m2"], lawd, jeonse)
+            jm, jn = _median_of(recs)
+        r["jeonse_recent_eok"] = jm
+        r["jeonse_n"] = jn
+        if jm is not None and r.get("molit_recent_eok") is not None:
+            r["gap_eok"] = round(r["molit_recent_eok"] - jm, 2)
+            r["jeonse_ratio_complex_pct"] = round(jm / r["molit_recent_eok"] * 100, 1)
+        else:
+            r["gap_eok"] = None
+            r["jeonse_ratio_complex_pct"] = None
+    return ds
+
+
+def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
+    """public 경로 신규단지 enrichment overlay(K-apt·공시가·관리비·카카오, 2026-07-10 collect_public_enrich.py)
+    병합 — complex_no 매칭 행만, 기존 값(None/빈문자열)일 때만 채움(기존 발행 단지 값은 건드리지 않음).
+    overlay_path 미존재 시 조용히 스킵(수집 배치 완료 후 자동 반영 — gongsi_man 류와 동일 패턴).
+    kapt_code/gu_ipsi_academy 는 overlay 에 있어도 dataset 스키마 필드가 아니라 병합 대상에서 제외."""
+    if not overlay_path or not os.path.exists(overlay_path):
+        return ds
+    overlay = json.load(open(overlay_path, encoding="utf-8"))
+    fields = ("heating", "corridor_type", "parking_per_unit", "builder",
+              "nearest_elem_school", "academy_exam", "gongsi_man", "maint_fee_won")
+    for r in ds["complexes"]:
+        ov = overlay.get(str(r.get("complex_no") or ""))
+        if not ov:
+            continue
+        for f in fields:
+            if r.get(f) in (None, "") and ov.get(f) is not None:
+                r[f] = ov[f]
+    return ds
+
+
 def write_out(ds: dict, outdir: str) -> dict:
     os.makedirs(outdir, exist_ok=True)
     json.dump(ds, open(f"{outdir}/dataset.json", "w"), ensure_ascii=False, separators=(",", ":"))
@@ -492,6 +599,10 @@ def write_out(ds: dict, outdir: str) -> dict:
         nn = _cov(k)
         if nn / n < 0.5:
             print(f"ℹ️ [coverage-pending] {k}: {nn}/{n} — 승인 대기, 승인 후 수집 배치 실행")
+    for k in ("trade_annual", "jeonse_recent_eok"):   # C·D(2026-07-10) — 신규 공공유입 단지 백필 진행중
+        nn = _cov(k)
+        if nn / n < 0.5:
+            print(f"ℹ️ [coverage-pending] {k}: {nn}/{n} — public 유입 단지 백필/전세수집 진행중")
     return {"complexes": ds["count"], "priced": priced, "outdir": outdir}
 
 
@@ -548,7 +659,8 @@ tbody tr:hover{background:#f6faff}
   </main>
 </div>
 <script>
-const S={q:"",gu:new Set(),area:new Set(),decade:new Set(),ptype:new Set(),emin:null,emax:null,units_min:null,ppmin:null,ppmax:null,sort:"molit_recent_eok",dir:-1};
+const S={q:"",gu:new Set(),area:new Set(),decade:new Set(),ptype:new Set(),seg:new Set(),emin:null,emax:null,units_min:null,ppmin:null,ppmax:null,sort:"molit_recent_eok",dir:-1};
+const SEG_ORDER=["6억 이하","6~10억","10~15억","15억 초과"];
 let DB=null;
 const COLS=[
   {k:"name",t:"단지명",num:false},
@@ -561,6 +673,8 @@ const COLS=[
      fmt:r=>r.molit_recent_eok!=null?`<b>${r.molit_recent_eok}억</b><sup class=sup> F</sup> <span class=muted>n${r.molit_n}</span>`
        +(r.molit_p25_eok!=null?`<br><span class=muted>${r.molit_p25_eok}–${r.molit_recent_eok}–${r.molit_p75_eok} <span class=sup>P25·중위·P75</span></span>`:``)
        :`<span class=muted>—</span>`},
+  {k:"price_segment",t:"가격대",num:false,
+   fmt:r=>r.price_segment?`<span class=tag>${esc(r.price_segment)}</span>`:`<span class=muted>—</span>`},
   {k:"molit_trend_pct",t:"추세<span class=muted style=font-weight:400> 3/9개월</span>",num:true,
      fmt:r=>r.molit_trend_pct!=null?`${r.molit_trend_dir}${Math.abs(r.molit_trend_pct)}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
   {k:"molit_pos_52w",t:"52주위치<span class=muted style=font-weight:400> 최근3개월</span>",num:true,
@@ -590,10 +704,16 @@ const COLS=[
    fmt:r=>r.tukmokgo_pct!=null?`${r.tukmokgo_pct}%`:`<span class=muted>—</span>`},
   {k:"school_achievement",t:"학업성취도",num:true,extra:true,
    fmt:r=>r.school_achievement!=null?`${r.school_achievement}%`:`<span class=muted>—</span>`},
-  {k:"gu_jeonse_ratio_pct",t:"전세가율",num:true,extra:true,
-   fmt:r=>r.gu_jeonse_ratio_pct!=null?`${r.gu_jeonse_ratio_pct}%<span class=muted> 구중위</span>`:`<span class=muted>—</span>`},
+  {k:"gu_jeonse_ratio_pct",t:"전세가율(서울전체)",num:true,extra:true,
+   fmt:r=>r.gu_jeonse_ratio_pct!=null?`${r.gu_jeonse_ratio_pct}%<span class=muted> 서울전체 R-ONE</span>`:`<span class=muted>—</span>`},
+  {k:"jeonse_ratio_complex_pct",t:"전세가율(단지)",num:true,extra:true,
+   fmt:r=>r.jeonse_ratio_complex_pct!=null?`${r.jeonse_ratio_complex_pct}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
+  {k:"gap_eok",t:"매매-전세 갭",num:true,extra:true,
+   fmt:r=>r.gap_eok!=null?`${r.gap_eok}억<sup class=sup> F</sup><br><span class=muted>전세${r.jeonse_recent_eok}억 n${r.jeonse_n}</span>`:`<span class=muted>—</span>`},
   {k:"trade_annual",t:"연거래수",num:true,extra:true,
    fmt:r=>r.trade_annual!=null?`${r.trade_annual}건/년`:`<span class=muted>—</span>`},
+  {k:"turnover_pct",t:"거래회전율",num:true,extra:true,
+   fmt:r=>r.turnover_pct!=null?`${r.turnover_pct}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
   {k:"transit",t:"입지",num:false,extra:true,
    fmt:r=>r.transit?`<span class=muted>${esc(r.transit)}</span>`:`<span class=muted>—</span>`},
   {k:"mart_800",t:"마트(800m)",num:true,extra:true,
@@ -634,6 +754,8 @@ function init(){
     +mk("평형","area",["~59㎡","60-84㎡","85-114㎡","115㎡+"].filter(b=>cx.some(x=>x.area_band===b)))
     +mk("연식","decade",uniq(cx.map(x=>x.decade)).sort())
     +mk("유형","ptype",uniq(cx.map(x=>x.product_type)).sort())
+    +mk("가격대<span class=muted style=font-weight:400> (실거래 중위 구간·사실)</span>","seg",
+        SEG_ORDER.filter(v=>cx.some(x=>x.price_segment===v)))
     +`<h3>세대수 최소</h3><div>`
     +["200+","500+","1000+","2000+"].map(v=>`<span class=chip data-k="units_min" data-v="${v}">${v}</span>`).join("")
     +`</div>`
@@ -662,6 +784,9 @@ function init(){
     +`<br>• 가격은 국토부 공공 실거래가(12개월 동일평형 중위)만 표시 — 사설 시세(호가)는 게재하지 않습니다. <sup class=sup>F</sup>=공공 실거래 사실, n=표본수.`
     +`<br>• P25·중위·P75 = 동일평형 실거래 분위수(협상 레인지). 추세 = 최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주위치 = <b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지에서 차지하는 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 구간은 —.`
     +`<br>• 자체 평가·점수·순위를 매기지 않습니다. 공개된 사실 수치만 제공합니다.`
+    +`<br>• <b>가격대</b> = 매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천을 의미하지 않습니다 — 대출 가능 여부·금리·한도는 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오.`
+    +`<br>• <b>전세가율(단지)</b>·<b>매매-전세 갭</b> = 동일평형 전세 실거래(공공 RTMS) 매칭 사실. <b>전세가율(서울전체)</b>은 개별 단지가 아닌 한국부동산원 R-ONE 서울 전체 월간 평균(참고용 거시지표)입니다.`
+    +`<br>• <b>거래회전율</b> = 그 단지 12개월 전체 실거래 건수÷세대수×100(%) — 거주만족·매물희소 등 다양한 이유로 낮을 수 있어 '환금성 나쁨'의 단정적 지표가 아닙니다.`
     +`<br>• ${esc(DB.takedown)}`;
 }
 function passFilter(x){
@@ -670,6 +795,7 @@ function passFilter(x){
   if(S.area.size&&!S.area.has(x.area_band)) return false;
   if(S.decade.size&&!S.decade.has(x.decade)) return false;
   if(S.ptype.size&&!S.ptype.has(x.product_type)) return false;
+  if(S.seg.size&&!S.seg.has(x.price_segment)) return false;
   if(S.units_min!=null&&x.units<S.units_min) return false;
   if(S.emin!=null||S.emax!=null){
     if(x.molit_recent_eok==null) return false;
@@ -741,7 +867,13 @@ def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
         if r.get("molit_p25_eok") is not None:                    # ① 분포 병기 — P25–중위–P75 협상 레인지
             px += (f'<br><span class=mut>{r["molit_p25_eok"]}–{r["molit_recent_eok"]}–{r["molit_p75_eok"]}'
                    f'<sup>F</sup> P25·중위·P75</span>')
+        if r.get("price_segment"):                                # 가격대(사실 구간화, 2026-07-10)
+            px += f'<br><span class=mut>가격대 {r["price_segment"]}</span>'
+        if r.get("gap_eok") is not None:                           # 매매-전세 갭(D, 2026-07-10)
+            px += f'<br><span class=mut>전세{r["jeonse_recent_eok"]}억<sup>F</sup>·갭{r["gap_eok"]}억</span>'
         tier = _tier_cell(r)                                       # ②③ 추세·52주위치
+        if r.get("turnover_pct") is not None:                      # 거래회전율(C, 2026-07-10)
+            tier += f'<br><span class=mut>회전율{r["turnover_pct"]}%<sup>F</sup></span>'
         pp = f'{r["pyeong_price_man"]:,}만' if r["pyeong_price_man"] is not None else "—"
         trs += (f'<tr><td><b>{r["name"]}</b> <span class=mut>{r["saeng"]}</span></td>'
                 f'<td>전용{r["area_m2"]}㎡<span class=mut>({r["pyeong"]}평)</span></td>'
@@ -764,7 +896,8 @@ table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}th,td{{
 <h2>한 줄 요약</h2><p>{bluf}</p>
 <table><tr><th>단지명</th><th>전용</th><th>규모·연식</th><th>유형</th><th>공공 실거래(중위)</th><th>추세·52주</th><th>평단가</th></tr>{trs}</table>
 <p class=mut><sup>F</sup>=국토부 실거래 사실 · n=표본수 · 평단가=실거래÷평형. 사설 시세(호가)는 게재하지 않습니다.<br>
-P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주=<b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지 내 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 항목은 —.</p>
+P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주=<b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지 내 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 항목은 —.<br>
+가격대=매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천이 아닙니다 — 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오. 갭=매매-전세 중위 차액(동일평형 전세 실거래 매칭). 회전율=12개월 전체 실거래 건수÷세대수×100(%) — 환금성 단정 아님.</p>
 <div class=disc>
 <b>방법론·출처</b><br>
 • 실거래 = 국토교통부 RTMS 공공데이터(12개월 동일평형 중위), 매일 자동 재수집. 세대수·연식·전용면적·유형 = 공개정보.<br>
@@ -808,6 +941,14 @@ P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최�
             claims.append({"name": r["name"], "gu": gu, "claim": "position_in_52w_range_pct",
                            "value": r["molit_pos_52w"], "grade": "fact",
                            "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
+        if r.get("gap_eok") is not None:           # D(2026-07-10) 매매-전세 갭 — 양쪽 다 RTMS 실거래
+            claims.append({"name": r["name"], "gu": gu, "claim": "sale_jeonse_gap_eok",
+                           "value": r["gap_eok"], "jeonse_median_eok": r["jeonse_recent_eok"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["jeonse_n"], "area_m2": r["area_m2"]})
+        if r.get("trade_annual") is not None:      # C(2026-07-10) 연 거래건수(전 평형)
+            claims.append({"name": r["name"], "gu": gu, "claim": "annual_trade_count",
+                           "value": r["trade_annual"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof})
         claims.append({"name": r["name"], "gu": gu, "claim": "units", "value": r["units"], "grade": "fact", "source": "public_record"})
         claims.append({"name": r["name"], "gu": gu, "claim": "built_year", "value": r["built_year"], "grade": "fact", "source": "public_record"})
     top_eok = max((r["molit_recent_eok"] for r in priced), default=None)

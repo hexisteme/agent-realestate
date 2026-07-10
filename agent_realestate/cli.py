@@ -680,7 +680,12 @@ def cmd_daily(args) -> None:
     """일일 토큰-제로 오케스트레이터 (Phase 2, 2026-06-11) — cron/수동 공용 원커맨드.
     순서: ① MOLIT 실거래 fresh 재수집 → ② 블로그 생성(신선도-이벤트) → ③ 사이트 조립
          → ④ site push-if-changed → ⑤ 플래그십 리포트 regen(게이트, 비치명).
-    전제: editable 설치(pip install -e .) 또는 repo 루트 실행 — 루트는 regen_reports.py 위치로 탐지."""
+    전제: editable 설치(pip install -e .) 또는 repo 루트 실행 — 루트는 regen_reports.py 위치로 탐지.
+
+    ★RE_SCAN_SCOPE=25gu(2026-07-10, 풀확대 3단계 — 기본 미설정=기존 11gu 동작 완전 동일):
+    설정 시 25구 스캔(15억 CAP) + jeonse 최근수집 + public-only 경로로 전환한다. **주의**: 신규 14구
+    enrichment(공시가·관리비·학군) 백필이 완료·검증되기 전엔 켜지 말 것(coverage-pending 경고로
+    확인 — write_out 이 50% 미만이면 발화). RE_PUBLIC_GU_ALLOW(쉼표목록)로 구별 단계오픈 가능."""
     import subprocess
     root = Path(__file__).resolve().parents[1]
     if not (root / "regen_reports.py").exists():
@@ -708,26 +713,43 @@ def cmd_daily(args) -> None:
     # ★2026-06-14 데이터손실 방지: 기존엔 캐시를 unlink 후 fresh 재수집 → DNS/네트워크 플레이크가
     #   끼면 좋은 캐시(수만건)를 지운 채 대량실패 → 빈 결과(수십~백건)로 영구 회귀(06-14 사고: 43,046→148).
     #   수정: 삭제 대신 .daybak 백업 후 비우고, 재수집 결과가 직전 대비 급감(<70%)하면 백업 복원.
-    molit_json = root / "examples/molit_recent_11gu_20260606.json"
-    molit_bak = molit_json.with_name(molit_json.name + ".daybak")
-    prev_total = _molit_total(molit_json) if molit_json.exists() else 0
-    if molit_json.exists():
-        shutil.copy(molit_json, molit_bak)   # 백업 후 비움(fresh 재수집 유도)
-        molit_json.unlink()
-    step("MOLIT 실거래 fresh 재수집", ["python3", "fetch_molit_recent_11gu.py"], fatal=False)
-    new_total = _molit_total(molit_json) if molit_json.exists() else 0
-    if prev_total > 1000 and new_total < prev_total * 0.7:
-        print(f"[daily] ⚠️ MOLIT 재수집 회귀 ({new_total} ≪ 직전 {prev_total}) — DNS/네트워크 의심. "
-              f"직전 캐시 복원, 블로그는 보존 데이터로 진행")
-        if molit_bak.exists():
-            shutil.copy(molit_bak, molit_json)
-        notify_step_failure("MOLIT 재수집 회귀(직전 캐시 복원)", 1, today)
-    if molit_bak.exists():
-        molit_bak.unlink()
+    def _refresh_with_backup_guard(json_path: Path, fetch_script: str, label: str) -> None:
+        bak = json_path.with_name(json_path.name + ".daybak")
+        prev_total = _molit_total(json_path) if json_path.exists() else 0
+        if json_path.exists():
+            shutil.copy(json_path, bak)   # 백업 후 비움(fresh 재수집 유도)
+            json_path.unlink()
+        step(label, ["python3", fetch_script], fatal=False)
+        new_total = _molit_total(json_path) if json_path.exists() else 0
+        if prev_total > 1000 and new_total < prev_total * 0.7:
+            print(f"[daily] ⚠️ {label} 회귀 ({new_total} ≪ 직전 {prev_total}) — DNS/네트워크 의심. "
+                  f"직전 캐시 복원, 블로그는 보존 데이터로 진행")
+            if bak.exists():
+                shutil.copy(bak, json_path)
+            notify_step_failure(f"{label} 회귀(직전 캐시 복원)", 1, today)
+        if bak.exists():
+            bak.unlink()
+
+    scope = os.environ.get("RE_SCAN_SCOPE", "11gu")
+    run_daily_cmd = ["python3", "-m", "blog.run_daily", "--asof", today, "--today", today, "--block-stale"]
+    if scope == "25gu":
+        molit_json = root / "examples/molit_recent_25gu_20260710.json"
+        jeonse_json = root / "examples/molit_jeonse_recent_25gu_20260710.json"
+        _refresh_with_backup_guard(molit_json, "fetch_molit_recent_25gu.py", "MOLIT 실거래 fresh 재수집(25구)")
+        _refresh_with_backup_guard(jeonse_json, "fetch_molit_jeonse_recent_25gu.py", "MOLIT 전세 fresh 재수집(25구)")
+        run_daily_cmd += ["--molit", str(molit_json), "--jeonse", str(jeonse_json),
+                          "--public-frame", "examples/frame_25gu_20260710.json",
+                          "--survivors", "examples/screen_25gu_survivors_20260710.json"]
+        gu_allow = os.environ.get("RE_PUBLIC_GU_ALLOW", "")
+        if gu_allow:
+            run_daily_cmd += ["--public-gu-allow", gu_allow]
+        print(f"[daily] scope=25gu (RE_PUBLIC_GU_ALLOW={gu_allow or '미설정=신규구 전체'})")
+    else:
+        molit_json = root / "examples/molit_recent_11gu_20260606.json"
+        _refresh_with_backup_guard(molit_json, "fetch_molit_recent_11gu.py", "MOLIT 실거래 fresh 재수집")
     # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
     #   (자체 점수 없음·공공 실거래만·세대수200/corridor 제외). build_site 가 site/ 로 조립.
-    step("블로그 생성(실명 포스트+탐색기)", ["python3", "-m", "blog.run_daily",
-                          "--asof", today, "--today", today, "--block-stale"])
+    step("블로그 생성(실명 포스트+탐색기)", run_daily_cmd)
     step("사이트 조립", ["python3", "-m", "blog.build_site"])
     site = root / "site"
     if site.is_dir() and subprocess.run(["git", "-C", str(site), "status", "--porcelain"],

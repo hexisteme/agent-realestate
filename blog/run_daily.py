@@ -43,17 +43,35 @@ def main():
                          "build_dataset_public 사용(호가 Listing 불필요). 미지정 시 기존 --universe 경로 그대로.")
     ap.add_argument("--survivors",
                     help="public 경로 발행 풀 제한 — 스캔 생존 JSON(screen_25gu_survivors 등)의 complexNo 만 발행.")
+    ap.add_argument("--public-gu-allow", default=(os.environ.get("RE_PUBLIC_GU_ALLOW") or ""),
+                    help="구별 단계오픈 안전판 — public(B) 신규유입에만 적용되는 구 쉼표목록 "
+                         "(예: 성동,강동). 미지정 시 frame 의 모든 신규구 생성(제한 없음). "
+                         "기존 발행(A)엔 영향 없음 — enrichment 백필 완료된 구만 여기 추가할 것.")
+    ap.add_argument("--enrich-overlay", default=(os.environ.get("RE_ENRICH_OVERLAY") or
+                    _latest_or("examples/enrich_overlay_*.json", "")),
+                    help="public 신규단지 K-apt/공시가/관리비/카카오 overlay(collect_public_enrich.py 산출). 없으면 스킵.")
+    ap.add_argument("--jeonse", default=(os.environ.get("RE_JEONSE_RECENT") or
+                    _latest_or("examples/molit_jeonse_recent*.json", "")),
+                    help="전세 recent 12개월 MOLIT(D 파생용, fetch_molit_jeonse_recent_25gu.py 산출). 없으면 스킵.")
     a = ap.parse_args()
     today = a.today or date.today().isoformat()
     from agent_realestate import config
     config.load_env_file()   # .env 의 RE_EMAIL_TO(takedown 연락처) 주입 — standalone 실행 보장(cmd_daily 경유시는 이미 주입됨)
 
     if a.public_frame:
+        gu_allow = ({g.strip() for g in a.public_gu_allow.split(",") if g.strip()}
+                    if a.public_gu_allow else None)
         # anchor_universe=a.universe — 기존 발행 단지의 면적 앵커(수치 연속성). 신규 단지는 최다거래 평형.
         ds = be.build_dataset_public(a.public_frame, a.molit, a.asof, today,
-                                     survivors_path=a.survivors, anchor_universe=a.universe)
+                                     survivors_path=a.survivors, anchor_universe=a.universe,
+                                     gu_allowlist=gu_allow)
+        ds = be.add_enrich_overlay(ds, a.enrich_overlay)   # K-apt·공시가·관리비·카카오(신규단지, 없으면 스킵)
     else:
         ds = be.build_dataset(a.universe, a.molit, a.asof, today)
+    # ── 가격세그먼트(F)·유동성(C)·전세갭(D) — 경로 무관 단일 후처리(풀확대 2단계, 2026-07-10) ──
+    ds = be.add_price_segment(ds)
+    ds = be.add_liquidity_facts(ds, a.molit)
+    ds = be.add_jeonse_facts(ds, a.jeonse)              # jeonse 파일 없으면 조용히 스킵
     if a.districts:
         keep = {g.strip() for g in a.districts.split(",")}
         ds["complexes"] = [r for r in ds["complexes"] if r["gu"] in keep]
