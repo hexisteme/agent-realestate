@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -686,6 +687,28 @@ def cmd_daily(args) -> None:
     설정 시 25구 스캔(15억 CAP) + jeonse 최근수집 + public-only 경로로 전환한다. **주의**: 신규 14구
     enrichment(공시가·관리비·학군) 백필이 완료·검증되기 전엔 켜지 말 것(coverage-pending 경고로
     확인 — write_out 이 50% 미만이면 발화). RE_PUBLIC_GU_ALLOW(쉼표목록)로 구별 단계오픈 가능."""
+    # ★2026-07-11 무알림 크래시 사고: 본문 미처리 예외(예: NameError)는 step()/티스토리 퍼블리셔
+    #   알림망 밖 + cron set -e 로 후속 단계 도달 전 종료 → 완전 침묵. 미처리 예외도 텔레그램 표면화.
+    try:
+        return _cmd_daily_inner(args)
+    except SystemExit as e:
+        # step() 치명실패는 int returncode 로 exit + 이미 notify_step_failure 발송 → 중복알림 방지.
+        # 문자열 exit(예: repo 루트탐지 실패)는 미알림 경로라 표면화 (grok-4.5 적대검증 반영).
+        if not isinstance(e.code, int):
+            try:
+                notify_step_failure(f"daily 중단: {e.code}", 1, date.today().isoformat())
+            except Exception:
+                pass  # 알림 실패가 원본 SystemExit 전파를 막으면 안 됨
+        raise
+    except Exception as e:
+        try:
+            notify_step_failure(f"daily 미처리 예외 {type(e).__name__}: {e}", 1, date.today().isoformat())
+        except Exception:
+            pass  # 알림 실패가 원본 예외 전파를 막으면 안 됨 (grok-4.5 적대검증 반영)
+        raise
+
+
+def _cmd_daily_inner(args) -> None:
     import subprocess
     root = Path(__file__).resolve().parents[1]
     if not (root / "regen_reports.py").exists():
