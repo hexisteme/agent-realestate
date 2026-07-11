@@ -91,7 +91,8 @@ def fetch(lawd, ym):
 
 def main():
     cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
-    done_keys = {f"{lawd}|{ym}" for lawd in cache.get("_done",[])} if isinstance(cache.get("_done"),list) else set()
+    # (2026-07-11) 구 done_keys 라인 제거 — 미사용 데드코드 + F821(ym 미정의): resume 판정은
+    # 아래 todo 의 set(fetched) 가 실제 담당. CI F821 게이트 도입과 함께 정리.
     agg = {k:v for k,v in cache.items() if k != "_done"}
     fetched = cache.get("_done", [])
     todo = [(gu,lawd,ym) for gu,lawd in LAWD.items() for ym in MONTHS if f"{lawd}|{ym}" not in set(fetched)]

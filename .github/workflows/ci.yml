@@ -8,5 +8,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e . pytest
+      - run: pip install -e . pytest ruff
+      # F821(undefined-name) 게이트 — 2026-07-11 사고(cmd_daily import os 누락, 런타임 전용이라
+      # pytest/E2E 미검출)의 재발방지. ruff 는 .gitignore 존중이라 로컬 실행과 결과 동일.
+      - run: python -m ruff check --select F821 .
       - run: python -m pytest -q

@@ -4,8 +4,40 @@
 #                     → 플래그십 리포트 regen(게이트, 비치명)
 # launchd: com.hexisteme.re-blog.daily — 07:05 본실행 + 09/12/15/18/21:05 재시도 슬롯,
 #          로그 ~/Library/Logs/re-blog.log (2026-07-06, /tmp 는 재부팅 소실이라 이동)
-set -euo pipefail
+set -Eeuo pipefail   # -E(errtrace): 함수/서브셸 실패도 ERR 트랩으로 (2026-07-11)
 cd /Volumes/EXT_SSD/bot/agent_realestate
+ROOT="/Volumes/EXT_SSD/bot/agent_realestate"
+
+# ★재발방지 2종(2026-07-11 무알림 크래시 사고 — grok-4.5 적대검증 채택, AGENTS.md 07-11):
+# ① 쉘 최후방어선: python 알림망(cmd_daily 래퍼/step()/티스토리 퍼블리셔)에 도달조차 못 하는
+#    실패(인터프리터·디스크·미처리 rc≠0)도 텔레그램 표면화. 시크릿은 .env 에서만 읽음(하드코딩
+#    금지). 트랩 내부는 전부 비치명(|| true) — 알림 실패가 트랩 재귀/추가 종료를 못 만들게.
+#    한계(정직): EXT_SSD 미마운트면 .env 접근 불가 = 이 경로로도 알림 불가(조용히 return).
+_tg_last_resort() {
+  local rc="${1:-?}" token="" chat=""
+  token=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)
+  chat=$(grep -m1 '^TELEGRAM_CHAT_ID=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)
+  { [ -n "$token" ] && [ -n "$chat" ]; } || return 0
+  curl -fsS -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=❌ re-blog cron_daily.sh 비정상 종료 rc=${rc} $(date '+%F %T') — ~/Library/Logs/re-blog.log 확인" \
+    >/dev/null 2>&1 || true
+}
+trap '_tg_last_resort "$?"' ERR
+# ② 전역잠금(fcntl.flock): 실행이 3h 슬롯 간격을 넘기면 다음 슬롯과 동시실행 가능(성공마커는
+#    종료 후 기록이라 멱등가드가 못 막음 — grok 지적). 커널이 프로세스 종료 시 자동 해제라
+#    kill -9 에도 stale 없음. macOS 는 flock(1) CLI 부재 → bash FD9 에 python fcntl 잠금
+#    (python 종료 후에도 bash 가 FD9 보유 = 같은 open file description → 스크립트 생존 동안 유지).
+exec 9>>"$ROOT/.daily.lock"
+if ! python3 -c 'import fcntl,sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(1)'; then
+  echo "[$(date)] 다른 daily 인스턴스 실행 중(전역 flock) — skip"
+  exit 0
+fi
+
 # ★멱등 가드(2026-06-30, 2026-07-06 이원화): RunAtLoad=true·주간 재시도와 짝.
 #   사이트 마커(.last-published)와 티스토리 마커(.last-tistory-published)를 분리 —
 #   07:05 에 사이트만 성공하고 티스토리가 로그인만료로 실패한 날, 재실행이 사이트는

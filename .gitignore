@@ -24,6 +24,7 @@ __pycache__/
 .DS_Store
 .last-published
 .last-tistory-*
+.daily.lock
 .pw-profile/
 intel_*.json
 intel_*.log
