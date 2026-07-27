@@ -43,12 +43,18 @@ def _now_iso() -> str:
 # 경로 탈출 방어 (2026-07-27, RDU-165 — agent_intel 참조 구현 이식): .orchestra 버스는 공유
 # 파일시스템 — task_id/reply_to 는 비신뢰 입력으로 취급한다. task_id 는 식별자(경로 아님)이므로
 # 안전 문자만 허용, reply_to 는 RESULTS_DIR 밖이면 거부.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+# 소문자만 (2026-07-27, 라운드3 codex+agy 독립 발견) — APFS(대소문자 무구분)에서는
+# results/victim.json 과 results/VICTIM.json 이 같은 inode 다. 대문자를 허용하면 문자열
+# 비교는 통과하는데 파일시스템이 둘을 접어 "파일명 유일 → canonical id" 전제가 깨진다.
+# 소문자로 변환하지 않고 거부(변환은 재차 비단사). 실측: 라이브 파일명 280건+봉투 id 280건
+# 전부 소문자 — 거부는 실제 트래픽에서 발동 안 함.
+_SAFE_ID = re.compile(r"^[a-z0-9._-]+$")
 _TASK_ID_MAX_LEN = 128  # 실측 라이브버스 최대 49자(평균 44) — 128은 여유상한, NAME_MAX(255) 이하 (C4)
+_MISSING = object()   # task_id 생략(허용) 과 명시적 null(거부) 을 구분하는 센티널
 
 
 def _safe_task_id(task_id: str) -> str:
-    """task_id 를 경로로 쓰기 전 검증 — '/' '..' 등 경로 인젝션 차단 (영숫자._- 만 허용),
+    """task_id 를 경로로 쓰기 전 검증 — '/' '..' 등 경로 인젝션 차단 (소문자 영숫자._- 만 허용),
     길이 상한 초과는 거부 (C4). 거부 전 감사로그 선행 (C13)."""
     tid = str(task_id)
     if len(tid) > _TASK_ID_MAX_LEN:
@@ -57,7 +63,7 @@ def _safe_task_id(task_id: str) -> str:
         raise ValueError(reason)
     if not _SAFE_ID.fullmatch(tid):
         # fullmatch (2026-07-27, C2) — match() 는 "abc\n" 처럼 후행 개행 앞에서 $ 가 매칭되어 통과시켰다.
-        reason = f"task_id 형식 위반 — 경로 인젝션 차단: {task_id!r} (영숫자._- 만 허용)"
+        reason = f"task_id 형식 위반 — 경로 인젝션 차단: {task_id!r} (소문자 영숫자._- 만 허용)"
         _log_append("task_id_rejected", tid[:300], to="agent_council", reason=reason)
         raise ValueError(reason)
     return tid
@@ -111,13 +117,17 @@ def _atomic_write_json(path: Path, obj: dict) -> None:
 
 
 def _log_append(event: str, task_id: str, **kw) -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
     line = {"ts": _now_iso(), "event": event, "task_id": task_id,
             "from": kw.pop("from_", AGENT_NAME), "to": kw.pop("to", "agent_council")}
     line.update(kw)
     p = LOG_DIR / f"{date.today().isoformat()}.jsonl"
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError as e:
+        # 감사로그 I/O 실패가 보안 거부(raise) 를 가리면 안 된다 — 조용히 삼키지 않고 stderr 로 loud.
+        print(f"[audit-log] {event} 기록 실패 ({p}): {e}", file=sys.stderr)
 
 
 def _resolve_cli() -> list[str]:
@@ -183,13 +193,24 @@ def run_task(task_path: str | Path) -> Path:
     # 덮어쓰기). envelope 에 task_id 가 있으면 파일명 기반 canonical id 와 일치해야 하며,
     # 불일치는 흡수하지 않고 거부(raise, loud) — "고쳐서 계속" 하지 않는다.
     task_id = _safe_task_id(Path(task_path).stem)
-    envelope_task_id = task.get("task_id")
-    if envelope_task_id is not None and _safe_task_id(str(envelope_task_id)) != task_id:
-        reason = (f"envelope task_id {envelope_task_id!r} != 파일명 기반 task_id {task_id!r}"
-                   " — envelope 이 다른 task 를 사칭 (F1 차단)")
-        _log_append("task_id_mismatch_rejected", task_id, to="agent_council",
-                    envelope_task_id=str(envelope_task_id)[:300], reason=reason)
-        raise ValueError(reason)
+    # G2 (2026-07-27, 라운드3 codex+agy): 생략(허용)과 명시적 null(거부)을 _MISSING 센티널로
+    # 구분 — 기존 `is not None` 검사는 둘을 섞어 null 봉투도 조용히 통과시켰다. str() 강제
+    # 형변환도 제거 — 숫자·bool·list·dict 가 문자열로 세탁되지 않고 타입 자체로 거부된다.
+    envelope_task_id = task.get("task_id", _MISSING)
+    if envelope_task_id is not _MISSING:
+        if not isinstance(envelope_task_id, str):
+            reason = f"task_id 가 문자열이 아님: {type(envelope_task_id).__name__} ({envelope_task_id!r})"
+            _log_append("task_id_mismatch_rejected", task_id, to="agent_council",
+                        envelope_task_id=repr(envelope_task_id)[:300], reason=reason)
+            raise ValueError(reason)
+        if _safe_task_id(envelope_task_id) != task_id:
+            reason = (f"envelope task_id {envelope_task_id!r} != 파일명 기반 task_id {task_id!r}"
+                       " — envelope 이 다른 task 를 사칭 (F1 차단)")
+            _log_append("task_id_mismatch_rejected", task_id, to="agent_council",
+                        envelope_task_id=envelope_task_id[:300], reason=reason)
+            raise ValueError(reason)
+    # canonical 되쓰기 — 하류가 봉투의 미검증 원본 task_id 를 읽지 못하게 (G2).
+    task["task_id"] = task_id
     ctx = task.get("context", {}) or {}
     injected = ctx.get("injected") or {}
     reply_to = str(_confine(_require_own_reply_to(task.get("reply_to"), task_id)

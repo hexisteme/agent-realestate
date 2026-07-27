@@ -124,3 +124,70 @@ def test_reply_to_relative_escape_with_matching_basename_blocked(tmp_path, monke
     # "존재 안 함"이 아니라 "Result 로 덮어써지지 않음"(내용 불변)이 올바른 증명이다.
     assert tp.read_text(encoding="utf-8") == original_task_bytes
     assert not (tmp_path / "results" / f"{task_id}.json").exists()
+
+
+# ── G1 (2026-07-27, 라운드3 codex+agy 독립 발견): 소문자만 — APFS 케이스 폴딩 ────────────
+def test_apfs_case_variant_cannot_alias_existing_result(tmp_path, monkeypatch):
+    """APFS 는 대소문자 무구분 — results/victim.json 과 results/VICTIM.json 이 같은 inode 다.
+    대문자 id 를 허용하면 문자열 비교는 통과하는데 파일시스템이 둘을 접어 덮어쓴다. 대문자는
+    거부되므로(소문자 변환 없이) 기존 Result 가 보존된다."""
+    _isolate(tmp_path, monkeypatch)
+    victim = tmp_path / "results" / "victim.json"
+    done = json.dumps({"task_id": "victim", "status": "done"})
+    victim.write_text(done, encoding="utf-8")
+    task = {"task_id": "VICTIM", "reply_to": "results/VICTIM.json"}
+    tp = _write_task(tmp_path, task, filename="VICTIM.json")
+    with pytest.raises(ValueError):
+        bus.run_task(tp)
+    assert victim.read_text(encoding="utf-8") == done
+
+
+@pytest.mark.parametrize("bad", ["abc\n", "a/b", "../../evil/id", "", "a" * 129,
+                                 "a b", "Victim", "VICTIM", "aBc"])
+def test_safe_task_id_rejects_unsafe(tmp_path, monkeypatch, bad):
+    """G1: 대소문자 혼용/전부대문자도 다른 불안전 형태와 동일하게 거부."""
+    _isolate(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        bus._safe_task_id(bad)
+
+
+# ── G2 (2026-07-27, 라운드3 codex+agy): 생략 vs 명시적 null, str() 세탁 제거 ──────────────
+def test_omitted_task_id_uses_filename(tmp_path, monkeypatch):
+    """생략된 task_id 는 거부되지 않고 파일명 기반 canonical id 로 처리된다."""
+    _isolate(tmp_path, monkeypatch)
+    task = {"reply_to": str(tmp_path / "results" / "t-omitted.json")}
+    tp = _write_task(tmp_path, task, filename="t-omitted.json")
+    reply = bus.run_task(tp)
+    result = json.loads(reply.read_text(encoding="utf-8"))
+    assert result["task_id"] == "t-omitted"
+
+
+def test_explicit_null_task_id_is_rejected(tmp_path, monkeypatch):
+    """명시적 null 은 생략과 구분되어 거부된다 (이전엔 `is not None` 검사가 둘을 섞었다)."""
+    _isolate(tmp_path, monkeypatch)
+    task = {"task_id": None, "reply_to": str(tmp_path / "results" / "t-null.json")}
+    tp = _write_task(tmp_path, task, filename="t-null.json")
+    with pytest.raises(ValueError, match="문자열이 아님"):
+        bus.run_task(tp)
+    assert not (tmp_path / "results" / "t-null.json").exists()
+
+
+@pytest.mark.parametrize("bad_type", [123, True, [], {}])
+def test_non_string_task_id_is_rejected(tmp_path, monkeypatch, bad_type):
+    """비문자열 task_id 는 str() 로 세탁되지 않고 타입 자체로 거부된다."""
+    _isolate(tmp_path, monkeypatch)
+    task = {"task_id": bad_type, "reply_to": str(tmp_path / "results" / "t-type.json")}
+    tp = _write_task(tmp_path, task, filename="t-type.json")
+    with pytest.raises(ValueError, match="문자열이 아님"):
+        bus.run_task(tp)
+
+
+# ── agy 라운드3 LOW: _confine 의 p == base_r 분기 직접 단위테스트 ────────────────────────
+def test_confine_rejects_base_dir_itself(tmp_path, monkeypatch):
+    """reply_to 경유로는 basename 체크가 먼저 raise 해 p == base_r 분기가 한 번도 실행되지
+    않는다 — 기존 test_reply_to_naming_results_dir_itself_rejected 는 그래서 맹목적이다.
+    _confine 을 직접 호출해 그 분기를 실행시킨다."""
+    _isolate(tmp_path, monkeypatch)
+    results = tmp_path / "results"
+    with pytest.raises(ValueError, match="허용 디렉토리 밖"):
+        bus._confine(results, results)
