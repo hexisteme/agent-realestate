@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -37,6 +38,64 @@ CAPABILITIES = [
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
+
+
+# 경로 탈출 방어 (2026-07-27, RDU-165 — agent_intel 참조 구현 이식): .orchestra 버스는 공유
+# 파일시스템 — task_id/reply_to 는 비신뢰 입력으로 취급한다. task_id 는 식별자(경로 아님)이므로
+# 안전 문자만 허용, reply_to 는 RESULTS_DIR 밖이면 거부.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_TASK_ID_MAX_LEN = 128  # 실측 라이브버스 최대 49자(평균 44) — 128은 여유상한, NAME_MAX(255) 이하 (C4)
+
+
+def _safe_task_id(task_id: str) -> str:
+    """task_id 를 경로로 쓰기 전 검증 — '/' '..' 등 경로 인젝션 차단 (영숫자._- 만 허용),
+    길이 상한 초과는 거부 (C4). 거부 전 감사로그 선행 (C13)."""
+    tid = str(task_id)
+    if len(tid) > _TASK_ID_MAX_LEN:
+        reason = f"task_id 길이 초과 — 최대 {_TASK_ID_MAX_LEN}자, 실제 {len(tid)}자"
+        _log_append("task_id_rejected", tid[:300], to="agent_council", reason=reason)
+        raise ValueError(reason)
+    if not _SAFE_ID.fullmatch(tid):
+        # fullmatch (2026-07-27, C2) — match() 는 "abc\n" 처럼 후행 개행 앞에서 $ 가 매칭되어 통과시켰다.
+        reason = f"task_id 형식 위반 — 경로 인젝션 차단: {task_id!r} (영숫자._- 만 허용)"
+        _log_append("task_id_rejected", tid[:300], to="agent_council", reason=reason)
+        raise ValueError(reason)
+    return tid
+
+
+def _confine(candidate: str | Path, base: Path) -> Path:
+    """candidate 가 base 하위로 resolve 되는지 검증 — arbitrary write 차단. 상대경로는 base 기준.
+    candidate 가 base 자신과 같아도 거부 (C5) — 컨테인먼트만 보면 통과하지만 파일이 아닌
+    디렉토리를 향한 쓰기라 os.replace 가 나중에 알아보기 어렵게 실패한다. 거부 전 감사로그
+    선행 (C13)."""
+    base_r = base.resolve()
+    p = Path(candidate)
+    p = (base_r / p).resolve() if not p.is_absolute() else p.resolve()
+    if p == base_r or not p.is_relative_to(base_r):
+        reason = f"경로가 허용 디렉토리 밖(또는 디렉토리 자체) — 차단: {candidate!r} ∉ {base_r}"
+        _log_append("confine_rejected", str(candidate)[:300], to="agent_council",
+                    reason=reason, base=str(base_r))
+        raise ValueError(reason)
+    return p
+
+
+def _require_own_reply_to(raw_reply_to, task_id: str) -> str | None:
+    """C3/F2 (2026-07-27 round 3, codex+agy 교차검증): reply_to 는 이 task 자신의 결과파일만
+    가리켜야 한다 — 라이브 버스 실측(1070/1070 Task/v1 이 reply_to 를 '/{task_id}.json' 로
+    끝맺음, 불일치 0건)으로 강제해도 깨지는 게 없다. basename 이 f'{task_id}.json' 과 다르면
+    (다른 task 의 Result 를 덮어쓸 수 있음) *더 이상 조용히 기본값으로 대체하지 않는다* — 그
+    조용한 대체가 바로 F1(envelope task_id 위조)을 형제 파일 덮어쓰기 공격으로 완성시키는
+    경로였고, 허브가 이 reply_to 로 기다리면 loud failure 대신 Result blackhole 이 된다.
+    거부 전 감사로그 선행 (C13), 이후 raise (loud, 더 이상 fallback 아님)."""
+    if not raw_reply_to:
+        return None
+    expected = f"{task_id}.json"
+    if Path(str(raw_reply_to)).name != expected:
+        reason = f"reply_to basename != {expected!r} — 다른 task 파일 지정 거부 (C3/F2, 대체 없이 raise)"
+        _log_append("reply_to_rejected", task_id, to="agent_council",
+                    reply_to=str(raw_reply_to)[:300], reason=reason)
+        raise ValueError(reason)
+    return str(raw_reply_to)
 
 
 def _atomic_write_json(path: Path, obj: dict) -> None:
@@ -117,10 +176,24 @@ def run_task(task_path: str | Path) -> Path:
     from agent_realestate.cli import produce_report
 
     task = json.loads(Path(task_path).read_text(encoding="utf-8"))
-    task_id = task.get("task_id", f"unknown-{int(time.time()*1000)}")
+    # 신뢰경계 검증을 try 밖에서 먼저 — 위조 task_id/reply_to 는 흡수하지 않고 거부(refuse-to-act, loud).
+    # F1 (2026-07-27 round 3, codex+agy 교차검증): task_id 는 envelope 이 아니라 *task 파일명*
+    # 에서 도출한다 — envelope 은 비신뢰 입력이라 자신을 다른 task_id 로 사칭해 형제 Result 를
+    # 덮어쓸 수 있었다 (tasks/attacker.json 이 {"task_id":"victim"} 을 주장 → results/victim.json
+    # 덮어쓰기). envelope 에 task_id 가 있으면 파일명 기반 canonical id 와 일치해야 하며,
+    # 불일치는 흡수하지 않고 거부(raise, loud) — "고쳐서 계속" 하지 않는다.
+    task_id = _safe_task_id(Path(task_path).stem)
+    envelope_task_id = task.get("task_id")
+    if envelope_task_id is not None and _safe_task_id(str(envelope_task_id)) != task_id:
+        reason = (f"envelope task_id {envelope_task_id!r} != 파일명 기반 task_id {task_id!r}"
+                   " — envelope 이 다른 task 를 사칭 (F1 차단)")
+        _log_append("task_id_mismatch_rejected", task_id, to="agent_council",
+                    envelope_task_id=str(envelope_task_id)[:300], reason=reason)
+        raise ValueError(reason)
     ctx = task.get("context", {}) or {}
     injected = ctx.get("injected") or {}
-    reply_to = task.get("reply_to") or str(RESULTS_DIR / f"{task_id}.json")
+    reply_to = str(_confine(_require_own_reply_to(task.get("reply_to"), task_id)
+                            or RESULTS_DIR / f"{task_id}.json", RESULTS_DIR))
     started = time.time()
 
     _log_append("task_issued", task_id, from_=task.get("from", "agent_council"), to=AGENT_NAME)
