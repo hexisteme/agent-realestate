@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tistory_publish import _parse_helper, _latest_draft  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
-CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "서울(아파트)")
+CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")
 # 영속 프로필: EXT_SSD (APFS 가드 — 내장 디스크 금지). Tistory 로그인 쿠키 보관.
 PROFILE_DIR = os.environ.get(
     "TISTORY_PW_PROFILE", "/Volumes/EXT_SSD/bot/agent_realestate/.pw-profile")

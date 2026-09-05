@@ -25,7 +25,7 @@ from __future__ import annotations
 import os, re, json, glob, html, tempfile, subprocess, argparse
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
-CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "서울(아파트)")  # 드롭다운 항목 텍스트 부분일치
+CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")  # 드롭다운 항목 텍스트 부분일치
 DRAFT_GLOB = "report/blog/tistory/*-tistory-draft.html"
 
 
