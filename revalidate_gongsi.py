@@ -76,7 +76,7 @@ def _revalidate_one(kapt_code: str, name: str, district: str, area: float, units
     aphus_nm = recs[0].get("aphusNm", "")
     kapt_name = str(b.get("kaptName") or "")
     reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units,
-                                   kapt_addr=str(b.get("kaptAddr") or ""))
+                                   kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=district)
     if reason is not None:
         return False, f"identity:{reason}", None
     prices = []

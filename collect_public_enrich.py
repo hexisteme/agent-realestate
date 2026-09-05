@@ -152,8 +152,8 @@ def _gongsi_man(kapt_code: str, name: str, district: str, area: float, units: in
         return None
     aphus_nm = recs[0].get("aphusNm", "")
     kapt_name = str(b.get("kaptName") or "")
-    if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or "")):
-        reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or ""))
+    if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=district):
+        reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=district)
         print(f"  [이름게이트:{reason}] {name}: aphusNm={aphus_nm} ≠ kaptName={kapt_name} "
               f"(pnu={pnu}, households={count_households(recs)}, units={units})")
         return None

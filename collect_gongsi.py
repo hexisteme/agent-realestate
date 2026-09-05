@@ -101,17 +101,32 @@ def _identity_norm(nm: str) -> str:
 
 
 _DONG_TOKEN_RE = re.compile(r"^(?P<stem>[가-힣]+?)(?:동\d*가|동|가|읍|면|리)$")
+_GU_TOKEN_RE = re.compile(r"^(?P<stem>[가-힣]{1,4})구$")
+
+
+def _addr_gu(kapt_addr: str) -> str:
+    """K-apt 지번주소의 자치구 토큰('강남구'). 없으면 ''."""
+    for tok in kapt_addr.split():
+        if _GU_TOKEN_RE.match(tok):
+            return tok
+    return ""
 
 
 def _dong_prefix_forms(kapt_addr: str) -> list[str]:
-    """K-apt 지번주소의 법정동 토큰('등촌동'·'당산동5가'·'창동')에서 단지명 접두어 후보를 만든다 —
-    ['등촌동','등촌'] 순(긴 형태 우선). 어간이 1자('창동'→'창')면 오절단 위험이라 전체 토큰만 쓴다."""
+    """K-apt 지번주소에서 단지명 접두어 후보 — 자치구 어간('서대문구'→'서대문')과 법정동 어간('등촌동'→'등촌',
+    '당산동5가'→'당산'). 어간이 1자('창동'→'창')면 오절단 위험이라 전체 토큰('창동')을 쓴다. 전체 동 토큰을
+    우선하면 '답십리동'+'서울한양' 처럼 이름의 '동'을 잘라먹으므로(답십리+동서울한양) 어간이 우선이다."""
+    forms: list[str] = []
+    gu = _addr_gu(kapt_addr)
+    if gu and len(gu) > 2:
+        forms.append(gu[:-1])
     for tok in kapt_addr.split():
         m = _DONG_TOKEN_RE.match(tok)
         if m and len(tok) >= 2:
             stem = m.group("stem")
-            return [tok] + ([stem] if len(stem) >= 2 else [])
-    return []
+            forms.append(stem if len(stem) >= 2 else tok)
+            break
+    return forms
 
 
 def _strip_dong_prefix(norm_name: str, forms: list[str]) -> str:
@@ -132,12 +147,18 @@ def count_households(recs: list[dict]) -> int:
 
 
 def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, units: int,
-                          kapt_addr: str = "") -> str | None:
+                          kapt_addr: str = "", frame_gu: str = "") -> str | None:
     """verify_parcel_identity 판정의 실패 사유(로그 구분용) — 통과면 None, 아니면
-    'name-mismatch'|'count-mismatch'. 로직은 verify_parcel_identity 와 단일 소스(이 함수에 위임).
-    kapt_addr(K-apt 지번주소)가 있으면 양쪽 이름에서 그 주소의 법정동 접두어를 걷어낸 뒤 비교한다 —
-    K-apt 는 '등촌태진아름', VWorld 는 '태진아름' 처럼 동명 접두어만 다른 경우가 표본 65 중 12건(2026-09-05).
-    record_count 는 count_households(recs)(distinct 호수)를 넘겨야 한다."""
+    'gu-mismatch'|'name-mismatch'|'count-mismatch'. 로직은 verify_parcel_identity 와 단일 소스.
+    ① frame_gu(발행 프레임의 자치구)와 kapt_addr 의 자치구가 다르면 즉시 거부 — 구식 substring 해소가
+       성동 '현대'→강남 청담2차현대, 은평 코오롱하늘채→마포 연남동 처럼 타 구 kapt_code 를 붙인 5건(2026-09-05 전량 재검증).
+    ② kapt_addr 가 있으면 양쪽 이름에서 그 주소의 자치구·법정동 접두어를 걷어낸 뒤 비교('등촌태진아름'↔'태진아름').
+    ③ 완전일치가 아니면 단방향 포함 + distinct 호수(record_count=count_households)가 세대수 25% 이내일 때만 통과.
+       짧은 쪽 최소 길이는 주소가 있으면 2자(구 검사가 선행되므로 '우성'⊂'우성2'·'두산'⊂'두산1,2단지' 허용),
+       주소가 없으면 종전대로 5자."""
+    addr_gu = _addr_gu(kapt_addr)
+    if frame_gu and addr_gu and addr_gu not in frame_gu.replace(" ", ""):
+        return "gu-mismatch"
     forms = _dong_prefix_forms(kapt_addr)
     a = _strip_dong_prefix(_identity_norm(aphus_nm), forms)
     k = _strip_dong_prefix(_identity_norm(kapt_name), forms)
@@ -146,7 +167,8 @@ def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, unit
     if a == k:
         return None
     shorter, longer = (a, k) if len(a) <= len(k) else (k, a)
-    if len(shorter) < 5 or shorter not in longer:
+    min_len = 2 if kapt_addr else 5
+    if len(shorter) < min_len or shorter not in longer:
         return "name-mismatch"
     if units <= 0 or abs(record_count - units) > units * 0.25:
         return "count-mismatch"
@@ -154,14 +176,14 @@ def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, unit
 
 
 def verify_parcel_identity(aphus_nm: str, kapt_name: str, record_count: int, units: int,
-                           kapt_addr: str = "") -> bool:
+                           kapt_addr: str = "", frame_gu: str = "") -> bool:
     """VWorld 공시가 레코드(aphus_nm)가 실제로 이 K-apt 단지(kapt_name)의 것인지 검증 — 타 단지
     pnu 오조립 방어(2026-09-05 수정, 구 _name_gate 대체). ① _identity_norm 정규화 후 완전일치면 통과.
     ② 완전일치가 아니면 단방향 포함(containment)을 딱 하나의 조건에서만 허용 — 포함되는(짧은) 쪽
     정규화 이름이 5자 이상 AND units>0 AND VWorld 레코드 수(호수, 전 페이지 합)가 K-apt 세대수(units)
     와 25% 이내로 일치할 때만(세대수가 다른 단지끼리는 이 경로로도 통과 불가). 그 외 전부 실패.
     실패 사유(name-mismatch/count-mismatch)는 _identity_fail_reason 으로 별도 조회해 로그에 남긴다."""
-    return _identity_fail_reason(aphus_nm, kapt_name, record_count, units, kapt_addr) is None
+    return _identity_fail_reason(aphus_nm, kapt_name, record_count, units, kapt_addr, frame_gu) is None
 
 
 def _molit_median_won(district: str, complex_name: str, area: float, molit: dict) -> int | None:
@@ -232,10 +254,10 @@ def main() -> None:
         units_c = c.get("units") or 0
         aphus_nm = recs[0].get("aphusNm", "")
         kapt_name = str(b.get("kaptName") or "")
-        if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or "")):
+        if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=str(c.get("district") or c.get("gu") or "")):
             c["gongsi_man"] = None
             cnt_gate += 1
-            reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or ""))
+            reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=str(c.get("district") or c.get("gu") or ""))
             print(f"  [이름게이트:{reason}] {name}: aphusNm={aphus_nm} ≠ kaptName={kapt_name} "
                   f"(pnu={pnu}, households={count_households(recs)}, units={units_c})")
             continue
