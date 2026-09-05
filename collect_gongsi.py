@@ -96,14 +96,51 @@ def _identity_norm(nm: str) -> str:
     parcel_identity)에서만 쓴다. 숫자 자체는 보존 — 단지 번호 차이는 여전히 불일치."""
     c = canonical_complex_name(nm) or ""
     c = c.replace("주상", "")
+    c = re.sub(r"(\d)단지$", r"\1", c)   # 'N단지' 접미어 → 'N'(도봉파크빌3단지↔도봉파크빌3; 번호는 보존되어 1단지≠2단지)
     return re.sub(r"(\d)차", r"\1", c)
 
 
-def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, units: int) -> str | None:
+_DONG_TOKEN_RE = re.compile(r"^(?P<stem>[가-힣]+?)(?:동\d*가|동|가|읍|면|리)$")
+
+
+def _dong_prefix_forms(kapt_addr: str) -> list[str]:
+    """K-apt 지번주소의 법정동 토큰('등촌동'·'당산동5가'·'창동')에서 단지명 접두어 후보를 만든다 —
+    ['등촌동','등촌'] 순(긴 형태 우선). 어간이 1자('창동'→'창')면 오절단 위험이라 전체 토큰만 쓴다."""
+    for tok in kapt_addr.split():
+        m = _DONG_TOKEN_RE.match(tok)
+        if m and len(tok) >= 2:
+            stem = m.group("stem")
+            return [tok] + ([stem] if len(stem) >= 2 else [])
+    return []
+
+
+def _strip_dong_prefix(norm_name: str, forms: list[str]) -> str:
+    """정규화 단지명에서 주소의 법정동 접두어를 1회 제거('등촌태진아름'→'태진아름'). 남는 게 없으면 원문."""
+    for f in forms:
+        if norm_name.startswith(f) and len(norm_name) > len(f):
+            return norm_name[len(f):]
+    return norm_name
+
+
+def count_households(recs: list[dict]) -> int:
+    """VWorld 공시가 레코드의 실제 호수 — (dongNm, hoNm) 기준 distinct. 같은 호가 2건씩 오는
+    실측(2026-09-05, 강남자곡힐스테이트 2,678건/1,339호)이라 len(recs) 는 세대수의 2배가 되어
+    count-mismatch 오판을 낳았다. dong/ho 가 전부 비면 len(recs) 로 폴백."""
+    keys = {(str(r.get("dongNm") or ""), str(r.get("hoNm") or "")) for r in recs}
+    keys.discard(("", ""))
+    return len(keys) if keys else len(recs)
+
+
+def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, units: int,
+                          kapt_addr: str = "") -> str | None:
     """verify_parcel_identity 판정의 실패 사유(로그 구분용) — 통과면 None, 아니면
-    'name-mismatch'|'count-mismatch'. 로직은 verify_parcel_identity 와 단일 소스(이 함수에 위임)."""
-    a = _identity_norm(aphus_nm)
-    k = _identity_norm(kapt_name)
+    'name-mismatch'|'count-mismatch'. 로직은 verify_parcel_identity 와 단일 소스(이 함수에 위임).
+    kapt_addr(K-apt 지번주소)가 있으면 양쪽 이름에서 그 주소의 법정동 접두어를 걷어낸 뒤 비교한다 —
+    K-apt 는 '등촌태진아름', VWorld 는 '태진아름' 처럼 동명 접두어만 다른 경우가 표본 65 중 12건(2026-09-05).
+    record_count 는 count_households(recs)(distinct 호수)를 넘겨야 한다."""
+    forms = _dong_prefix_forms(kapt_addr)
+    a = _strip_dong_prefix(_identity_norm(aphus_nm), forms)
+    k = _strip_dong_prefix(_identity_norm(kapt_name), forms)
     if not a or not k:
         return "name-mismatch"
     if a == k:
@@ -116,14 +153,15 @@ def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, unit
     return None
 
 
-def verify_parcel_identity(aphus_nm: str, kapt_name: str, record_count: int, units: int) -> bool:
+def verify_parcel_identity(aphus_nm: str, kapt_name: str, record_count: int, units: int,
+                           kapt_addr: str = "") -> bool:
     """VWorld 공시가 레코드(aphus_nm)가 실제로 이 K-apt 단지(kapt_name)의 것인지 검증 — 타 단지
     pnu 오조립 방어(2026-09-05 수정, 구 _name_gate 대체). ① _identity_norm 정규화 후 완전일치면 통과.
     ② 완전일치가 아니면 단방향 포함(containment)을 딱 하나의 조건에서만 허용 — 포함되는(짧은) 쪽
     정규화 이름이 5자 이상 AND units>0 AND VWorld 레코드 수(호수, 전 페이지 합)가 K-apt 세대수(units)
     와 25% 이내로 일치할 때만(세대수가 다른 단지끼리는 이 경로로도 통과 불가). 그 외 전부 실패.
     실패 사유(name-mismatch/count-mismatch)는 _identity_fail_reason 으로 별도 조회해 로그에 남긴다."""
-    return _identity_fail_reason(aphus_nm, kapt_name, record_count, units) is None
+    return _identity_fail_reason(aphus_nm, kapt_name, record_count, units, kapt_addr) is None
 
 
 def _molit_median_won(district: str, complex_name: str, area: float, molit: dict) -> int | None:
@@ -194,12 +232,12 @@ def main() -> None:
         units_c = c.get("units") or 0
         aphus_nm = recs[0].get("aphusNm", "")
         kapt_name = str(b.get("kaptName") or "")
-        if not verify_parcel_identity(aphus_nm, kapt_name, len(recs), units_c):
+        if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or "")):
             c["gongsi_man"] = None
             cnt_gate += 1
-            reason = _identity_fail_reason(aphus_nm, kapt_name, len(recs), units_c)
+            reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units_c, kapt_addr=str(b.get("kaptAddr") or ""))
             print(f"  [이름게이트:{reason}] {name}: aphusNm={aphus_nm} ≠ kaptName={kapt_name} "
-                  f"(pnu={pnu}, records={len(recs)}, units={units_c})")
+                  f"(pnu={pnu}, households={count_households(recs)}, units={units_c})")
             continue
 
         prices = []

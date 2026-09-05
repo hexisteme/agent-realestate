@@ -29,7 +29,7 @@ from agent_realestate import config
 config.load_env_file()
 
 from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
-from collect_gongsi import (
+from collect_gongsi import (count_households,
     _pnu_from_basis, _fetch_vworld_all, _identity_fail_reason, _molit_median_won,
     AREA_TOL, RATIO_LO, RATIO_HI,
 )
@@ -75,7 +75,8 @@ def _revalidate_one(kapt_code: str, name: str, district: str, area: float, units
         return False, "no-vworld-records", None
     aphus_nm = recs[0].get("aphusNm", "")
     kapt_name = str(b.get("kaptName") or "")
-    reason = _identity_fail_reason(aphus_nm, kapt_name, len(recs), units)
+    reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units,
+                                   kapt_addr=str(b.get("kaptAddr") or ""))
     if reason is not None:
         return False, f"identity:{reason}", None
     prices = []
@@ -117,6 +118,19 @@ def _stratified_sample(candidates: list[dict], n: int, min_gu: int) -> list[dict
     if covered_gu < min_gu:
         print(f"⚠ 표본 gu 커버리지 {covered_gu} < 요청 {min_gu}(전체 후보의 gu 다양성 한계)")
     return out
+
+
+RETRYABLE_REASONS = {"no-basis"}   # API 실패(폐기 엔드포인트·일시 장애) — 데이터 판정이 아니므로 재개 시 재시도
+
+
+def load_resume_decisions(path: Path, sample_mode: bool) -> dict[str, dict]:
+    """재개용 판정 로드(2026-09-05 결함 수정). 이전 실행이 폐기 API 로 전건 no-basis 를 남기면 재개 시
+    '완료'로 건너뛰어 V5 전환 뒤에도 65/65 no-basis 를 그대로 보고하던 문제 — RETRYABLE_REASONS 는 제외한다.
+    표본 모드는 프로브이므로 이전 판정으로 건너뛰지 않고(빈 dict) 기록도 하지 않는다."""
+    if sample_mode or not path.exists():
+        return {}
+    loaded = json.load(open(path, encoding="utf-8"))
+    return {k: v for k, v in loaded.items() if v.get("reason") not in RETRYABLE_REASONS}
 
 
 def main() -> None:
@@ -170,8 +184,7 @@ def main() -> None:
     decisions_path = Path(a.decisions)
     cache = json.load(open(cache_path, encoding="utf-8")) if cache_path.exists() else \
         {"raw_basis": {}, "vworld": {}}
-    decisions: dict[str, dict] = json.load(open(decisions_path, encoding="utf-8")) \
-        if decisions_path.exists() else {}
+    decisions: dict[str, dict] = load_resume_decisions(decisions_path, sample_mode)
     raw_cache, vworld_cache = cache["raw_basis"], cache["vworld"]
 
     budget_sec = a.budget_min * 60
@@ -199,11 +212,13 @@ def main() -> None:
         processed_now += 1
         if processed_now % 20 == 0:
             json.dump(cache, open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
-            json.dump(decisions, open(decisions_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+            if not sample_mode:
+                json.dump(decisions, open(decisions_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
             print(f"  진행 {i}/{len(candidates)} (경과 {elapsed:.0f}s)")
 
     json.dump(cache, open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
-    json.dump(decisions, open(decisions_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    if not sample_mode:
+        json.dump(decisions, open(decisions_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     done = [cno for cno in (c["complex_no"] for c in candidates) if cno in decisions]
     by_reason: dict[str, int] = {}

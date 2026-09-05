@@ -193,3 +193,52 @@ def test_collect_public_enrich_imports_cleanly():
         "kapt_code", "name", "district", "area", "units",
     )
     assert cpe.verify_parcel_identity is cg.verify_parcel_identity
+
+
+def test_revalidate_resume_skips_only_final_decisions(tmp_path):
+    """no-basis(API 실패)는 재개 시 재시도 대상, 표본 모드는 이전 판정을 쓰지 않는다(2026-09-05)."""
+    import json, importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    p = tmp_path / "decisions.json"
+    p.write_text(json.dumps({"1": {"reason": "no-basis"}, "2": {"reason": "pass"},
+                             "3": {"reason": "identity:name-mismatch"}}), encoding="utf-8")
+    assert set(rv.load_resume_decisions(p, sample_mode=False)) == {"2", "3"}
+    assert rv.load_resume_decisions(p, sample_mode=True) == {}
+    assert rv.load_resume_decisions(tmp_path / "missing.json", sample_mode=False) == {}
+
+
+def test_count_households_dedupes_duplicate_dong_ho():
+    import collect_gongsi as cg
+    recs = [{"dongNm": "101", "hoNm": "101"}, {"dongNm": "101", "hoNm": "101"},
+            {"dongNm": "101", "hoNm": "102"}, {"dongNm": "101", "hoNm": "102"}]
+    assert cg.count_households(recs) == 2
+    assert cg.count_households([{"x": 1}, {"x": 2}]) == 2          # dong/ho 없으면 len 폴백
+
+
+def test_identity_gate_strips_address_dong_prefix():
+    """2026-09-05 표본 65 재검증: 동명 접두어만 다른 12건은 통과, 타 구 단지(pnu 오조립)는 여전히 거부."""
+    import collect_gongsi as cg
+    ok = cg._identity_fail_reason
+    assert ok("태진아름", "등촌태진아름", 221, 221, "서울특별시 강서구 등촌동 676 등촌태진아름") is None
+    assert ok("성원", "당산성원아파트", 205, 205, "서울특별시 영등포구 당산동5가 40 당산성원아파트") is None
+    assert ok("미주아파트", "후암미주", 226, 226, "서울특별시 용산구 후암동 423-1 후암미주") is None
+    assert ok("삼성", "수서삼성", 680, 680, "서울특별시 강남구 수서동 747 수서삼성") is None
+    assert ok("창동신도브래뉴1차", "창동신도브래뉴", 456, 456, "서울특별시 도봉구 창동 820 창동신도브래뉴") is None
+    # 청담2차현대(강남) 에 성동구 '현대' 가 붙은 오조립 — 동명 제거 후에도 '2현대' vs '현대'(<5자) → 거부
+    assert ok("현대아파트", "청담2차현대아파트", 214, 217, "서울특별시 강남구 청담동 23 청담2차현대아파트") == "name-mismatch"
+    # 주소 없으면 종전 규칙 그대로(짧은 이름 포함매칭 불허)
+    assert ok("삼성", "수서삼성", 680, 680) == "name-mismatch"
+    # 포함매칭 경로의 세대수 규칙은 유지 — distinct 호수 대신 2배 raw 건수를 넘기면 여전히 거부
+    addr = "서울특별시 성동구 하왕십리동 1002 서울 왕십리 KCC스위첸아파트"
+    assert ok("왕십리KCC스위첸", "서울 왕십리 KCC스위첸아파트", 544, 272, addr) == "count-mismatch"
+    assert ok("왕십리KCC스위첸", "서울 왕십리 KCC스위첸아파트", 272, 272, addr) is None
+    # 동명 접두어 제거로 완전일치가 되면 exact 경로(count 무관) — 같은 주소·같은 이름
+    assert ok("벽산늘푸른", "염창벽산늘푸른", 412, 206, "서울특별시 강서구 염창동 290 염창벽산늘푸른") is None
+
+
+def test_identity_norm_collapses_numbered_danji_suffix_but_keeps_number():
+    import collect_gongsi as cg
+    assert cg._identity_norm("도봉파크빌3단지") == cg._identity_norm("도봉파크빌3")
+    assert cg._identity_norm("상계주공1단지") != cg._identity_norm("상계주공2단지")
+    assert cg._identity_fail_reason("도봉파크빌3", "도봉파크빌3단지", 200, 200,
+                                    "서울특별시 도봉구 도봉동 644 도봉파크빌3단지") is None

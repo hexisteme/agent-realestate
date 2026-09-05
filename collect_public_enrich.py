@@ -32,7 +32,7 @@ config.load_env_file()
 
 import blog.build_explorer as be
 from collect_universe_enrich import _resolve_kapt_basis, _live_candidates
-from collect_gongsi import (
+from collect_gongsi import (count_households,
     _pnu_from_basis, _fetch_vworld_all, verify_parcel_identity, _identity_fail_reason, _molit_median_won,
     AREA_TOL, RATIO_LO, RATIO_HI,
 )
@@ -152,10 +152,10 @@ def _gongsi_man(kapt_code: str, name: str, district: str, area: float, units: in
         return None
     aphus_nm = recs[0].get("aphusNm", "")
     kapt_name = str(b.get("kaptName") or "")
-    if not verify_parcel_identity(aphus_nm, kapt_name, len(recs), units):
-        reason = _identity_fail_reason(aphus_nm, kapt_name, len(recs), units)
+    if not verify_parcel_identity(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or "")):
+        reason = _identity_fail_reason(aphus_nm, kapt_name, count_households(recs), units, kapt_addr=str(b.get("kaptAddr") or ""))
         print(f"  [이름게이트:{reason}] {name}: aphusNm={aphus_nm} ≠ kaptName={kapt_name} "
-              f"(pnu={pnu}, records={len(recs)}, units={units})")
+              f"(pnu={pnu}, households={count_households(recs)}, units={units})")
         return None
     prices: list[int] = []
     for r in recs:
