@@ -142,6 +142,14 @@ def test_build_site_wires_25_gu_hubs_sitemap_index_feed(tmp_path, monkeypatch):
                    '<meta name=description content="테스트 설명"></head><body>본문</body></html>')
     (src_dir / "daily" / "2026-09-05.html").write_text(digest_html, encoding="utf-8")
     (src_dir / "daily" / "latest.html").write_text(digest_html, encoding="utf-8")
+    # 레거시 포스트(GA4 태그 없음) + 이미 태그된 포스트 — build 가 전자에만 주입, 후자는 중복 없음
+    (src_dir / "posts").mkdir()
+    (src_dir / "posts" / "2026-09-03-구00.html").write_text(
+        "<!DOCTYPE html><html><head>\n<meta charset=utf-8>\n<title>레거시</title>"
+        '<meta name=description content="구형"></head><body>본문</body></html>', encoding="utf-8")
+    (src_dir / "posts" / "2026-09-04-구01.html").write_text(
+        "<!DOCTYPE html><html><head><title>신형</title>"
+        "<script>gtag('config','G-TESTBUILD');</script></head><body>본문</body></html>", encoding="utf-8")
 
     monkeypatch.setattr(build_site, "SITE", str(site_dir))
     monkeypatch.setattr(build_site, "SRC", str(src_dir))
@@ -178,3 +186,9 @@ def test_build_site_wires_25_gu_hubs_sitemap_index_feed(tmp_path, monkeypatch):
     feed = (site_dir / "feed.xml").read_text(encoding="utf-8")
     first_item = feed.split("<item>")[1]
     assert digest_title in first_item                # 다이제스트가 feed 첫 항목
+
+    legacy = (site_dir / "posts" / "2026-09-03-구00.html").read_text(encoding="utf-8")
+    assert legacy.count("gtag('config','G-TESTBUILD')") == 1
+    assert legacy.index("G-TESTBUILD") < legacy.index("<meta charset=utf-8>")   # <head> 직후 삽입
+    modern = (site_dir / "posts" / "2026-09-04-구01.html").read_text(encoding="utf-8")
+    assert modern.count("G-TESTBUILD") == 1                                      # 이미 태그된 포스트는 중복 주입 없음

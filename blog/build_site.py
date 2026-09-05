@@ -30,6 +30,16 @@ def ga4_snippet() -> str:
             "gtag('js',new Date());"
             f"gtag('config','{mid}');</script>\n")
 
+def inject_ga4_tag(html: str) -> str:
+    """레거시 포스트(2026-09-05 P1 이전 생성분)에 GA4 로더 주입 — 측정ID 가 이미 있으면 원문(멱등), <head> 없으면 원문."""
+    snip = ga4_snippet()
+    if not snip or GA4_MEASUREMENT_ID in html:
+        return html
+    m = re.search(r"<head[^>]*>", html, re.I)
+    if not m:
+        return html
+    return html[:m.end()] + "\n" + snip + html[m.end():]
+
 def _post_meta(p):
     """포스트 파일에서 (date, title, description) 추출 — 파일명 YYYY-MM-DD-구.html 규약."""
     nm=os.path.basename(p); d=nm[:10]
@@ -47,6 +57,10 @@ def build(today=None, molit_path=None):
     os.makedirs(f"{SITE}/daily",exist_ok=True)
     # 1) 포스트·claims·llms.txt 복사
     for f in glob.glob(f"{SRC}/posts/*"): shutil.copy(f,f"{SITE}/posts/")
+    # 1b) 레거시 포스트 GA4 주입(2026-09-05) — P1 이전 생성분 1,659개가 태그 없이 그대로 복사되던 계측 구멍. 파일별 멱등.
+    for p in glob.glob(f"{SITE}/posts/*.html"):
+        txt=open(p,encoding="utf-8").read(); tagged=inject_ga4_tag(txt)
+        if tagged!=txt: open(p,"w",encoding="utf-8").write(tagged)
     # 일간 다이제스트({today}.html + latest.html, 2026-09-05 P1) — run_daily.py 산출물 복사.
     for f in glob.glob(f"{SRC}/daily/*"): shutil.copy(f,f"{SITE}/daily/")
     if os.path.exists(f"{SRC}/llms.txt"): shutil.copy(f"{SRC}/llms.txt",f"{SITE}/llms.txt")
