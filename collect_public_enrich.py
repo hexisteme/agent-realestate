@@ -33,7 +33,7 @@ config.load_env_file()
 import blog.build_explorer as be
 from collect_universe_enrich import _resolve_kapt_basis, _live_candidates
 from collect_gongsi import (
-    _pnu_from_basis, _fetch_vworld_all, _name_gate, _molit_median_won,
+    _pnu_from_basis, _fetch_vworld_all, verify_parcel_identity, _identity_fail_reason, _molit_median_won,
     AREA_TOL, RATIO_LO, RATIO_HI,
 )
 from collect_kapt_maint_fees import _avg_fee_total, _recent_ym_list, MONTHS_BACK
@@ -123,11 +123,12 @@ def build_gu_ipsi_map() -> dict[str, int]:
     return m
 
 
-def _gongsi_man(kapt_code: str, name: str, district: str, area: float, molit: dict,
+def _gongsi_man(kapt_code: str, name: str, district: str, area: float, units: int, molit: dict,
                 vworld_key: str, molit_key: str,
                 raw_cache: dict[str, dict], vworld_cache: dict[str, list]) -> int | None:
     """collect_gongsi.main 과 동일 파이프라인 — raw basis(bjdCode+kaptAddr)→pnu→VWorld 전페이지→
-    이름게이트→동일평형(±AREA_TOL) 중위(원)→만원, 타당성가드(공시/실거래중위 0.20~0.90)."""
+    신원게이트(verify_parcel_identity, 2026-09-05 수정 — 구 _name_gate 상호포함 대체)→
+    동일평형(±AREA_TOL) 중위(원)→만원, 타당성가드(공시/실거래중위 0.20~0.90)."""
     if not area:
         return None
     if kapt_code not in raw_cache:
@@ -149,7 +150,12 @@ def _gongsi_man(kapt_code: str, name: str, district: str, area: float, molit: di
     recs = vworld_cache[pnu]
     if not recs:
         return None
-    if not _name_gate(recs[0].get("aphusNm", ""), str(b.get("kaptName") or "")):
+    aphus_nm = recs[0].get("aphusNm", "")
+    kapt_name = str(b.get("kaptName") or "")
+    if not verify_parcel_identity(aphus_nm, kapt_name, len(recs), units):
+        reason = _identity_fail_reason(aphus_nm, kapt_name, len(recs), units)
+        print(f"  [이름게이트:{reason}] {name}: aphusNm={aphus_nm} ≠ kaptName={kapt_name} "
+              f"(pnu={pnu}, records={len(recs)}, units={units})")
         return None
     prices: list[int] = []
     for r in recs:
@@ -200,7 +206,7 @@ def enrich_complex(t: dict, molit: dict, gu_ipsi_map: dict[str, int],
 
     # ── (b) 공시가(VWorld) — kapt_code 확정 시만 ──
     if kapt_code:
-        gm = _gongsi_man(kapt_code, name, district, area, molit,
+        gm = _gongsi_man(kapt_code, name, district, area, units, molit,
                          vworld_key, molit_key, raw_cache, vworld_cache)
         if gm is not None:
             entry["gongsi_man"] = gm

@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+import blog.build_explorer as be
 from blog.build_explorer import (
     assert_no_duplicate_signatures,
     build_dataset_public,
@@ -48,6 +49,84 @@ def test_canonical_keeps_non_identity_parens():
 
 def test_canonical_empty_string_is_none():
     assert canonical_complex_name("") is None
+
+
+# ── 근접매칭(item 3, 2026-09-05) 신규 규칙 — 각 규칙이 두 표기를 한 키로 접는지 ──────────
+
+def test_ipark_latin_korean_variant_folds_to_one_key():
+    assert canonical_complex_name("노원IPARK") == canonical_complex_name("노원아이파크")
+    assert canonical_complex_name("DMCSKVIEW".replace("SKVIEW", "IPARK")) == \
+        canonical_complex_name("DMC아이파크")
+
+
+def test_epyeonhansesang_latin_korean_variant_folds_to_one_key():
+    assert canonical_complex_name("e편한세상강동에코포레") == canonical_complex_name("이편한세상강동에코포레")
+
+
+def test_skview_three_way_variant_folds_to_one_key():
+    # SKVIEW(라틴)·에스케이뷰(완전풀어쓰기)·SK뷰(공식 축약) 3표기가 전부 한 키로 접혀야 함
+    assert canonical_complex_name("DMCSKVIEW") == canonical_complex_name("DMCSK뷰")
+    assert canonical_complex_name("강변에스케이뷰") == canonical_complex_name("강변SK뷰")
+
+
+def test_xi_jai_variant_folds_to_one_key():
+    # 자이(XI) 표기 — 현재 실데이터엔 XI 표기가 0건이라 합성 사례로만 검증(방어적 규칙)
+    assert canonical_complex_name("래미안XI") == canonical_complex_name("래미안자이")
+
+
+def test_new_paren_qualifier_tokens_are_non_identity():
+    # item3 근접매칭 스캔에서 발견된 4건 — 전부 같은 물리단지의 MOLIT측 qualifier 괄호(실측: 동일-lawd
+    # 충돌 0건, test_new_paren_qualifiers_introduce_no_molit_collision 참고)
+    assert canonical_complex_name("강남브리즈힐(토지임대부아파트)") == canonical_complex_name("강남브리즈힐")
+    assert canonical_complex_name("마곡서광(치현마을)") == canonical_complex_name("마곡서광")
+    assert canonical_complex_name("인왕산현대(인왕산힐스테이트)") == canonical_complex_name("인왕산현대")
+    assert canonical_complex_name("태영으뜸(데시앙)") == canonical_complex_name("태영으뜸")
+
+
+def test_new_paren_qualifiers_still_keep_unrelated_numeric_parens_as_identity():
+    # 회귀 방지 — 새 토큰 4개를 넣었다고 기존 "현대(982)≠현대(209)" 보존 규칙이 깨지면 안 됨
+    assert canonical_complex_name("현대(982)") == "현대(982)"
+    assert canonical_complex_name("현대(982)") != canonical_complex_name("현대(209)")
+
+
+@pytest.mark.skipif(not os.path.exists("examples/molit_recent_25gu_20260710.json"),
+                     reason="실데이터 example 파일 없음")
+def test_new_paren_qualifiers_introduce_no_molit_collision():
+    # item3 필수 측정 — 새 토큰(_PAREN_NON_IDENTITY 4종)·브랜드변형(_BRAND_VARIANTS)이 동일 lawd 안에서
+    # 서로 다른 MOLIT 원본명 2개를 같은 canonical 키로 새로 뭉치게 하면 안 된다(count 는 0 이어야 함).
+    # 방법: 신규 규칙을 뺀 "구버전" 등가물(기존 8토큰만, 브랜드변형 없음)과 비교해 델타가 0인지 확인.
+    molit = json.load(open("examples/molit_recent_25gu_20260710.json", encoding="utf-8"))
+
+    def _collision_groups(paren_tokens, fold):
+        groups: dict[tuple[str, str], set[str]] = {}
+        for lawd in be.GU_LAWD.values():
+            recs = molit.get(lawd, [])
+            raws = {r["apt"] for r in recs if isinstance(r, dict) and r.get("apt")}
+            by_canon: dict[str, set[str]] = {}
+            for raw in raws:
+                s = __import__("re").sub(r"\[.*?\]", "", raw)
+                if __import__("re").sub(r"\([^()]*\)", "", s).strip() == "":
+                    continue
+                def _drop(m, _toks=paren_tokens):
+                    toks = [t for t in __import__("re").split(r"[,\s]+", m.group(1).strip()) if t]
+                    return "" if toks and all(t in _toks for t in toks) else m.group(0)
+                s = __import__("re").sub(r"\(([^()]*)\)", _drop, s)
+                s = __import__("re").sub(r"\s+", "", s)
+                if s.endswith("아파트"):
+                    s = s[:-3]
+                s = fold(s)
+                if s:
+                    by_canon.setdefault(s, set()).add(raw)
+            for c, origs in by_canon.items():
+                if len(origs) > 1:
+                    groups[(lawd, c)] = frozenset(origs)
+        return set(groups.items())
+
+    old_tokens = {"고층", "저층", "임대", "분양", "아파트", "주상복합", "도시형", "민간임대"}
+    baseline = _collision_groups(old_tokens, lambda s: s)
+    current = _collision_groups(be._PAREN_NON_IDENTITY, be._fold_brand_variants)
+    new_collisions = current - baseline
+    assert new_collisions == set(), f"신규 규칙이 새 충돌을 만듦: {new_collisions}"
 
 
 # ── match_molit_names ───────────────────────────────────────────────────
