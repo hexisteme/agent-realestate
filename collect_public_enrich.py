@@ -37,7 +37,7 @@ from collect_gongsi import (
     AREA_TOL, RATIO_LO, RATIO_HI,
 )
 from collect_kapt_maint_fees import _avg_fee_total, _recent_ym_list, MONTHS_BACK
-from agent_realestate.collectors.kapt import BASIS_EP_V4, _get_json_item
+from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
 from agent_realestate.collectors.kakao import nearest_schools, academy_exam_count
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
@@ -132,10 +132,10 @@ def _gongsi_man(kapt_code: str, name: str, district: str, area: float, units: in
     if not area:
         return None
     if kapt_code not in raw_cache:
-        b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, molit_key)
+        b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, molit_key)
         if not b:                                     # 일시적 API 실패 재시도 1회(collect_gongsi 동일)
             time.sleep(2.0)
-            b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, molit_key)
+            b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, molit_key)
         raw_cache[kapt_code] = b
         time.sleep(SLEEP)
     b = raw_cache[kapt_code]

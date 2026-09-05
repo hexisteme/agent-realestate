@@ -28,7 +28,7 @@ from pathlib import Path
 from agent_realestate import config
 config.load_env_file()
 
-from agent_realestate.collectors.kapt import BASIS_EP_V4, _get_json_item
+from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
 from collect_gongsi import (
     _pnu_from_basis, _fetch_vworld_all, _identity_fail_reason, _molit_median_won,
     AREA_TOL, RATIO_LO, RATIO_HI,
@@ -53,14 +53,15 @@ def _revalidate_one(kapt_code: str, name: str, district: str, area: float, units
     no-area-match|ratio-guard|pass. gongsi_man 을 None 으로 되돌려야 하는 건 identity:* 뿐 —
     그 외 실패는 이 재검증의 관심사가 아니므로(구 값 유지) reason 만 기록하고 kept=False 로 표시하지
     않는다(호출측이 identity:* 만 보고 판단)."""
-    if kapt_code not in raw_cache:
-        b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, molit_key)
+    if not raw_cache.get(kapt_code):   # 빈 dict 는 '미조회'로 취급 — 폐기 API 시절 빈 응답이 캐시에 남아 V5 전환 뒤에도 no-basis 로 오판하던 결함(2026-09-05)
+        b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, molit_key)
         if not b:
             time.sleep(2.0)
-            b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, molit_key)
-        raw_cache[kapt_code] = b
+            b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, molit_key)
+        if b:
+            raw_cache[kapt_code] = b   # 성공 응답만 캐시(실패는 다음 실행에서 재시도)
         time.sleep(SLEEP)
-    b = raw_cache[kapt_code]
+    b = raw_cache.get(kapt_code) or {}
     if not b:
         return False, "no-basis", None
     pnu = _pnu_from_basis(str(b.get("bjdCode") or ""), str(b.get("kaptAddr") or ""))

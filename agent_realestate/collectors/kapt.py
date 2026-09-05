@@ -12,13 +12,19 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-LIST_EP = "http://apis.data.go.kr/1613000/AptListService3/getSigunguAptList3"
+# AptListService3 는 2026-09-05 실측 HTTP 400 code 12(폐기). 후계 V4(data.go.kr 15057332 swagger host
+#   `apis.data.go.kr/1613000/AptListService4`; getSido/getSigungu/getTotal/getLegaldong/getRoadnameAptList4), 기존 키로 200,
+#   JSON 응답 response.body.items[{kaptCode,kaptName,bjdCode,as1..as4}].
+LIST_EP = "https://apis.data.go.kr/1613000/AptListService4/getSigunguAptList4"
 # V3 폐기 확인(2026-07-07 라이브: 'Unexpected errors') — V4 는 JSON 응답, 필드명 변경
 # (kaptHeating→codeHeatNm, kaptMangeTrunk→codeHallNm, kaptBuild→kaptBcompany,
 #  주차는 상세(getAphusDtlInfoV4)의 kaptdPcnt(지상)+kaptdPcntu(지하)).
 BASIS_EP = "http://apis.data.go.kr/1613000/AptBasisInfoServiceV3/getAphusBassInfoV3"  # (폐기·테스트 픽스처용)
-BASIS_EP_V4 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusBassInfoV4"
-DETAIL_EP_V4 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV4/getAphusDtlInfoV4"
+# V4(AptBasisInfoServiceV4) 는 2026-09-05 실측 HTTP 400 NO_OPENAPI_SERVICE_ERROR(code 12, 폐기). 후계 = V5
+#   (data.go.kr 15058453 임베디드 swagger host `apis.data.go.kr/1613000/AptBasisInfoServiceV5`, 기존 키로 200 확인,
+#   응답 필드 동일: kaptName·kaptAddr·bjdCode·kaptdaCnt·kaptDongCnt·kaptUsedate·kaptBcompany…).
+BASIS_EP_V5 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5"
+DETAIL_EP_V5 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5/getAphusDtlInfoV5"
 
 # ── 공용관리비 API (서비스 ID 15057937) ──────────────────────────────────────
 # 현행 = V2(1613000, JSON) — 구 1611000 XML 서비스는 폐기(전 버전 HTTP500, 2026-07-08 실측).
@@ -49,8 +55,18 @@ def _get(url: str, params: dict, key: str) -> str:
         raise SystemExit(f"K-apt 요청 실패: {str(e).replace(key, '***KEY***')}")
 
 
-def parse_apt_list(xml_text: str) -> list[dict]:
-    root = ET.fromstring(xml_text)
+def parse_apt_list(text: str) -> list[dict]:
+    """단지 목록 파싱 — V4 JSON(response.body.items) 우선, V3 XML(<item>) 호환 유지."""
+    t = text.lstrip()
+    if t.startswith("{"):
+        import json as _j
+        try:
+            items = _j.loads(t).get("response", {}).get("body", {}).get("items", []) or []
+        except ValueError:
+            return []
+        return [{"kaptCode": str(i.get("kaptCode", "")).strip(), "kaptName": str(i.get("kaptName") or "").strip()}
+                for i in items if isinstance(i, dict) and i.get("kaptCode")]
+    root = ET.fromstring(text)
     out = []
     for it in root.iter("item"):
         code = it.findtext("kaptCode") or ""
@@ -85,7 +101,7 @@ def parse_basis(xml_text: str) -> dict:
 
 
 def _get_json_item(url: str, params: dict, key: str) -> dict:
-    """V4 계열(JSON 응답) 단건 item 추출. 실패/형식이상은 빈 dict — 배치 지속성 우선."""
+    """V4/V5 계열(JSON 응답) 단건 item 추출. 실패/형식이상은 빈 dict — 배치 지속성 우선."""
     import json as _j
     qs = urllib.parse.urlencode({**params, "serviceKey": key})
     try:
@@ -96,16 +112,16 @@ def _get_json_item(url: str, params: dict, key: str) -> dict:
         return {}
 
 
-def fetch_basis_v4(kapt_code: str, key: str | None = None) -> dict | None:
-    """K-apt 기본정보 V4 — basis(난방·복도·시공사·세대수·준공) + detail(주차) 2콜 병합.
+def fetch_basis(kapt_code: str, key: str | None = None) -> dict | None:
+    """K-apt 기본정보(V5, 2026-09-05 V4 폐기 대응) — basis(난방·복도·시공사·세대수·준공) + detail(주차) 2콜 병합.
     parse_basis(V3 XML)와 동일 키 + heating/corridor_type/builder/parking_per_unit."""
     key = key or os.environ.get("MOLIT_API_KEY", "")
     if not key:
         return None
-    b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, key)
+    b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, key)
     if not b:
         return None
-    d = _get_json_item(DETAIL_EP_V4, {"kaptCode": kapt_code}, key)
+    d = _get_json_item(DETAIL_EP_V5, {"kaptCode": kapt_code}, key)
 
     def _i(v) -> int:
         try:
@@ -127,6 +143,9 @@ def fetch_basis_v4(kapt_code: str, key: str | None = None) -> dict | None:
         "parking_total": parking_total,
         "parking_per_unit": round(parking_total / units, 2) if parking_total and units else None,
     }
+
+
+fetch_basis_v4 = fetch_basis   # 구 이름 호환(2026-07-07 도입) — 엔드포인트는 V5
 
 
 def parse_maint_fee(xml_text: str, fee_fields: list[str]) -> int:
@@ -199,12 +218,12 @@ def fetch_meta_for(district: str, complex_name: str, key: str | None = None) -> 
     sgg = lawd_for_district(district)
     if not sgg:
         raise SystemExit(f"시군구코드 미해결: {district}")
-    lst = parse_apt_list(_get(LIST_EP, {"sigunguCode": sgg, "numOfRows": 5000, "pageNo": 1}, key))
+    lst = parse_apt_list(_get(LIST_EP, {"sigunguCode": sgg, "numOfRows": 5000, "pageNo": 1, "_type": "json"}, key))
     norm = complex_name.replace(" ", "")
     hit = next((a for a in lst if norm in a["kaptName"].replace(" ", "")), None)
     if not hit:
         return None
-    meta = fetch_basis_v4(hit["kaptCode"], key)   # V3 폐기 → V4 (2026-07-07)
+    meta = fetch_basis(hit["kaptCode"], key)   # V3 폐기 → V4(2026-07-07) → V5(2026-09-05)
     if not meta:
         return None
     meta["kaptCode"] = hit["kaptCode"]

@@ -36,7 +36,7 @@ config.load_env_file()
 
 import os
 
-from agent_realestate.collectors.kapt import BASIS_EP_V4, _get_json_item
+from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
 from blog.build_explorer import GU_LAWD, canonical_complex_name, match_molit_names
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
@@ -167,10 +167,10 @@ def main() -> None:
             continue
 
         if kapt_code not in basis_cache:
-            b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, mkey)
+            b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, mkey)
             if not b:   # 일시적 API 실패 재시도 1회 (2026-07-09 2차 배치: 메트로디오빌 실측)
                 time.sleep(2.0)
-                b = _get_json_item(BASIS_EP_V4, {"kaptCode": kapt_code}, mkey)
+                b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, mkey)
             basis_cache[kapt_code] = b
             time.sleep(SLEEP_SEC)
         b = basis_cache[kapt_code]
