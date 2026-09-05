@@ -48,6 +48,23 @@ def _post_meta(p):
     desc=re.search(r'<meta name=description content="(.*?)">',txt)
     return d,(t.group(1).strip() if t else nm[:-5]),(desc.group(1) if desc else "")
 
+
+def assert_dataset_not_shrunk(new_path: str, old_path: str, min_ratio: float = 0.5) -> None:
+    """조립 직전 데이터셋 축소 가드(2026-09-05 실측 사고) — 인자 없는 수동 `python3 -m blog.run_daily` 가 레거시
+    11구 기본값으로 돌아 117단지 dataset.json 을 만들었고, build_site 가 그것을 643단지 사이트 위에 그대로
+    조립했다(push 전 발견). 기존 site/dataset.json 대비 단지 수가 min_ratio 미만이면 SystemExit 로 발행을 막는다.
+    의도된 축소(풀 재편 등)는 RE_ALLOW_SHRINK=1 로 명시. 기존 파일이 없거나 파싱 불가면 가드 없음(첫 조립)."""
+    if os.environ.get("RE_ALLOW_SHRINK") == "1" or not (os.path.exists(new_path) and os.path.exists(old_path)):
+        return
+    try:
+        old = len(json.load(open(old_path, encoding="utf-8")).get("complexes") or [])
+        new = len(json.load(open(new_path, encoding="utf-8")).get("complexes") or [])
+    except (OSError, ValueError, AttributeError):
+        return
+    if old > 0 and new < old * min_ratio:
+        raise SystemExit(f"[build_site] 데이터셋 축소 가드: 단지 {old} → {new} (<{min_ratio:.0%}) — 스코프 인자 누락(run_daily 11gu 기본값) 의심. "
+                         "cmd_daily 와 같은 --molit/--jeonse/--public-frame/--survivors 로 재생성하거나, 의도된 축소면 RE_ALLOW_SHRINK=1")
+
 def build(today=None, molit_path=None):
     today=today or date.today().isoformat()
     # molit_path(2026-09-05 P2) — 단지 페이지 월별차트용 raw MOLIT. 없으면(파일 부재) 차트만 생략.
@@ -66,6 +83,7 @@ def build(today=None, molit_path=None):
     if os.path.exists(f"{SRC}/llms.txt"): shutil.copy(f"{SRC}/llms.txt",f"{SITE}/llms.txt")
     # 탐색기(방문자 필터형, 2026-06-16) — dataset.json + explorer.html 를 site/ 루트로 복사.
     #   posts/ 밖이라 sitemap/RSS 의 posts/*.html glob 에 안 걸려 자연 제외(JS 렌더=색인부적합, SEO 본체는 정적 포스트).
+    assert_dataset_not_shrunk(f"{SRC}/dataset.json", f"{SITE}/dataset.json")   # 축소 가드(2026-09-05) — 11gu 기본값 데이터셋이 25gu 사이트 위에 조립되는 사고 차단
     for f in ("dataset.json","explorer.html"):
         if os.path.exists(f"{SRC}/{f}"): shutil.copy(f"{SRC}/{f}",f"{SITE}/{f}")
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
