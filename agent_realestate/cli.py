@@ -36,6 +36,7 @@ from .domain import ExitStrategy
 from .notify.email_report import compose_summary, send_report
 from .notify.telegram import notify_daily_result, notify_step_failure
 from .policy_params import PolicyParams
+from .scope_inputs import resolve_scope_inputs
 from .synthesis.assembler import Evaluated, build_report
 from .synthesis.scenario import compute_break_even, compute_hold
 
@@ -754,21 +755,21 @@ def _cmd_daily_inner(args) -> None:
             bak.unlink()
 
     scope = os.environ.get("RE_SCAN_SCOPE", "11gu")
+    inputs = resolve_scope_inputs(scope, root)   # ★단일소스화(2026-09-05) — run_daily 단독실행 기본값과 동일 함수를 공유
+    molit_json = Path(inputs["molit"])
     run_daily_cmd = ["python3", "-m", "blog.run_daily", "--asof", today, "--today", today, "--block-stale"]
     if scope == "25gu":
-        molit_json = root / "examples/molit_recent_25gu_20260710.json"
-        jeonse_json = root / "examples/molit_jeonse_recent_25gu_20260710.json"
+        jeonse_json = Path(inputs["jeonse"])
         _refresh_with_backup_guard(molit_json, "fetch_molit_recent_25gu.py", "MOLIT 실거래 fresh 재수집(25구)")
         _refresh_with_backup_guard(jeonse_json, "fetch_molit_jeonse_recent_25gu.py", "MOLIT 전세 fresh 재수집(25구)")
         run_daily_cmd += ["--molit", str(molit_json), "--jeonse", str(jeonse_json),
-                          "--public-frame", "examples/frame_25gu_20260710.json",
-                          "--survivors", "examples/screen_25gu_survivors_20260710.json"]
-        gu_allow = os.environ.get("RE_PUBLIC_GU_ALLOW", "")
+                          "--public-frame", str(inputs["public_frame"]),
+                          "--survivors", str(inputs["survivors"])]
+        gu_allow = inputs["public_gu_allow"]
         if gu_allow:
             run_daily_cmd += ["--public-gu-allow", gu_allow]
         print(f"[daily] scope=25gu (RE_PUBLIC_GU_ALLOW={gu_allow or '미설정=신규구 전체'})")
     else:
-        molit_json = root / "examples/molit_recent_11gu_20260606.json"
         _refresh_with_backup_guard(molit_json, "fetch_molit_recent_11gu.py", "MOLIT 실거래 fresh 재수집")
     # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
     #   (자체 점수 없음·공공 실거래만·세대수200/corridor 제외). build_site 가 site/ 로 조립.

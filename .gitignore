@@ -53,6 +53,7 @@ dist/
 !/collect_gongsi.py
 !/revalidate_gongsi.py
 !/collect_kapt_maint_fees.py
+!/audit_kapt_identity.py
 
 # AIOS 게이트 이벤트 로그(런타임 데이터) — docs/adr/0001
 .aios/observation/

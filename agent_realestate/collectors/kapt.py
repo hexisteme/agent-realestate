@@ -114,7 +114,11 @@ def _get_json_item(url: str, params: dict, key: str) -> dict:
 
 def fetch_basis(kapt_code: str, key: str | None = None) -> dict | None:
     """K-apt 기본정보(V5, 2026-09-05 V4 폐기 대응) — basis(난방·복도·시공사·세대수·준공) + detail(주차) 2콜 병합.
-    parse_basis(V3 XML)와 동일 키 + heating/corridor_type/builder/parking_per_unit."""
+    parse_basis(V3 XML)와 동일 키 + heating/corridor_type/builder/parking_per_unit.
+
+    kaptAddr·kaptdaCnt 는 이미 받아온 raw basis(b)에서 그대로 얹는다(추가 API 콜 없음) — collect_
+    universe_enrich._resolve_kapt_basis 의 verify_kapt_basis_identity(구·이름 신원게이트, 2026-09-05)가
+    주소·세대수 원시값을 필요로 한다."""
     key = key or os.environ.get("MOLIT_API_KEY", "")
     if not key:
         return None
@@ -134,7 +138,10 @@ def fetch_basis(kapt_code: str, key: str | None = None) -> dict | None:
     parking_total = (_i(d.get("kaptdPcnt")) + _i(d.get("kaptdPcntu"))) or None
     return {
         "kaptName": (b.get("kaptName") or "").strip(),
+        "kaptAddr": (b.get("kaptAddr") or "").strip(),
         "units": units,
+        "kaptdaCnt": units,
+        "hoCnt": _i(b.get("hoCnt")),   # 주상복합은 kaptdaCnt=0·hoCnt 만 채워짐 → 신원게이트 세대수 폴백(2026-09-05)
         "dong_cnt": _i(b.get("kaptDongCnt")),
         "built_year": int(used[:4]) if used[:4].isdigit() else 0,
         "heating": (b.get("codeHeatNm") or "").strip() or None,

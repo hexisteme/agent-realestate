@@ -37,7 +37,22 @@ config.load_env_file()
 import os
 
 from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
-from blog.build_explorer import GU_LAWD, canonical_complex_name, match_molit_names
+from blog.build_explorer import GU_LAWD, match_molit_names
+# 신원(identity) 검증 게이트 — agent_realestate/identity.py 로 이관(2026-09-05, collect_universe_enrich
+# 의 K-apt 코드 배정 게이트 verify_kapt_basis_identity 와 로직을 공유하기 위한 패키지화). 이 모듈의
+# 기존 호출자(collect_public_enrich.py·revalidate_gongsi.py·audit_kapt_identity.py·테스트)는 그대로
+# `from collect_gongsi import ...` 를 쓰므로 이름을 여기서 재노출(re-export)한다 — 로직/독스트링은 그대로.
+from agent_realestate.identity import (
+    _identity_norm,
+    _DONG_TOKEN_RE,
+    _GU_TOKEN_RE,
+    _addr_gu,
+    _dong_prefix_forms,
+    _strip_dong_prefix,
+    count_households,
+    _identity_fail_reason,
+    verify_parcel_identity,
+)
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 EX = Path("examples")
@@ -100,106 +115,6 @@ def _fetch_vworld_all(pnu: str, key: str) -> list[dict]:
             return out
         page += 1
         time.sleep(SLEEP_SEC)
-
-
-def _identity_norm(nm: str) -> str:
-    """단지 신원(identity) 검증 전용 느슨한 정규화 — build_explorer.canonical_complex_name(대괄호·비식별
-    괄호·브랜드표기[IPARK/아이파크·e편한세상/이편한세상·SK뷰 계열·자이/XI] 을 이미 접는다) 위에 이 모듈
-    고유 확장을 더한다: 'N차'→'N'(전위치, 하계1차청구↔하계1청구) · '주상' 삭제(삼창타워프라자↔
-    삼창타워주상프라자) · 지번 괄호 '(70-12)' 삭제 · 중간 위치 '아파트' 삭제(동도센트리움 아파트 오피스텔). match_molit_names(발행 경로)에는 쓰지 않는다 — 전위치 N차 collapse 는
-    상계주공1~16단지 뭉침 재발 위험이라 발행 경로엔 부적합하고 이 모듈의 완화된 신원확인(§verify_
-    parcel_identity)에서만 쓴다. 숫자 자체는 보존 — 단지 번호 차이는 여전히 불일치."""
-    c = canonical_complex_name(nm) or ""
-    c = re.sub(r"\(\s*\d+(?:-\d+)?\s*\)", "", c)   # 지번 괄호 제거 — VWorld aphusNm 은 필지 지번을 달고 온다('동도센트리움(70-12)', 레거시 재검증 2026-09-05). canonical 은 동수 식별용으로 보존하지만 신원확인은 같은 필지 안 비교라 지번은 식별자가 아니다
-    c = c.replace("아파트", "").replace("주상", "")   # 중간 위치 '아파트'(K-apt '동도센트리움 아파트 오피스텔') — canonical 은 말미 '아파트'만 제거
-    c = re.sub(r"(\d)단지$", r"\1", c)   # 'N단지' 접미어 → 'N'(도봉파크빌3단지↔도봉파크빌3; 번호는 보존되어 1단지≠2단지)
-    return re.sub(r"(\d)차", r"\1", c)
-
-
-_DONG_TOKEN_RE = re.compile(r"^(?P<stem>[가-힣]+?)(?:동\d*가|동|가|읍|면|리)$")
-_GU_TOKEN_RE = re.compile(r"^(?P<stem>[가-힣]{1,4})구$")
-
-
-def _addr_gu(kapt_addr: str) -> str:
-    """K-apt 지번주소의 자치구 토큰('강남구'). 없으면 ''."""
-    for tok in kapt_addr.split():
-        if _GU_TOKEN_RE.match(tok):
-            return tok
-    return ""
-
-
-def _dong_prefix_forms(kapt_addr: str) -> list[str]:
-    """K-apt 지번주소에서 단지명 접두어 후보 — 자치구 어간('서대문구'→'서대문')과 법정동 어간('등촌동'→'등촌',
-    '당산동5가'→'당산'). 어간이 1자('창동'→'창')면 오절단 위험이라 전체 토큰('창동')을 쓴다. 전체 동 토큰을
-    우선하면 '답십리동'+'서울한양' 처럼 이름의 '동'을 잘라먹으므로(답십리+동서울한양) 어간이 우선이다."""
-    forms: list[str] = []
-    gu = _addr_gu(kapt_addr)
-    if gu and len(gu) > 2:
-        forms.append(gu[:-1])
-    for tok in kapt_addr.split():
-        m = _DONG_TOKEN_RE.match(tok)
-        if m and len(tok) >= 2:
-            stem = m.group("stem")
-            forms.append(stem if len(stem) >= 2 else tok)
-            break
-    return forms
-
-
-def _strip_dong_prefix(norm_name: str, forms: list[str]) -> str:
-    """정규화 단지명에서 주소의 법정동 접두어를 1회 제거('등촌태진아름'→'태진아름'). 남는 게 없으면 원문."""
-    for f in forms:
-        if norm_name.startswith(f) and len(norm_name) > len(f):
-            return norm_name[len(f):]
-    return norm_name
-
-
-def count_households(recs: list[dict]) -> int:
-    """VWorld 공시가 레코드의 실제 호수 — (dongNm, hoNm) 기준 distinct. 같은 호가 2건씩 오는
-    실측(2026-09-05, 강남자곡힐스테이트 2,678건/1,339호)이라 len(recs) 는 세대수의 2배가 되어
-    count-mismatch 오판을 낳았다. dong/ho 가 전부 비면 len(recs) 로 폴백."""
-    keys = {(str(r.get("dongNm") or ""), str(r.get("hoNm") or "")) for r in recs}
-    keys.discard(("", ""))
-    return len(keys) if keys else len(recs)
-
-
-def _identity_fail_reason(aphus_nm: str, kapt_name: str, record_count: int, units: int,
-                          kapt_addr: str = "", frame_gu: str = "") -> str | None:
-    """verify_parcel_identity 판정의 실패 사유(로그 구분용) — 통과면 None, 아니면
-    'gu-mismatch'|'name-mismatch'|'count-mismatch'. 로직은 verify_parcel_identity 와 단일 소스.
-    ① frame_gu(발행 프레임의 자치구)와 kapt_addr 의 자치구가 다르면 즉시 거부 — 구식 substring 해소가
-       성동 '현대'→강남 청담2차현대, 은평 코오롱하늘채→마포 연남동 처럼 타 구 kapt_code 를 붙인 5건(2026-09-05 전량 재검증).
-    ② kapt_addr 가 있으면 양쪽 이름에서 그 주소의 자치구·법정동 접두어를 걷어낸 뒤 비교('등촌태진아름'↔'태진아름').
-    ③ 완전일치가 아니면 단방향 포함 + distinct 호수(record_count=count_households)가 세대수 25% 이내일 때만 통과.
-       짧은 쪽 최소 길이는 주소가 있으면 2자(구 검사가 선행되므로 '우성'⊂'우성2'·'두산'⊂'두산1,2단지' 허용),
-       주소가 없으면 종전대로 5자."""
-    addr_gu = _addr_gu(kapt_addr)
-    if frame_gu and addr_gu and addr_gu not in frame_gu.replace(" ", ""):
-        return "gu-mismatch"
-    forms = _dong_prefix_forms(kapt_addr)
-    a = _strip_dong_prefix(_identity_norm(aphus_nm), forms)
-    k = _strip_dong_prefix(_identity_norm(kapt_name), forms)
-    if not a or not k:
-        return "name-mismatch"
-    if a == k:
-        return None
-    shorter, longer = (a, k) if len(a) <= len(k) else (k, a)
-    min_len = 2 if kapt_addr else 5
-    if len(shorter) < min_len or shorter not in longer:
-        return "name-mismatch"
-    if units <= 0 or abs(record_count - units) > units * 0.25:
-        return "count-mismatch"
-    return None
-
-
-def verify_parcel_identity(aphus_nm: str, kapt_name: str, record_count: int, units: int,
-                           kapt_addr: str = "", frame_gu: str = "") -> bool:
-    """VWorld 공시가 레코드(aphus_nm)가 실제로 이 K-apt 단지(kapt_name)의 것인지 검증 — 타 단지
-    pnu 오조립 방어(2026-09-05 수정, 구 _name_gate 대체). ① _identity_norm 정규화 후 완전일치면 통과.
-    ② 완전일치가 아니면 단방향 포함(containment)을 딱 하나의 조건에서만 허용 — 포함되는(짧은) 쪽
-    정규화 이름이 5자 이상 AND units>0 AND VWorld 레코드 수(호수, 전 페이지 합)가 K-apt 세대수(units)
-    와 25% 이내로 일치할 때만(세대수가 다른 단지끼리는 이 경로로도 통과 불가). 그 외 전부 실패.
-    실패 사유(name-mismatch/count-mismatch)는 _identity_fail_reason 으로 별도 조회해 로그에 남긴다."""
-    return _identity_fail_reason(aphus_nm, kapt_name, record_count, units, kapt_addr, frame_gu) is None
 
 
 def _molit_median_won(district: str, complex_name: str, area: float, molit: dict) -> int | None:

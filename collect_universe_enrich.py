@@ -31,6 +31,7 @@ import os
 from agent_realestate.collectors.kapt import LIST_EP, fetch_basis, parse_apt_list
 from agent_realestate.collectors.kakao import geocode_keyword, nearest_schools
 from agent_realestate.collectors.lawd import lawd_for_district
+from agent_realestate.identity import verify_kapt_basis_identity
 import urllib.parse as up
 import urllib.request
 
@@ -99,7 +100,12 @@ def _resolve_kapt_basis(name: str, district: str, units: int, built_year: int,
 
     첫-매치 채택이 만든 오매칭(노원 '두산'→녹천역두산위브 등 5건, 타 단지의 난방·시공사가
     실명 발행됨 — 2026-07-07 적대리뷰 critical) 재발 방지. 검증 통과 후보가 없거나
-    강한 일치(실측 세대수 또는 준공 중 최소 1개 합치)가 없으면 None — 확인된 사실만 원칙."""
+    강한 일치(실측 세대수 또는 준공 중 최소 1개 합치)가 없으면 None — 확인된 사실만 원칙.
+
+    세대수·준공연도 교차검증만으로는 타 구 오매칭을 못 거른다(성동 '현대'→강남 청담2차현대 등
+    14건, 2026-09-05 감사 — 세대수·준공은 우연히 비슷한 타 단지가 있을 수 있다). 그래서
+    verify_kapt_basis_identity(구·이름 신원게이트)를 추가로 통과해야 채택한다 — 기존 검증을
+    대체하지 않고 더한다(additive)."""
     cands = _offline_candidates(name, district, lookup) or _live_candidates(name, district, key)
     verified: list[tuple[int, str, dict]] = []
     for code in cands:
@@ -113,8 +119,13 @@ def _resolve_kapt_basis(name: str, district: str, units: int, built_year: int,
         u_ok = (not u_known) or abs(b["units"] - units) <= u_tol
         y_ok = (not y_known) or abs(b["built_year"] - built_year) <= 2
         strong = (u_known and u_ok) or (y_known and y_ok)
-        if u_ok and y_ok and strong:
-            verified.append((abs(b["units"] - units) if u_known else 10**6, code, b))
+        if not (u_ok and y_ok and strong):
+            continue
+        gate_reason = verify_kapt_basis_identity(name, district, units, b)
+        if gate_reason:
+            print(f"  [kapt신원거부:{gate_reason}] {name} ↔ {b.get('kaptName')} ({b.get('kaptAddr', '')})")
+            continue
+        verified.append((abs(b["units"] - units) if u_known else 10**6, code, b))
     if not verified:
         return None
     _, code, b = min(verified)

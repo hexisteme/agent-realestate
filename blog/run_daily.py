@@ -15,6 +15,7 @@ from __future__ import annotations
 import os, glob, argparse
 from datetime import date
 from collections import defaultdict
+from pathlib import Path
 
 import blog.build_explorer as be
 import blog.tistory_draft as td
@@ -27,24 +28,40 @@ def _latest_or(pattern: str, fallback: str) -> str:
     return files[-1] if files else fallback
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
+    """CLI 파서 구성 — --public-frame/--survivors/--jeonse/--molit/--public-gu-allow 기본값은
+    scope_inputs.resolve_scope_inputs(RE_SCAN_SCOPE)에서 온다(2026-09-05 단일소스화).
+
+    사고 배경: 이 함수가 분리되기 전엔 run_daily 를 인자 없이 단독 실행하면(오늘 실제로 발생)
+    cmd_daily(cli.py)가 RE_SCAN_SCOPE=25gu 일 때 넘기는 값을 전혀 몰라 legacy 11gu 기본값(public-frame/
+    survivors 미지정 → 구 universe 경로)으로 조립됐다. 우선순위: 명시 CLI 인자 > 환경변수
+    (RE_MOLIT/RE_JEONSE_RECENT/RE_PUBLIC_GU_ALLOW) > scope_inputs > 기존 legacy 폴백(_latest_or)."""
+    from agent_realestate.scope_inputs import current_scope, resolve_scope_inputs
+    root = Path(__file__).resolve().parents[1]
+    inputs = resolve_scope_inputs(current_scope(), root)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--asof", required=True)
     ap.add_argument("--today")
     ap.add_argument("--universe", default=(os.environ.get("RE_UNIVERSE") or
                     _latest_or("examples/candidates_universe[0-9][0-9][0-9]_*.json",
                                "examples/candidates_universe159_20260606.json")))
-    ap.add_argument("--molit", default=(os.environ.get("RE_MOLIT") or
+    ap.add_argument("--molit", default=(os.environ.get("RE_MOLIT") or str(inputs["molit"]) or
                     _latest_or("examples/molit_recent*.json", "examples/molit_recent_11gu_20260606.json")))
     ap.add_argument("--out", default="report/blog")
     ap.add_argument("--block-stale", action="store_true")
     ap.add_argument("--districts", help="발행 구 쉼표구분(예: 양천,강서) — 미지정 시 기본 전체")
     ap.add_argument("--public-frame",
+                    default=(str(inputs["public_frame"]) if inputs["public_frame"] else None),
                     help="WS-0 public-only 경로: 지정 시 frame(공공 enumeration JSON) + --molit 로 "
-                         "build_dataset_public 사용(호가 Listing 불필요). 미지정 시 기존 --universe 경로 그대로.")
+                         "build_dataset_public 사용(호가 Listing 불필요). 미지정 시 scope=25gu 면 "
+                         "resolve_scope_inputs 기본값, 아니면(legacy) 기존 --universe 경로 그대로.")
     ap.add_argument("--survivors",
-                    help="public 경로 발행 풀 제한 — 스캔 생존 JSON(screen_25gu_survivors 등)의 complexNo 만 발행.")
-    ap.add_argument("--public-gu-allow", default=(os.environ.get("RE_PUBLIC_GU_ALLOW") or ""),
+                    default=(str(inputs["survivors"]) if inputs["survivors"] else None),
+                    help="public 경로 발행 풀 제한 — 스캔 생존 JSON(screen_25gu_survivors 등)의 complexNo 만 발행. "
+                         "미지정 시 scope=25gu 면 resolve_scope_inputs 기본값.")
+    ap.add_argument("--public-gu-allow", default=(os.environ.get("RE_PUBLIC_GU_ALLOW") or
+                    inputs["public_gu_allow"] or ""),
                     help="구별 단계오픈 안전판 — public(B) 신규유입에만 적용되는 구 쉼표목록 "
                          "(예: 성동,강동). 미지정 시 frame 의 모든 신규구 생성(제한 없음). "
                          "기존 발행(A)엔 영향 없음 — enrichment 백필 완료된 구만 여기 추가할 것.")
@@ -52,12 +69,22 @@ def main():
                     _latest_or("examples/enrich_overlay_*.json", "")),
                     help="public 신규단지 K-apt/공시가/관리비/카카오 overlay(collect_public_enrich.py 산출). 없으면 스킵.")
     ap.add_argument("--jeonse", default=(os.environ.get("RE_JEONSE_RECENT") or
+                    (str(inputs["jeonse"]) if inputs["jeonse"] else None) or
                     _latest_or("examples/molit_jeonse_recent*.json", "")),
                     help="전세 recent 12개월 MOLIT(D 파생용, fetch_molit_jeonse_recent_25gu.py 산출). 없으면 스킵.")
+    return ap
+
+
+def main():
+    from agent_realestate import config
+    config.load_env_file()   # .env 주입 — scope-aware 기본값(build_arg_parser)이 파서 구성 시점에 보려면
+                              # parse_args 이전에 필요하다(2026-09-05 사고 수정: 예전엔 parse_args 뒤에
+                              # 호출돼 단독 실행 시 .env 의 RE_SCAN_SCOPE 가 기본값에 반영되지 않았다).
+    ap = build_arg_parser()
     a = ap.parse_args()
     today = a.today or date.today().isoformat()
-    from agent_realestate import config
-    config.load_env_file()   # .env 의 RE_EMAIL_TO(takedown 연락처) 주입 — standalone 실행 보장(cmd_daily 경유시는 이미 주입됨)
+    from agent_realestate.scope_inputs import current_scope
+    print(f"[run_daily] scope={current_scope()} public_frame={a.public_frame} survivors={a.survivors}")
 
     if a.public_frame:
         gu_allow = ({g.strip() for g in a.public_gu_allow.split(",") if g.strip()}

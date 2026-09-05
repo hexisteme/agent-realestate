@@ -105,7 +105,8 @@ def test_fetch_basis_merges_v5_basis_and_detail(monkeypatch):
     def fake(url, params, key):
         calls.append(url)
         if url == kapt.BASIS_EP_V5:
-            return {"kaptName": "영등포푸르지오", "kaptdaCnt": 2462.0, "kaptDongCnt": 20.0, "kaptUsedate": "20020930",
+            return {"kaptName": "영등포푸르지오", "kaptdaCnt": 2462.0, "hoCnt": 2470.0, "kaptDongCnt": 20.0, "kaptUsedate": "20020930",
+                    "kaptAddr": "서울특별시 영등포구 영등포동 1-1 영등포푸르지오",
                     "codeHeatNm": "개별난방", "codeHallNm": "계단식", "kaptBcompany": "대우건설"}
         assert url == kapt.DETAIL_EP_V5
         return {"kaptdPcnt": 1000.0, "kaptdPcntu": 1462.0}
@@ -114,6 +115,8 @@ def test_fetch_basis_merges_v5_basis_and_detail(monkeypatch):
     assert calls == [kapt.BASIS_EP_V5, kapt.DETAIL_EP_V5]
     assert (m["kaptName"], m["units"], m["dong_cnt"], m["built_year"]) == ("영등포푸르지오", 2462, 20, 2002)
     assert m["builder"] == "대우건설" and m["parking_total"] == 2462 and m["parking_per_unit"] == 1.0
+    # 신원게이트(verify_kapt_basis_identity)용 원시값 — 주소·세대수(kaptdaCnt)·호수(hoCnt, 주상복합 폴백) 노출(2026-09-05)
+    assert (m["kaptAddr"], m["kaptdaCnt"], m["hoCnt"]) == ("서울특별시 영등포구 영등포동 1-1 영등포푸르지오", 2462, 2470)
 
 
 def test_list_endpoint_is_v4_and_parse_apt_list_accepts_v4_json():

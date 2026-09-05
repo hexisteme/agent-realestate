@@ -9,6 +9,11 @@ verify_parcel_identity(canonical 완전일치 또는 ≥5자 단방향포함+레
 — API 일시장애·평형무매칭·타당성가드 등 — 로 None 이 나와도 원래 값을 유지한다. 이 재검증의
 목적은 새 게이트 하나의 효과만 보는 것이지 전체 파이프라인 재실행이 아니다).
 
+--overlay/--out 기본값은 2026-09-05부터 하드코딩 날짜(20260710/20260905) 대신 지연 해소한다
+(latest_overlay_path/default_out_path, main() 안에서 --universe 아닐 때만 계산) — decisions.json
+캐시가 유실된 채 재실행해도 07-10 원본을 다시 읽어 이미 제거한 gongsi_man 을 부활시키지 않고,
+매번 오늘 날짜의 새 overlay 로 기록한다.
+
 사용:
     python3 revalidate_gongsi.py                      # 전량, 40분 예산
     python3 revalidate_gongsi.py --budget-min 5        # 예산 축소(테스트용)
@@ -189,10 +194,17 @@ def write_universe_with_backup(path: Path, rows: list[dict], stamp: str) -> Path
 
 def derive_frame_candidates(cnos: list[str], overlay: dict,
                             frame_by_cno: dict) -> tuple[list[dict], list[str]]:
-    """derive_public_targets 후보에 없는 cno 를 collect_public_enrich.FRAME 원본으로 폴백 재검증
-    후보화한다 — area 는 frame 에 없어 0.0(→ _revalidate_one 이 신원게이트까지만 판정하고
-    identity-ok-no-area 로 구 값을 유지). frame 에도 없는 cno 는 missing 으로 분리 반환(재검증
-    불가, 원값 유지)."""
+    """derive_public_targets 후보에 없는 cno 를 collect_public_enrich.FRAME 원본(cno →
+    {"name","households","gus":[스캔구역...]})으로 폴백 재검증 후보화한다 — area 는 frame 에 없어
+    0.0(→ _revalidate_one 이 신원게이트까지만 판정하고 identity-ok-no-area 로 구 값을 유지). frame
+    에도 없는 cno 는 missing 으로 분리 반환(재검증 불가, 원값 유지).
+
+    district 는 그 cno 가 걸친 모든 gu 를 '/'로 이어붙인 문자열이다(2026-09-05 경계단지 라이브감사
+    수정) — FRAME 은 (스캔구역, complexNo) 행이라 경계단지는 중복행을 갖고, 첫 행의 gu 는 스캔구역일
+    뿐 실제 소재구가 아닐 수 있다(강남자곡힐스테이트 첫 행 gu=서초·실제=강남, 둔촌하이츠 첫 행
+    gu=송파·실제=강동). 후보 gu 전부를 넘겨야 _identity_fail_reason 의 포함검사
+    (addr_gu not in frame_gu.replace(" ",""))가 실제 소재구를 놓치지 않고 gu-mismatch 오탈락시키지
+    않는다. gu(단일값, 층화표본용)는 frame 최초 등장 gu 그대로 유지한다."""
     candidates: list[dict] = []
     missing: list[str] = []
     for cno in cnos:
@@ -200,11 +212,30 @@ def derive_frame_candidates(cnos: list[str], overlay: dict,
         if not fr:
             missing.append(cno)
             continue
-        gu = fr["gu"]
-        candidates.append({"complex_no": cno, "name": fr["name"], "gu": gu,
-                           "district": _district_of(gu), "units": fr.get("households") or 0,
+        gus = fr["gus"]
+        candidates.append({"complex_no": cno, "name": fr["name"], "gu": gus[0],
+                           "district": "/".join(_district_of(g) for g in gus),
+                           "units": fr.get("households") or 0,
                            "area": 0.0, "kapt_code": overlay[cno].get("kapt_code")})
     return candidates, missing
+
+
+def latest_overlay_path(ex_dir: Path) -> Path:
+    """최신 enrich_overlay_25gu_*.json — 호출 시점(main() 안)에 해소한다. latest_universe_path 와
+    동일 이유(2026-09-05): import/parser-구성 시점에 [-1] 로 미리 풀면 파일이 없는 환경(CI 등)에서
+    수집 자체가 깨지고, 있어도 그 시점 스냅샷에 고정돼 이후 생성된 최신 산출물을 못 본다."""
+    files = sorted(ex_dir.glob("enrich_overlay_25gu_*.json"))
+    if not files:
+        raise SystemExit(f"{ex_dir}/enrich_overlay_25gu_*.json 없음 — collect_public_enrich.py 산출물이 필요하다")
+    return files[-1]
+
+
+def default_out_path(ex_dir: Path, today: str) -> Path:
+    """--out 기본값 — 오늘(today, YYYYMMDD) 날짜로 새 overlay 파일명을 만든다. decisions.json 캐시가
+    유실된 채 재실행해도 항상 '오늘' 파일로 새로 기록해, 이미 제거한 gongsi_man 이 07-10 원본에서
+    부활하는 걸 막는다(2026-09-05). --overlay 기본값(latest_overlay_path)과 같은 경로를 가리킬 수도
+    있는데 그건 정상 — main() 이 쓰기 전 deep-copy 한다."""
+    return ex_dir / f"enrich_overlay_25gu_{today}.json"
 
 
 def _revalidate_candidates(candidates: list[dict], old_values: dict, molit: dict,
@@ -276,11 +307,15 @@ def _summarize_decisions(candidates: list[dict], decisions: dict,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--overlay", default="examples/enrich_overlay_25gu_20260710.json")
+    ap.add_argument("--overlay", default=None,
+                    help="미지정시 최신 examples/enrich_overlay_25gu_*.json(latest_overlay_path, "
+                         "lexicographic 마지막) — 캐시(decisions.json) 유실 후 재실행해도 07-10 원본이 "
+                         "아니라 최신 산출물을 읽는다(2026-09-05).")
     ap.add_argument("--molit", default="examples/molit_recent_25gu_20260710.json")
-    ap.add_argument("--out", default="examples/enrich_overlay_25gu_20260905.json",
-                    help="run_daily._latest_or('examples/enrich_overlay_*.json') 가 마지막으로 "
-                         "고르도록 20260710 뒤에 lexicographic 하게 오는 이름이어야 함(대시 X)")
+    ap.add_argument("--out", default=None,
+                    help="미지정시 examples/enrich_overlay_25gu_<오늘 YYYYMMDD>.json(default_out_path) — "
+                         "run_daily._latest_or('examples/enrich_overlay_*.json') 가 마지막으로 고르도록 "
+                         "항상 오늘 날짜 이름으로 새로 기록한다(대시 X, 2026-09-05)")
     ap.add_argument("--cache", default=str(SCRATCH / "cache.json"))
     ap.add_argument("--decisions", default=None,
                     help="미지정시 --universe 는 decisions_universe.json, 아니면 decisions.json")
@@ -295,6 +330,11 @@ def main() -> None:
     a = ap.parse_args()
     if a.decisions is None:
         a.decisions = str(SCRATCH / ("decisions_universe.json" if a.universe else "decisions.json"))
+    if not a.universe:   # --universe 는 --overlay/--out 을 쓰지 않는다(위 --universe help 참고)
+        if a.overlay is None:
+            a.overlay = str(latest_overlay_path(Path("examples")))
+        if a.out is None:
+            a.out = str(default_out_path(Path("examples"), time.strftime("%Y%m%d")))
 
     vkey = os.environ.get("VWORLD_API_KEY", "")
     mkey = os.environ.get("MOLIT_API_KEY", "")
@@ -331,9 +371,17 @@ def main() -> None:
                                "area": t["area_m2"] or 0.0, "kapt_code": overlay[cno].get("kapt_code")})
         if no_target:
             frame = json.load(open(cpe.FRAME, encoding="utf-8"))
+            # FRAME 은 (스캔구역, complexNo) 행이라 경계단지는 중복행을 갖고, 첫 행의 gu 는 스캔구역일
+            # 뿐 실제 소재구가 아닐 수 있다(강남자곡힐스테이트 첫 행 gu=서초·실제=강남, 둔촌하이츠
+            # 첫 행 gu=송파·실제=강동, 2026-09-05 라이브감사). 첫 행만 채택하는 대신 그 cno 의 모든
+            # gu 를 모아 derive_frame_candidates 가 전부를 district 후보로 넘기게 한다.
             frame_by_cno: dict[str, dict] = {}
             for r in frame:
-                frame_by_cno.setdefault(str(r["complexNo"]), r)
+                cno = str(r["complexNo"])
+                entry = frame_by_cno.setdefault(cno, {"name": r.get("name"),
+                                                      "households": r.get("households"), "gus": []})
+                if r["gu"] not in entry["gus"]:
+                    entry["gus"].append(r["gu"])
             frame_candidates, missing = derive_frame_candidates(no_target, overlay, frame_by_cno)
             candidates.extend(frame_candidates)
             print(f"  (참고) derive_public_targets 에 없는 cno {len(no_target)}개 중 frame 폴백으로 "

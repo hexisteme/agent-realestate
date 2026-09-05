@@ -265,6 +265,27 @@ def test_latest_universe_path_is_lazy_and_fails_loud_when_missing(tmp_path, monk
     assert cg.latest_universe_path().name == "candidates_universe025_20260905.json"
 
 
+# ── revalidate_gongsi: --overlay/--out 지연 해소 기본값(2026-09-05) ───────────────────
+# decisions.json 캐시 유실 시 07-10 원본으로 재구축되며 이미 제거한 gongsi_man 이 부활하는 걸
+# 막기 위해 --overlay 는 최신 파일을, --out 은 항상 오늘 날짜 파일명을 쓴다(latest_universe_path
+# 와 동일 이유로 지연 해소 — CI 등 파일 없는 환경에서 import 시점에 깨지지 않는다).
+
+def test_latest_overlay_path_is_lazy_and_fails_loud_when_missing(tmp_path):
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    with pytest.raises(SystemExit):
+        rv.latest_overlay_path(tmp_path)
+    (tmp_path / "enrich_overlay_25gu_20260710.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "enrich_overlay_25gu_20260905.json").write_text("{}", encoding="utf-8")
+    assert rv.latest_overlay_path(tmp_path).name == "enrich_overlay_25gu_20260905.json"
+
+
+def test_default_out_path_yields_dated_name(tmp_path):
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    assert rv.default_out_path(tmp_path, "20260905") == tmp_path / "enrich_overlay_25gu_20260905.json"
+
+
 # ── revalidate_gongsi: universe 모드(universe gongsi_man 직접 재검증, 2026-09-05) ─────
 # revalidate_gongsi 는 collect_public_enrich 등 무거운 의존성 체인을 모듈 최상단에서 import 하므로
 # (위 test_collect_public_enrich_imports_cleanly 와 동일 이유) 모듈 top-level import 대신 각 테스트
@@ -337,11 +358,13 @@ def test_write_universe_with_backup_creates_backup_and_never_overwrites_backup(t
 
 
 def test_derive_frame_candidates_uses_frame_and_reports_missing():
+    """단일 gu(경계단지 아님) — frame_by_cno 는 main() 이 FRAME 원본에서 조립하는 shape
+    (cno → {"name","households","gus":[...]})을 받는다."""
     import importlib
     rv = importlib.import_module("revalidate_gongsi")
     overlay = {"10": {"kapt_code": "K10"}, "20": {"kapt_code": None}}
     frame_by_cno = {
-        "10": {"complexNo": "10", "name": "프레임단지", "gu": "노원", "households": 300},
+        "10": {"name": "프레임단지", "households": 300, "gus": ["노원"]},
     }
     candidates, missing = rv.derive_frame_candidates(["10", "20"], overlay, frame_by_cno)
     assert missing == ["20"]
@@ -354,6 +377,26 @@ def test_derive_frame_candidates_uses_frame_and_reports_missing():
     assert c["units"] == 300
     assert c["area"] == 0.0
     assert c["kapt_code"] == "K10"
+
+
+def test_derive_frame_candidates_joins_all_gus_for_border_complex():
+    """경계단지(2026-09-05 라이브감사 실사고): FRAME 은 (스캔구역, complexNo) 행이라 중복행이 남고
+    첫 행의 gu 는 스캔구역일 뿐 실제 소재구가 아닐 수 있다(둔촌하이츠 첫 행 gu=송파, 실제=강동) —
+    district 를 후보 gu 전부 '/'로 묶어 넘기면 _identity_fail_reason 의 포함검사가 실제 소재구를
+    어디서든 찾아 gu-mismatch 오탈락을 막는다. gu(단일값, 층화표본용)는 첫 gu 그대로 유지한다."""
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    overlay = {"896": {"kapt_code": "K896"}}
+    frame_by_cno = {
+        "896": {"name": "둔촌하이츠", "households": 500, "gus": ["송파", "강동"]},
+    }
+    candidates, missing = rv.derive_frame_candidates(["896"], overlay, frame_by_cno)
+    assert missing == []
+    c = candidates[0]
+    assert c["gu"] == "송파"                       # 층화표본용 — 첫 gu 유지
+    assert c["district"] == "서울 송파구/서울 강동구"
+    assert "서울 송파구" in c["district"]
+    assert "서울 강동구" in c["district"]
 
 
 def test_revalidate_one_identity_only_when_area_missing(monkeypatch):
@@ -439,6 +482,15 @@ def test_identity_norm_strips_jibun_parenthesis_and_inner_apt_token():
     assert cg._identity_norm("현대(1차)아파트") == "현대(1)"
 
 
+def test_identity_norm_tightened_jibun_parenthesis_rule_keeps_short_pure_numbers():
+    """2026-09-05 완화: 지번처럼 보이는 괄호(대시 포함 또는 3자리+ 순수숫자)만 벗긴다 — 1~2자리
+    순수숫자('현대(1)')는 단지번호 표기일 수 있어 보존한다(VWorld 실측 괄호내용 검토: 고층/저층/
+    101동/70-12/해등마을/276/치현마을/래미안/'1,2차' 중 '276'류만 지번이었다)."""
+    import collect_gongsi as cg
+    assert cg._identity_norm("성원(276)") == "성원"          # 3자리+ 순수숫자 지번 → 제거
+    assert cg._identity_norm("현대(1)") == "현대(1)"         # 1자리 순수숫자 → 단지번호 표기로 보존
+
+
 def test_identity_gate_passes_mixed_use_same_parcel_with_jibun_suffix():
     """동도센트리움[주상복합](구로 개봉동 70-12): aphusNm '동도센트리움(70-12)' ↔ kaptName '동도센트리움 아파트 오피스텔',
     distinct 호수 136 = units 136 → 같은 필지. 이름이 다른 단지·호수가 다른 단지는 여전히 거부."""
@@ -446,5 +498,8 @@ def test_identity_gate_passes_mixed_use_same_parcel_with_jibun_suffix():
     addr = "서울특별시 구로구 개봉동 70-12 동도센트리움 아파트 오피스텔"
     kw = dict(kapt_addr=addr, frame_gu="서울 구로구")
     assert cg._identity_fail_reason("동도센트리움(70-12)", "동도센트리움 아파트 오피스텔", 136, 136, **kw) is None
-    assert cg._identity_fail_reason("개봉푸르지오(70-12)", "동도센트리움 아파트 오피스텔", 136, 136, **kw) == "name-mismatch"
+    # 2026-09-05 rule 2(개명허용, 코디네이터 추가지시) 도입 후: 이름은 무관하지만 같은 구·세대수 정확
+    # 일치(136=136)라 개명 증거로 통과한다 — 예전 기대값은 "name-mismatch" 였다. 다른 필지가 세대수만
+    # 우연히 같을 잔여위험은 _identity_fail_reason 문서화·tests/test_identity.py rule2 테스트 참조.
+    assert cg._identity_fail_reason("개봉푸르지오(70-12)", "동도센트리움 아파트 오피스텔", 136, 136, **kw) is None
     assert cg._identity_fail_reason("동도센트리움(70-12)", "동도센트리움 아파트 오피스텔", 400, 136, **kw) == "count-mismatch"
