@@ -7,6 +7,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 import blog.build_explorer as be
+import blog.complex_page as cp
 from blog.wording_guard import assert_wording_ok
 
 _CSS = ("*{box-sizing:border-box}body{margin:0;background:#f7f5f0;color:#1b1a17;"
@@ -85,8 +86,11 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str) -> str:
                if (r.get("molit_p25_eok") is not None and r.get("molit_p75_eok") is not None) else "—")
         jeonse_cell = f'{r["jeonse_ratio_complex_pct"]:g}%' if be.passes_jeonse_gate(r) else "—"
         turnover_cell = f'{r["turnover_pct"]:g}%' if be.passes_turnover_gate(r) else "—"
+        # 단지 개별 페이지 게이트 통과 시 그 페이지로 링크(2026-09-05 P2) — 미통과면 기존처럼 굵은 텍스트만(행 자체가 앵커).
+        name_html = (f'<a href="../complex/{quote(cp.complex_slug(gu, r["name"]))}.html"><b>{r["name"]}</b></a>'
+                     if cp.passes_complex_page_gate(r) else f'<b>{r["name"]}</b>')
         trs.append(
-            f'<tr id="{slug}"><td><b>{r["name"]}</b> <span style="color:#8a857a;font-size:12px">'
+            f'<tr id="{slug}"><td>{name_html} <span style="color:#8a857a;font-size:12px">'
             f'{r.get("saeng") or ""}</span></td>'
             f'<td>{r["area_m2"]:g}㎡</td>'
             f'<td>{_eok(r.get("molit_recent_eok"))} <span style="color:#8a857a">n{r.get("molit_n") or 0}</span></td>'

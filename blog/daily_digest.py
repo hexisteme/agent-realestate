@@ -8,6 +8,7 @@ import json
 from urllib.parse import quote
 
 import blog.build_explorer as be
+import blog.complex_page as cp
 from blog.build_site import BASE_URL, ga4_snippet
 from blog.tistory_draft import _TBL, _TH, _TD, _MUT, TISTORY_TAGS
 from blog.wording_guard import assert_wording_ok
@@ -70,6 +71,16 @@ def _hub_url_rel(r: dict) -> str:
     return f'../gu/{quote(r["gu"])}.html#{be.slugify_complex_name(r["name"])}'
 
 
+def _complex_url_abs(r: dict) -> str:
+    """단지 개별 페이지(2026-09-05 P2) 절대 URL — 티스토리(외부 호스트)용."""
+    return f'{BASE_URL}/complex/{quote(cp.complex_slug(r["gu"], r["name"]))}.html'
+
+
+def _complex_url_rel(r: dict) -> str:
+    """단지 개별 페이지(2026-09-05 P2) 상대 URL — 사이트 daily/*.html 용."""
+    return f'../complex/{quote(cp.complex_slug(r["gu"], r["name"]))}.html'
+
+
 def _select_ranked(ds: dict) -> dict:
     cx = ds["complexes"]
     base = [r for r in cx if be.passes_rank_gate(r)]
@@ -107,7 +118,8 @@ def _today_counts(ds: dict) -> dict:
 
 def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
     def name_cell(r):
-        return (f'<a href="{_hub_url_abs(r)}"><b>{r["name"]}</b></a>({r["gu"]})'
+        href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
+        return (f'<a href="{href}"><b>{r["name"]}</b></a>({r["gu"]})'
                 f'<br><span style="{_MUT}">{r["area_m2"]:g}㎡</span>')
 
     def table(headers, rows):
@@ -162,7 +174,8 @@ def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
 
 def _render_site(today, asof, counts, sel, gu_rows, title) -> str:
     def name_cell(r):
-        return (f'<a href="{_hub_url_rel(r)}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
+        href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
+        return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
                 f'<br><span class=mut>{r["area_m2"]:g}㎡</span>')
 
     def table(headers, rows):

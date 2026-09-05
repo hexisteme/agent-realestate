@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import pytest
 
+import blog.complex_page as cp
 from blog.build_site import BASE_URL
 from blog.build_explorer import slugify_complex_name
 from blog.daily_digest import build_daily_digest, _select_ranked, _gu_summary_rows
@@ -97,6 +98,32 @@ def test_complex_name_links_to_gu_hub_anchor():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     expected = f'{BASE_URL}/gu/{quote("강남")}.html#{slugify_complex_name("강남좋은아파트")}'
     assert expected in d["tistory_html"]
+
+
+def test_complex_page_gate_switches_digest_links_to_complex_page():
+    """단지 개별 페이지 게이트(molit_n>=30) 통과 단지는 tistory/site 모두 ../complex/*.html 로,
+    미통과(허브 게이트만 통과) 단지는 기존처럼 구허브 앵커로 링크된다(2026-09-05 P2)."""
+    ds = {
+        "complexes": [
+            _row("강남", "강남게이트완전통과", molit_n=40, molit_recent_eok=20.0, molit_pos_52w=100,
+                 molit_trend_dir="▲", molit_trend_pct=5.0),
+            _row("강남", "강남허브만통과", molit_n=15, molit_recent_eok=20.0, molit_pos_52w=99,
+                 molit_trend_dir="▲", molit_trend_pct=5.0),
+        ],
+        "count": 2, "data_asof": "2026-09-04", "generated": "2026-09-05",
+    }
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+
+    slug = cp.complex_slug("강남", "강남게이트완전통과")
+    complex_href_abs = f'{BASE_URL}/complex/{quote(slug)}.html'
+    complex_href_rel = f'../complex/{quote(slug)}.html'
+    hub_href_abs = f'{BASE_URL}/gu/{quote("강남")}.html#{slugify_complex_name("강남허브만통과")}'
+    hub_href_rel = f'../gu/{quote("강남")}.html#{slugify_complex_name("강남허브만통과")}'
+
+    assert f'<a href="{complex_href_abs}">' in d["tistory_html"]
+    assert f'<a href="{hub_href_abs}">' in d["tistory_html"]
+    assert f'<a href="{complex_href_rel}">' in d["site_html"]
+    assert f'<a href="{hub_href_rel}">' in d["site_html"]
 
 
 def test_tistory_html_over_budget_raises():

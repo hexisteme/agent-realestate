@@ -61,7 +61,30 @@ core = lambda nm: re.sub(r"[\(\[].*?[\)\]]", "", nm).replace(" ", "")
 
 # 괄호 안 내용이 이 토큰들 "뿐"일 때만 비식별 qualifier 로 보고 제거한다(측정 근거:
 # examples/molit_recent_25gu_20260710.json·frame_25gu_20260710.json 괄호토큰 빈도 상위 — 2026-09-05).
-_PAREN_NON_IDENTITY = {"고층", "저층", "임대", "분양", "아파트", "주상복합", "도시형", "민간임대"}
+# 아래 4개(토지임대부아파트·치현마을·인왕산힐스테이트·데시앙)는 2026-09-05 근접매칭(item 3) 추가분 —
+# 25구 MOLIT 원본명 전수(molit_recent_25gu_20260710.json) 기준 동일-lawd 충돌 0건 실측
+# (tests/test_blog_matching.py::test_new_paren_qualifiers_introduce_no_molit_collision, gongsi-gate-fix.md 참고).
+_PAREN_NON_IDENTITY = {"고층", "저층", "임대", "분양", "아파트", "주상복합", "도시형", "민간임대",
+                       "토지임대부아파트", "치현마을", "인왕산힐스테이트", "데시앙"}
+
+# 라틴↔한글 브랜드 표기 변형 — 서로 다른 실체가 아니라 같은 브랜드의 재표기임을 실측(빈도·근접매칭
+# 스캔)으로 확인된 것만 접는다(2026-09-05 item 3). 부분일치 일반화 아님 — 정확히 이 토큰만 치환한다
+# (경계조건 없음 — "DMCSKVIEW"·"DMCSK뷰아이파크포레"처럼 라틴 브랜드 접두가 붙어 있는 실측 사례가
+# 있어 collect_gongsi._name_norm 의 기존 IPARK 치환과 동일하게 무경계 치환, 2026-09-05 실측).
+_BRAND_VARIANTS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"IPARK", re.I), "아이파크"),          # 노원IPARK(7) → 아이파크(101) 계열
+    (re.compile(r"e편한세상", re.I), "이편한세상"),      # e편한세상(65) ↔ 이편한세상(8)
+    (re.compile(r"SKVIEW", re.I), "SK뷰"),             # SKVIEW(8)·에스케이뷰(9) → SK뷰(15)
+    (re.compile(r"에스케이뷰"), "SK뷰"),
+    (re.compile(r"XI"), "자이"),                       # 자이(133) 계열(XI 표기 현재 0건, 방어적으로 유지)
+]
+
+
+def _fold_brand_variants(s: str) -> str:
+    """라틴/한글 브랜드 표기 변형을 단일 키로 접는다(2026-09-05 근접매칭 수정) — _BRAND_VARIANTS 순서대로 치환."""
+    for pat, repl in _BRAND_VARIANTS:
+        s = pat.sub(repl, s)
+    return s
 
 
 def canonical_complex_name(nm: str) -> str | None:
@@ -71,6 +94,7 @@ def canonical_complex_name(nm: str) -> str | None:
     ③ 그 외의 괄호는 안 내용이 비식별 allowlist(_PAREN_NON_IDENTITY) 토큰만으로 구성될 때만
     제거하고, 그 외 내용(동수·차수·브랜드명 등)은 식별자의 일부로 보존한다
     ("현대(982)" ≠ "현대(209)"). ④ 공백 전부 제거. ⑤ 말미 "아파트" 접미 제거.
+    ⑥ 라틴↔한글 브랜드 표기 변형 접기(_fold_brand_variants, 2026-09-05 근접매칭 수정 — item 3).
     결과가 빈 문자열이면 매칭 불가로 None 반환 — 구멍(전부일치) 재발 방지를 위해 반드시
     '무엇과도 매칭되지 않아야' 한다(빈 이름·지번코드뿐인 이름 등)."""
     s = re.sub(r"\[.*?\]", "", nm)
@@ -83,6 +107,7 @@ def canonical_complex_name(nm: str) -> str | None:
     s = re.sub(r"\s+", "", s)
     if s.endswith("아파트"):
         s = s[:-3]
+    s = _fold_brand_variants(s)
     return s or None
 
 
@@ -787,6 +812,7 @@ tbody tr:hover{background:#f6faff}
       <div style="display:flex;gap:8px;align-items:center">
         <span class=muted style="font-size:12px">열 머리글 클릭 = 정렬</span>
         <button class=toggle-btn id=infraToggle onclick="const t=document.getElementById('tbl');t.classList.toggle('show-extra');this.classList.toggle('on');this.textContent=this.classList.contains('on')?'인프라 숨기기':'📍 인프라 보기'">📍 인프라 보기</button>
+        <button class=toggle-btn id=copyLinkBtn onclick="copyStateLink(this)">링크 복사</button>
       </div>
     </div>
     <div style="overflow:auto"><table id=tbl><thead id=thead></thead><tbody id=tbody></tbody></table></div>
@@ -877,7 +903,29 @@ const COLS=[
 const uniq=a=>[...new Set(a)];
 const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
-fetch("./dataset.json").then(r=>r.json()).then(d=>{DB=d;init();render();});
+// 프리셋 딥링크(2026-09-05 P2) — ?gu=&band=&sort=&dir=&q= 를 첫 render() 전에 S 에 반영.
+// 허브/단지페이지/다이제스트가 이 쿼리로 explorer.html 을 가리키면 그 필터가 이미 걸린 채로 뜬다.
+function applyPreset(){
+  const p=new URLSearchParams(location.search);
+  const gu=p.get("gu"); if(gu) S.gu.add(gu);
+  const band=p.get("band"); if(band) S.area.add(band);
+  const q=p.get("q"); if(q) S.q=q;
+  const sort=p.get("sort"); if(sort&&COLS.some(c=>c.k===sort)) S.sort=sort;
+  const dir=p.get("dir"); if(dir==="1"||dir==="-1") S.dir=+dir;
+}
+// 현재 상태(S)를 쿼리스트링으로 클립보드에 복사 — "이 필터 그대로" 공유용.
+function copyStateLink(btn){
+  const p=new URLSearchParams();
+  if(S.gu.size) p.set("gu",[...S.gu][0]);
+  if(S.area.size) p.set("band",[...S.area][0]);
+  if(S.q) p.set("q",S.q);
+  p.set("sort",S.sort); p.set("dir",S.dir);
+  const url=location.origin+location.pathname+"?"+p.toString();
+  const done=()=>{if(btn){const t=btn.textContent;btn.textContent="복사됨";setTimeout(()=>btn.textContent=t,1200);}};
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done).catch(()=>{});
+}
+
+fetch("./dataset.json").then(r=>r.json()).then(d=>{DB=d;applyPreset();init();render();});
 
 function init(){
   document.getElementById("disc").innerHTML="⚖ "+esc(DB.disclaimer)+" · 데이터 "+DB.data_asof+" · "+DB.license;
@@ -905,6 +953,13 @@ function init(){
     render();});
   F.querySelectorAll(".chip:not([data-k='units_min'])").forEach(c=>c.onclick=()=>{const k=c.dataset.k,v=c.dataset.v;S[k].has(v)?S[k].delete(v):S[k].add(v);c.classList.toggle("on");render();});
   document.getElementById("q").oninput=e=>{S.q=e.target.value.trim();render();};
+  // 프리셋(applyPreset)으로 이미 채워진 S 를 필터 UI에도 반영(체크표시·검색창 값) — 없으면 렌더는 맞는데 칩만 꺼져 보임.
+  document.getElementById("q").value=S.q;
+  F.querySelectorAll(".chip").forEach(c=>{
+    const k=c.dataset.k,v=c.dataset.v;
+    if(k==="units_min"){ if(+v===S.units_min) c.classList.add("on"); }
+    else if(S[k]&&S[k].has&&S[k].has(v)) c.classList.add("on");
+  });
   document.getElementById("emin").oninput=e=>{S.emin=e.target.value===""?null:+e.target.value;render();};
   document.getElementById("emax").oninput=e=>{S.emax=e.target.value===""?null:+e.target.value;render();};
   document.getElementById("ppmin").oninput=e=>{S.ppmin=e.target.value===""?null:+e.target.value;render();};

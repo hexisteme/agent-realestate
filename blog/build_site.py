@@ -7,6 +7,8 @@ from datetime import date, datetime, timezone, timedelta
 from email.utils import format_datetime
 from urllib.parse import quote
 
+import blog.build_explorer as be   # gu_hub.py 와 동일 관례(모듈 top-level import, 순환 없음 — be 는 build_site 를 지연import만 함)
+
 # BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
 # 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
 SITE=os.environ.get("BLOG_SITE_DIR","site"); SRC=os.environ.get("BLOG_SRC_DIR","report/blog")
@@ -36,8 +38,10 @@ def _post_meta(p):
     desc=re.search(r'<meta name=description content="(.*?)">',txt)
     return d,(t.group(1).strip() if t else nm[:-5]),(desc.group(1) if desc else "")
 
-def build(today=None):
+def build(today=None, molit_path=None):
     today=today or date.today().isoformat()
+    # molit_path(2026-09-05 P2) — 단지 페이지 월별차트용 raw MOLIT. 없으면(파일 부재) 차트만 생략.
+    mp = molit_path or os.environ.get("RE_MOLIT") or "examples/molit_recent_25gu_20260710.json"
     os.makedirs(f"{SITE}/posts",exist_ok=True)
     os.makedirs(f"{SITE}/gu",exist_ok=True)
     os.makedirs(f"{SITE}/daily",exist_ok=True)
@@ -53,9 +57,11 @@ def build(today=None):
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
     # 2a) 구 허브 25개(2026-09-05 P1) — dataset.json 에서 직접 렌더(gu_hub.render_gu_hub), site/gu/ 로.
     gu_list=[]
+    complex_count=0   # 2a-2 에서 채움(P2) — ds_path 없으면 0 유지
     ds_path=f"{SITE}/dataset.json"
     if os.path.exists(ds_path):
         import blog.gu_hub as gh
+        import blog.complex_page as cp
         ds_all=json.load(open(ds_path,encoding="utf-8"))
         by_gu={}
         for r in ds_all["complexes"]: by_gu.setdefault(r["gu"],[]).append(r)
@@ -64,6 +70,25 @@ def build(today=None):
         for gu in sorted(by_gu):
             open(f"{SITE}/gu/{gu}.html","w").write(gh.render_gu_hub(gu,by_gu[gu],asof,gen))
             gu_list.append(gu)
+        # 2a-2) 단지 개별 페이지(2026-09-05 P2) — 게이트(아파트·40㎡+·매매표본30건+) 통과 단지만.
+        #   raw MOLIT(mp) 없으면 월별차트만 생략(render_complex_page 가 monthly=None 을 안내문으로 대체).
+        gated_complexes = cp.select_page_complexes(ds_all)
+        molit_raw = (json.load(open(mp, encoding="utf-8"))
+                     if gated_complexes and mp and os.path.exists(mp) else None)   # 게이트 0개면 로드 스킵(테스트·소형빌드 절약)
+        os.makedirs(f"{SITE}/complex", exist_ok=True)
+        for r in gated_complexes:
+            gu = r["gu"]; gu_rows = by_gu.get(gu, [])
+            peers = cp.select_peers(r, gu_rows)
+            monthly = None
+            if molit_raw is not None:
+                lawd = be.GU_LAWD.get(gu)
+                if lawd:
+                    recs = be._match_records_public(r["name"], r["area_m2"], lawd, molit_raw)
+                    monthly = cp.build_monthly_medians(recs, asof)
+            row2 = {**r, "_gu_median_eok": be.compute_gu_median(gu_rows)}
+            slug = cp.complex_slug(gu, r["name"])
+            open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen))
+            complex_count += 1
     # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
     digest_latest=f"{SITE}/daily/latest.html"
     digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None
@@ -87,7 +112,8 @@ def build(today=None):
 <p style="font-size:17px"><a href="explorer.html"><b>🔎 탐색기 — 내 기준으로 필터</b></a> <span style="color:#666;font-size:13px">예산·평형·연식·유형으로 단지를 필터하고 공공 실거래로 정렬</span></p>
 {('<p style="font-size:17px"><a href="daily/latest.html"><b>📰 오늘의 변화 — ' + html.escape(digest_meta[1]) + '</b></a></p>') if digest_meta else ''}
 <p><a href="methodology.html">방법론 — 왜 이 숫자를 믿을 수 있나</a></p>
-<h2>자치구 허브 (25개 구)</h2><ul class=gugrid>{"".join(f'<li><a href="gu/{quote(gu)}.html">{gu}</a></li>' for gu in gu_list)}</ul>
+{(f'<p style="font-size:15px"><a href="#gu-hubs">단지 페이지 {complex_count}개(표본 30건 이상)</a></p>') if complex_count else ''}
+<h2 id=gu-hubs>자치구 허브 (25개 구)</h2><ul class=gugrid>{"".join(f'<li><a href="gu/{quote(gu)}.html">{gu}</a></li>' for gu in gu_list)}</ul>
 <h2>최근 포스트</h2><ul>{items}</ul>
 <div class=d>방법론: 국토부 RTMS 12개월 동일평형 실거래 중위·분포(P25–P75)·추세·52주 위치(이상치 −40%컷). 자체 평가·점수·순위 없음. 사설 호가·민간시세는 사용·게재하지 않습니다. AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0.</div>
 </body></html>"""
@@ -132,8 +158,19 @@ def build(today=None):
     gu_urls="".join(f"<url><loc>{BASE_URL}/gu/{quote(gu)}.html</loc><lastmod>{today}</lastmod></url>" for gu in gu_list)
     digest_files=sorted(glob.glob(f"{SITE}/daily/*.html"))
     digest_urls="".join(f"<url><loc>{BASE_URL}/daily/{quote(os.path.basename(p))}</loc><lastmod>{today}</lastmod></url>" for p in digest_files)
+    # 단지 페이지 URL(2026-09-05 P2)
+    complex_files=sorted(glob.glob(f"{SITE}/complex/*.html"))
+    complex_urls="".join(f"<url><loc>{BASE_URL}/complex/{quote(os.path.basename(p))}</loc><lastmod>{today}</lastmod></url>" for p in complex_files)
+    def _urlset(body): return f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>'
+    # sitemap.xml 은 sitemapindex 로 분할(2026-09-05 P2, urlset 항목 급증 대비) — 자식 3개: core(랜딩·방법론·구허브·다이제스트)·complex(단지)·posts(전체 포스트).
+    core_body=f"<url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url><url><loc>{BASE_URL}/methodology.html</loc><lastmod>{today}</lastmod></url>{gu_urls}{digest_urls}"
+    open(f"{SITE}/sitemap-core.xml","w").write(_urlset(core_body))
+    open(f"{SITE}/sitemap-complex.xml","w").write(_urlset(complex_urls))
+    open(f"{SITE}/sitemap-posts.xml","w").write(_urlset(urls))
+    sub_sitemaps="".join(f"<sitemap><loc>{BASE_URL}/{fn}</loc><lastmod>{today}</lastmod></sitemap>"
+                          for fn in ("sitemap-core.xml","sitemap-complex.xml","sitemap-posts.xml"))
     open(f"{SITE}/sitemap.xml","w").write(
-        f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>{urls}{gu_urls}{digest_urls}</urlset>')
+        f'<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{sub_sitemaps}</sitemapindex>')
     # 3b) feed.xml — RSS 2.0 (네이버 서치어드바이저 요구 item 필드: title/link/description/pubDate/guid)
     #     일간 다이제스트({today}.html, 있으면)를 최신글보다 앞선 첫 item 으로(2026-09-05 P1).
     digest_item=""
@@ -166,7 +203,7 @@ def build(today=None):
         "# AI usage policy\nlicense: CC-BY-NC-4.0\nattribution: required\n"
         "content: named public MOLIT transaction medians & distributions (no scores, no private prices)\n"
         "training: allowed (non-commercial, with attribution)\nprovenance: per-post claims.jsonl\n")
-    return {"posts":len(posts),"site":SITE}
+    return {"posts":len(posts),"site":SITE,"complex":complex_count}
 
 if __name__=="__main__":
     from agent_realestate import config

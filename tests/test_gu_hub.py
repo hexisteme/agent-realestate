@@ -14,6 +14,7 @@ import pytest
 
 import blog.build_explorer as be
 import blog.build_site as build_site
+import blog.complex_page as cp
 from blog.gu_hub import render_gu_hub, _eok
 
 
@@ -85,6 +86,22 @@ def test_per_cell_jeonse_gate_shows_dash_when_undersampled():
     assert bad_cells[7] == "—"
 
 
+# ── 단지 개별 페이지 링크 전환(2026-09-05 P2) ───────────────────────────────
+
+def test_complex_page_gate_switches_name_link_else_plain_bold():
+    rows = [
+        _row("노원", "게이트통과단지", molit_n=40, area_m2=59.0, molit_recent_eok=6.0),
+        _row("노원", "게이트미달단지", molit_n=5, area_m2=59.0, molit_recent_eok=6.0),
+    ]
+    out = render_gu_hub("노원", rows, "2026-09-04", "2026-09-05")
+    passed_cell = _cells_of(out, be.slugify_complex_name("게이트통과단지"))[0]
+    failed_cell = _cells_of(out, be.slugify_complex_name("게이트미달단지"))[0]
+    expected_href = f'../complex/{quote(cp.complex_slug("노원", "게이트통과단지"))}.html'
+    assert f'<a href="{expected_href}"><b>게이트통과단지</b></a>' in passed_cell
+    assert '<a href="../complex/' not in failed_cell
+    assert "<b>게이트미달단지</b>" in failed_cell
+
+
 # ── 금칙어 가드 배선 ─────────────────────────────────────────────────────
 
 def test_forbidden_word_in_complex_name_raises():
@@ -135,11 +152,16 @@ def test_build_site_wires_25_gu_hubs_sitemap_index_feed(tmp_path, monkeypatch):
     hub_files = sorted((site_dir / "gu").glob("*.html"))
     assert len(hub_files) == 25
 
+    # sitemap.xml(2026-09-05 P2) 은 sitemapindex 로 분할 — 구허브/다이제스트 실제 URL 은 sitemap-core.xml.
     sitemap = (site_dir / "sitemap.xml").read_text(encoding="utf-8")
+    assert "<sitemapindex" in sitemap
+    for fn in ("sitemap-core.xml", "sitemap-complex.xml", "sitemap-posts.xml"):
+        assert fn in sitemap
+    sitemap_core = (site_dir / "sitemap-core.xml").read_text(encoding="utf-8")
     for gu in gu_names:
-        assert f"/gu/{quote(gu)}.html" in sitemap
-    assert "/daily/2026-09-05.html" in sitemap
-    assert "/daily/latest.html" in sitemap
+        assert f"/gu/{quote(gu)}.html" in sitemap_core
+    assert "/daily/2026-09-05.html" in sitemap_core
+    assert "/daily/latest.html" in sitemap_core
 
     index_html = (site_dir / "index.html").read_text(encoding="utf-8")
     for gu in gu_names:
