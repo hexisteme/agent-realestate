@@ -2,16 +2,31 @@
 GitHub Pages 용. AI 친화: /llms.txt(root) + robots.txt(AI 크롤러 허용) + 각 포스트 JSON-LD + claims.jsonl.
 """
 from __future__ import annotations
-import os, shutil, glob, re, html
+import os, shutil, glob, re, html, json
 from datetime import date, datetime, timezone, timedelta
 from email.utils import format_datetime
 from urllib.parse import quote
 
-SITE="site"; SRC="report/blog"
+# BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
+# 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
+SITE=os.environ.get("BLOG_SITE_DIR","site"); SRC=os.environ.get("BLOG_SRC_DIR","report/blog")
 # 네이버 서치어드바이저 RSS/sitemap 은 절대 URL 필수 (searchadvisor.naver.com/guide/request-feed)
 BASE_URL=os.environ.get("BLOG_BASE_URL","https://hexisteme.github.io/seoul-re-snapshot").rstrip("/")
 KST=timezone(timedelta(hours=9))
 FEED_MAX=50
+GA4_MEASUREMENT_ID=os.environ.get("GA4_MEASUREMENT_ID","G-J40FMJG903")
+
+
+def ga4_snippet() -> str:
+    """GA4 gtag.js 로더(2026-09-05 P1) — GA4_MEASUREMENT_ID 빈 문자열이면 빈 스니펫(계측 비활성)."""
+    if not GA4_MEASUREMENT_ID:
+        return ""
+    mid = GA4_MEASUREMENT_ID
+    return (f'<script async src="https://www.googletagmanager.com/gtag/js?id={mid}"></script>\n'
+            "<script>window.dataLayer=window.dataLayer||[];"
+            "function gtag(){dataLayer.push(arguments);}"
+            "gtag('js',new Date());"
+            f"gtag('config','{mid}');</script>\n")
 
 def _post_meta(p):
     """포스트 파일에서 (date, title, description) 추출 — 파일명 YYYY-MM-DD-구.html 규약."""
@@ -24,15 +39,35 @@ def _post_meta(p):
 def build(today=None):
     today=today or date.today().isoformat()
     os.makedirs(f"{SITE}/posts",exist_ok=True)
+    os.makedirs(f"{SITE}/gu",exist_ok=True)
+    os.makedirs(f"{SITE}/daily",exist_ok=True)
     # 1) 포스트·claims·llms.txt 복사
     for f in glob.glob(f"{SRC}/posts/*"): shutil.copy(f,f"{SITE}/posts/")
+    # 일간 다이제스트({today}.html + latest.html, 2026-09-05 P1) — run_daily.py 산출물 복사.
+    for f in glob.glob(f"{SRC}/daily/*"): shutil.copy(f,f"{SITE}/daily/")
     if os.path.exists(f"{SRC}/llms.txt"): shutil.copy(f"{SRC}/llms.txt",f"{SITE}/llms.txt")
     # 탐색기(방문자 필터형, 2026-06-16) — dataset.json + explorer.html 를 site/ 루트로 복사.
     #   posts/ 밖이라 sitemap/RSS 의 posts/*.html glob 에 안 걸려 자연 제외(JS 렌더=색인부적합, SEO 본체는 정적 포스트).
     for f in ("dataset.json","explorer.html"):
         if os.path.exists(f"{SRC}/{f}"): shutil.copy(f"{SRC}/{f}",f"{SITE}/{f}")
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
-    # 2) 랜딩 index.html
+    # 2a) 구 허브 25개(2026-09-05 P1) — dataset.json 에서 직접 렌더(gu_hub.render_gu_hub), site/gu/ 로.
+    gu_list=[]
+    ds_path=f"{SITE}/dataset.json"
+    if os.path.exists(ds_path):
+        import blog.gu_hub as gh
+        ds_all=json.load(open(ds_path,encoding="utf-8"))
+        by_gu={}
+        for r in ds_all["complexes"]: by_gu.setdefault(r["gu"],[]).append(r)
+        asof=ds_all.get("data_asof",today)
+        gen=ds_all.get("generated",today)   # 포스트 파일명(posts/{gen}-{gu}.html)과 일치시켜야 허브 링크가 안 깨짐
+        for gu in sorted(by_gu):
+            open(f"{SITE}/gu/{gu}.html","w").write(gh.render_gu_hub(gu,by_gu[gu],asof,gen))
+            gu_list.append(gu)
+    # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
+    digest_latest=f"{SITE}/daily/latest.html"
+    digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None
+    # 2c) 랜딩 index.html
     items=""
     for p in posts:
         nm=os.path.basename(p); title=nm[:-5]
@@ -43,13 +78,16 @@ def build(today=None):
 <title>서울 부동산 데이터 스냅샷 — 개인 연구</title>
 <meta name=description content="서울 자치구 아파트 단지의 국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음). 방법론 공개. 투자자문 아님.">
 <script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"서울 부동산 데이터 스냅샷","inLanguage":"ko","license":"https://creativecommons.org/licenses/by-nc/4.0/","description":"국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음)."}}</script>
-<style>body{{font:16px/1.7 -apple-system,Pretendard,sans-serif;max-width:760px;margin:0 auto;padding:28px;color:#1a1a1a}}a{{color:#0969da}}li{{margin:4px 0}}.d{{font-size:13px;color:#666;border-top:1px solid #ddd;margin-top:24px;padding-top:12px}}</style>
+<style>body{{font:16px/1.7 -apple-system,Pretendard,sans-serif;max-width:760px;margin:0 auto;padding:28px;color:#1a1a1a}}a{{color:#0969da}}li{{margin:4px 0}}.d{{font-size:13px;color:#666;border-top:1px solid #ddd;margin-top:24px;padding-top:12px}}.gugrid{{display:flex;flex-wrap:wrap;gap:6px;padding:0;list-style:none}}.gugrid li{{margin:0}}.gugrid a{{display:inline-block;padding:4px 10px;border:1px solid #ddd;border-radius:14px;font-size:13px}}</style>
+{ga4_snippet()}
 </head><body>
 <h1>서울 부동산 데이터 스냅샷</h1>
 <p>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재 — 공공 실거래 named 게재는 합법). 자체 평가·점수·순위 없는 <b>사실 스냅샷</b>. 방법론 공개.</p>
 <p class=d style="border:0">⚖ 개인 연구·정보 공유이며 투자자문·매수권유 아님. 부동산은 자본시장법 금융투자상품이 아님. 수치는 게시 시점 기준 — 거래 전 원출처 재확인.</p>
 <p style="font-size:17px"><a href="explorer.html"><b>🔎 탐색기 — 내 기준으로 필터</b></a> <span style="color:#666;font-size:13px">예산·평형·연식·유형으로 단지를 필터하고 공공 실거래로 정렬</span></p>
+{('<p style="font-size:17px"><a href="daily/latest.html"><b>📰 오늘의 변화 — ' + html.escape(digest_meta[1]) + '</b></a></p>') if digest_meta else ''}
 <p><a href="methodology.html">방법론 — 왜 이 숫자를 믿을 수 있나</a></p>
+<h2>자치구 허브 (25개 구)</h2><ul class=gugrid>{"".join(f'<li><a href="gu/{quote(gu)}.html">{gu}</a></li>' for gu in gu_list)}</ul>
 <h2>최근 포스트</h2><ul>{items}</ul>
 <div class=d>방법론: 국토부 RTMS 12개월 동일평형 실거래 중위·분포(P25–P75)·추세·52주 위치(이상치 −40%컷). 자체 평가·점수·순위 없음. 사설 호가·민간시세는 사용·게재하지 않습니다. AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0.</div>
 </body></html>"""
@@ -60,6 +98,7 @@ def build(today=None):
 <title>방법론 — 서울 부동산 데이터 스냅샷</title>
 <meta name=description content="국토부 공공 실거래 중위·분포·추세·52주 위치의 측정·출처·신뢰규율·한계. 자체 점수 없음, 모든 수치 provenance 동봉.">
 <style>body{{font:15px/1.7 -apple-system,Pretendard,sans-serif;max-width:760px;margin:0 auto;padding:28px;color:#1a1a1a}}a{{color:#0969da}}h2{{font-size:17px;margin-top:26px}}.d{{font-size:13px;color:#666}}</style>
+{ga4_snippet()}
 </head><body>
 <h1>방법론</h1>
 <p><a href="./">← 목록</a></p>
@@ -89,9 +128,22 @@ def build(today=None):
     # 3) sitemap.xml (절대 URL — 서치어드바이저 제출용. lastmod=포스트 자체 날짜)
     #    ★한글 파일명 percent-encode 의무(sitemap 프로토콜 RFC-3986) — 미인코딩 시 구글 '가져올 수 없음'(2026-06-11 실측).
     urls="".join(f"<url><loc>{BASE_URL}/posts/{quote(os.path.basename(p))}</loc><lastmod>{_post_meta(p)[0]}</lastmod></url>" for p in posts)
+    # 구 허브 + 일간 다이제스트 URL(2026-09-05 P1) — 둘 다 매일 재생성이라 lastmod=today.
+    gu_urls="".join(f"<url><loc>{BASE_URL}/gu/{quote(gu)}.html</loc><lastmod>{today}</lastmod></url>" for gu in gu_list)
+    digest_files=sorted(glob.glob(f"{SITE}/daily/*.html"))
+    digest_urls="".join(f"<url><loc>{BASE_URL}/daily/{quote(os.path.basename(p))}</loc><lastmod>{today}</lastmod></url>" for p in digest_files)
     open(f"{SITE}/sitemap.xml","w").write(
-        f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>{urls}</urlset>')
+        f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>{urls}{gu_urls}{digest_urls}</urlset>')
     # 3b) feed.xml — RSS 2.0 (네이버 서치어드바이저 요구 item 필드: title/link/description/pubDate/guid)
+    #     일간 다이제스트({today}.html, 있으면)를 최신글보다 앞선 첫 item 으로(2026-09-05 P1).
+    digest_item=""
+    digest_dated=f"{SITE}/daily/{today}.html"
+    if os.path.exists(digest_dated):
+        dd_,dt_,ddesc_=_post_meta(digest_dated); dlink=f"{BASE_URL}/daily/{quote(os.path.basename(digest_dated))}"
+        dpub=format_datetime(datetime.fromisoformat(dd_).replace(hour=7,minute=12,tzinfo=KST))
+        digest_item=(f"<item><title>{html.escape(dt_)}</title><link>{dlink}</link>"
+                     f"<description>{html.escape(ddesc_)}</description>"
+                     f"<pubDate>{dpub}</pubDate><guid isPermaLink=\"true\">{dlink}</guid></item>")
     items=""
     for p in posts[:FEED_MAX]:
         d,t,desc=_post_meta(p); link=f"{BASE_URL}/posts/{quote(os.path.basename(p))}"
@@ -104,7 +156,7 @@ def build(today=None):
         f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
         f"<title>서울 부동산 데이터 스냅샷</title><link>{BASE_URL}/</link>"
         f"<description>서울 자치구 아파트 단지의 국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음). 방법론 공개. 투자자문 아님.</description>"
-        f"<language>ko</language><lastBuildDate>{now}</lastBuildDate>{items}</channel></rss>")
+        f"<language>ko</language><lastBuildDate>{now}</lastBuildDate>{digest_item}{items}</channel></rss>")
     # 4) robots.txt (AI 크롤러 명시 허용) + ai.txt(사용정책)
     open(f"{SITE}/robots.txt","w").write(
         "User-agent: *\nAllow: /\n# AI crawlers explicitly allowed (educational; named public MOLIT transaction stats, no scores)\n"

@@ -796,6 +796,17 @@ def _cmd_daily_inner(args) -> None:
             print("[daily] site push 실패 — 커밋은 로컬 보존, 다음 실행에서 재시도")
     else:
         print("[daily] 실거래 무변동 — 무발행(정상)")
+    # 텔레그램 주간 요약(2026-09-05 P1) — 주 1회(RE_WEEKLY_SUMMARY_WEEKDAY, 기본 월요일) 비치명 전송.
+    try:
+        from blog.weekly_summary import send_weekly_summary
+        weekday = int(os.environ.get("RE_WEEKLY_SUMMARY_WEEKDAY", "0"))
+        sent = send_weekly_summary(
+            dataset_path=str(root / "report/blog/dataset.json"), today=today,
+            marker_path=str(root / ".last-weekly-summary"), weekday=weekday)
+        if sent:
+            print("[daily] 주간 요약 텔레그램 전송 완료")
+    except Exception as e:
+        print(f"[daily] ⚠️ 주간 요약 전송 실패(비치명): {e}")
     # 플래그십 리포트 — 게이트 미달이면 차단되는 게 정상이라 비치명
     step("플래그십 리포트 regen(게이트)", ["python3", "regen_reports.py"], fatal=False)
     # ★Task I(2026-06-14): 정상 완료 텔레그램 알림

@@ -181,3 +181,39 @@ details{{border:1px solid #ddd;border-radius:8px;padding:10px 16px;margin-top:14
     path = f"{outdir}/tistory/{today}-tistory-draft.html"
     open(path, "w").write(helper)
     return path
+
+
+def write_digest_draft(digest: dict, today: str, outdir: str = "report/blog") -> str:
+    """일간 다이제스트(daily_digest.build_daily_digest 산출)용 복사버튼 헬퍼 페이지(2026-09-05 P1).
+    write_daily_draft 와 동일 포맷(textarea id=t/g/b + 복사버튼) — tistory_publish._parse_helper 가
+    그대로 파싱한다. 25구 통합 덤프(write_daily_draft) 대신 run_daily.py 가 이 함수를 호출한다."""
+    title, tags, body = digest["title"], digest["tags"], digest["tistory_html"]
+    helper = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>티스토리 발행 원고 {today}</title>
+<style>body{{font:15px/1.6 -apple-system,Pretendard,sans-serif;max-width:900px;margin:0 auto;padding:24px}}
+textarea{{width:100%;font:12px/1.5 ui-monospace,monospace;border:1px solid #ddd;border-radius:6px;padding:8px}}
+button{{margin:4px 0 14px;padding:6px 14px;border:1px solid #0969da;background:#0969da;color:#fff;border-radius:6px;cursor:pointer}}
+button.ok{{background:#1a7f37;border-color:#1a7f37}}
+.box{{background:#f6f8fa;border:1px solid #ddd;border-radius:8px;padding:12px 16px;font-size:13px}}
+details{{border:1px solid #ddd;border-radius:8px;padding:10px 16px;margin-top:14px}}</style></head><body>
+<h1>티스토리 발행 원고 <small>{today}</small></h1>
+<div class=box><b>등록 절차 (3복사 + 발행 1클릭)</b><ol style="margin:6px 0">
+<li>티스토리 → 글쓰기 → 에디터 우상단 <b>기본모드 ▾ → HTML</b> 전환</li>
+<li>아래 <b>본문 HTML 복사</b> → 에디터에 붙여넣기 (기본모드로 되돌리면 표 미리보기 확인 가능)</li>
+<li><b>제목·태그 복사</b> → 각 입력란에 붙여넣기</li>
+<li><b>발행</b>(공개) 클릭 — 끝</li></ol></div>
+<h3>제목</h3><textarea id=t rows=1 readonly>{html.escape(title)}</textarea>
+<button onclick="cp('t',this)">제목 복사</button>
+<h3>태그</h3><textarea id=g rows=1 readonly>{html.escape(tags)}</textarea>
+<button onclick="cp('g',this)">태그 복사</button>
+<h3>본문 HTML</h3><textarea id=b rows=16 readonly>{html.escape(body)}</textarea>
+<button onclick="cp('b',this)">본문 HTML 복사</button>
+<details><summary>본문 미리보기</summary>{body}</details>
+<script>function cp(id,btn){{navigator.clipboard.writeText(document.getElementById(id).value)
+.then(()=>{{btn.textContent='복사됨 ✓';btn.className='ok';}});}}</script>
+</body></html>"""
+    os.makedirs(f"{outdir}/tistory", exist_ok=True)
+    path = f"{outdir}/tistory/{today}-tistory-draft.html"
+    open(path, "w").write(helper)
+    return path

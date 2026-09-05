@@ -13,6 +13,7 @@
 from __future__ import annotations
 import os, re, json, glob, statistics as st
 from datetime import date
+from urllib.parse import quote
 
 from agent_realestate.collectors.naver_live import load_candidates
 
@@ -627,6 +628,53 @@ def add_jeonse_facts(ds: dict, jeonse_path: str) -> dict:
     return ds
 
 
+def slugify_complex_name(name: str) -> str:
+    """단지명 → 다이제스트/구허브 공용 앵커 slug(공백 제거 + percent-encode, 2026-09-05 P1).
+    허브 표 행 id 와 다이제스트 링크 fragment 가 동일 규칙을 써야 앵커가 어긋나지 않는다."""
+    return quote(re.sub(r"\s+", "", name))
+
+
+def passes_rank_gate(r: dict) -> bool:
+    """랭킹형 목록(다이제스트 12개월 상단/하단·전세가율·회전율, 구허브 집계) 공통 게이트(2026-09-05 P1) —
+    아파트·전용 40㎡ 이상·매매표본 10건 이상만 순위/집계에 포함(A모델 공표정책). 통과 못하면 표에서 —."""
+    return (r.get("product_type") == "아파트"
+            and (r.get("area_m2") or 0) >= 40
+            and (r.get("molit_n") or 0) >= 10)
+
+
+def passes_jeonse_gate(r: dict) -> bool:
+    """전세가율 목록 추가 게이트 — 기본 게이트 + 전세표본 5건 이상 + 전세가율 95% 이하."""
+    return (passes_rank_gate(r) and (r.get("jeonse_n") or 0) >= 5
+            and r.get("jeonse_ratio_complex_pct") is not None
+            and r["jeonse_ratio_complex_pct"] <= 95)
+
+
+def passes_turnover_gate(r: dict) -> bool:
+    """회전율 목록 추가 게이트 — 기본 게이트 + 회전율 값 존재."""
+    return passes_rank_gate(r) and r.get("turnover_pct") is not None
+
+
+def select_gated_medians(rows: list[dict]) -> list[float]:
+    """구 중위(중위의 중위)·P25-P75 등 구 단위 집계의 공용 입력 — passes_rank_gate 통과 단지의
+    molit_recent_eok 오름차순 정렬 리스트(억). _pctile 은 정렬 입력을 가정하므로(2026-09-05 발견:
+    구허브 P25>P75 역전 버그 — 미정렬 리스트를 그대로 넘겨 발생) 여기서 정렬해 반환.
+    다이제스트 구별 요약과 구허브 요약타일이 동일 값을 쓰도록 단일화."""
+    return sorted(r["molit_recent_eok"] for r in rows
+                  if passes_rank_gate(r) and r.get("molit_recent_eok") is not None)
+
+
+def compute_gu_median(rows: list[dict]) -> float | None:
+    """구 중위(중위의 중위, 억) — select_gated_medians 표본 없으면 None(— 처리)."""
+    vals = select_gated_medians(rows)
+    return round(st.median(vals), 2) if vals else None
+
+
+def compute_gu_jeonse_ratio_median(rows: list[dict]) -> float | None:
+    """구 전세가율 중위(%) — passes_jeonse_gate 통과 단지만. 표본 없으면 None."""
+    vals = [r["jeonse_ratio_complex_pct"] for r in rows if passes_jeonse_gate(r)]
+    return round(st.median(vals), 1) if vals else None
+
+
 def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
     """public 경로 신규단지 enrichment overlay(K-apt·공시가·관리비·카카오, 2026-07-10 collect_public_enrich.py)
     병합 — complex_no 매칭 행만, 기존 값(None/빈문자열)일 때만 채움(기존 발행 단지 값은 건드리지 않음).
@@ -669,7 +717,8 @@ def assert_no_duplicate_signatures(ds: dict) -> None:
 def write_out(ds: dict, outdir: str) -> dict:
     os.makedirs(outdir, exist_ok=True)
     json.dump(ds, open(f"{outdir}/dataset.json", "w"), ensure_ascii=False, separators=(",", ":"))
-    open(f"{outdir}/explorer.html", "w").write(EXPLORER_HTML)
+    from blog.build_site import ga4_snippet   # lazy: build_site 는 본 모듈을 import 하지 않지만 순환 예방적으로 지연
+    open(f"{outdir}/explorer.html", "w").write(EXPLORER_HTML.replace("</head>", ga4_snippet() + "</head>", 1))
     priced = sum(1 for r in ds["complexes"] if r["molit_recent_eok"] is not None)
     # SOFT 커버리지 경고(발행은 지속) — UI 컬럼만 있고 수집 배선이 끊겨 전량 null 로
     # 조용히 나가던 사고(2026-07-07, 7필드 0/117) 재발 방지. 임계 50%.
@@ -939,6 +988,7 @@ def _tier_cell(r: dict) -> str:
 def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
     """구 1개 = 실명 사실 per-구 포스트(A모델 — 점수 없음, 공공 실거래·단지정보만). SEO 본체.
     반환: {html, jsonld, claims, llms_line, n, top_eok}."""
+    from blog.build_site import ga4_snippet   # lazy import — build_site 가 gu_hub 경유로 본 모듈을 참조할 수 있어 순환 예방
     stale = (date.fromisoformat(today) - date.fromisoformat(asof)).days > FRESH_DAYS
     badge = (f'<span class="badge stale">⚠ STALE · 데이터 {asof}</span>' if stale
              else f'<span class="badge">데이터 {asof} · 신선</span>')
@@ -975,6 +1025,7 @@ def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
 .badge.stale{{background:#fff4e5;color:#b54708}}a{{color:#0969da}}
 table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}th,td{{border:1px solid #ddd;padding:6px 8px;text-align:left}}th{{background:#f6f8fa}}
 .mut{{font-size:12px;color:#667}}sup{{color:#0969da;font-size:11px}}.disc{{font-size:12px;color:#667;border-top:1px solid #ddd;margin-top:24px;padding-top:12px}}</style>
+{ga4_snippet()}
 </head><body>
 <h1>서울 {gu} 아파트 공공 실거래 + 단지정보 <small>{today}</small></h1>
 <p>{badge} · 라이선스 CC-BY-NC-4.0 · <a href="../explorer.html">전체 탐색기(내 기준 필터)</a></p>

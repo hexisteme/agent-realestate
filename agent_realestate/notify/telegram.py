@@ -27,14 +27,16 @@ def _chat_id() -> str | None:
     return os.environ.get("TELEGRAM_CHAT_ID")
 
 
-def send_message(text: str, parse_mode: str = "HTML") -> bool:
-    """텔레그램 메시지 전송. 전송 성공이면 True, 미설정/실패면 False(비치명)."""
+def send_message(text: str, parse_mode: str = "HTML", chat_id: str | None = None) -> bool:
+    """텔레그램 메시지 전송. 전송 성공이면 True, 미설정/실패면 False(비치명).
+    chat_id 를 넘기면 그 채팅으로, 생략(None)하면 기존처럼 TELEGRAM_CHAT_ID 로 발송
+    (주간 요약 등 별도 채널 필요 시 호출측이 TELEGRAM_WEEKLY_CHAT_ID 등을 넘긴다, 2026-09-05 P1)."""
     token = _token()
-    chat_id = _chat_id()
-    if not token or not chat_id:
+    cid = chat_id or _chat_id()
+    if not token or not cid:
         return False  # 미설정: silent skip
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": parse_mode}).encode()
+    payload = json.dumps({"chat_id": cid, "text": text, "parse_mode": parse_mode}).encode()
     req = urllib.request.Request(url, data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
     try:

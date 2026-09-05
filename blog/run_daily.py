@@ -19,6 +19,7 @@ from collections import defaultdict
 import blog.build_explorer as be
 import blog.tistory_draft as td
 import blog.naver_teaser as nt
+import blog.daily_digest as dd
 
 
 def _latest_or(pattern: str, fallback: str) -> str:
@@ -86,14 +87,19 @@ def main():
     be.write_out(ds, a.out)                 # dataset.json + explorer.html
     summaries = be.write_posts(ds, a.out)   # 자치구별 실명 포스트 + claims + llms.txt
 
-    # 티스토리 완성원고 + 네이버 티저 (실명 사실)
+    # 일간 다이제스트(2026-09-05 P1) — 25구 통합 덤프(build_tistory_section 반복) 대신 다이제스트 1편.
+    #   build_tistory_section/build_daily_body/write_daily_draft 는 back-compat·테스트용으로 존치.
     by = defaultdict(list)
     for r in ds["complexes"]:
         by[r["gu"]].append(r)
-    secs = [td.build_tistory_section(gu, by[gu]) for gu in sorted(by) if by[gu]]
-    if secs:
-        draft = td.write_daily_draft(secs, today, a.asof, a.out)
+    if ds["complexes"]:
+        digest = dd.build_daily_digest(ds, today, a.asof)
+        draft = td.write_digest_draft(digest, today, a.out)
         print(f"티스토리 원고: {draft}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
+        os.makedirs(f"{a.out}/daily", exist_ok=True)
+        open(f"{a.out}/daily/{today}.html", "w").write(digest["site_html"])
+        open(f"{a.out}/daily/latest.html", "w").write(digest["site_html"])
+        print(f"일간 다이제스트: {a.out}/daily/{today}.html · {a.out}/daily/latest.html")
         naver = nt.write_naver_teaser(summaries, today, a.asof, outdir=a.out)
         print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 등록)")
     print(f"발행 {len(by)}구 / {ds['count']}단지 · today={today} asof={a.asof} · 제외 {ds.get('excluded')}"
