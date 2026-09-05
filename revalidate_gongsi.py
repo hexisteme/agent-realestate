@@ -35,8 +35,7 @@ from collect_gongsi import (count_households,
 )
 import collect_public_enrich as cpe
 
-SCRATCH = Path("/private/tmp/claude-501/-Volumes-EXT-SSD-bot-agent-realestate/"
-               "c1bb424a-20db-4a60-a30b-82d1ba98b854/scratchpad/revalidate")
+SCRATCH = Path(os.environ.get("RE_SCRATCH", str(Path.home() / ".cache" / "agent_realestate" / "revalidate")))   # basis·VWorld 원문 캐시(세션 무관 안정 경로, 2026-09-05)
 SLEEP = 0.18   # collect_public_enrich.SLEEP 와 동일 간격
 
 
@@ -180,6 +179,7 @@ def main() -> None:
         print(f"층화표본 모드: {len(candidates)}개 / {len({c['gu'] for c in candidates})}개 구 "
               "— overlay 는 기록하지 않음")
 
+    Path(a.cache).parent.mkdir(parents=True, exist_ok=True)
     cache_path = Path(a.cache)
     decisions_path = Path(a.decisions)
     cache = json.load(open(cache_path, encoding="utf-8")) if cache_path.exists() else \
