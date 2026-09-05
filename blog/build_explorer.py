@@ -55,13 +55,78 @@ def product_type(c) -> str:
     return "아파트"
 
 core = lambda nm: re.sub(r"[\(\[].*?[\)\]]", "", nm).replace(" ", "")
+# ↑ 레거시 fuzzy 정규화 — collect_gongsi.py 가 여전히 import 하므로 존치(하위호환 전용).
+#   이 모듈의 단지↔MOLIT 매칭에는 2026-09-05부터 쓰이지 않는다(아래 canonical_complex_name 로 교체 — P0 매칭결함 수정).
+
+# 괄호 안 내용이 이 토큰들 "뿐"일 때만 비식별 qualifier 로 보고 제거한다(측정 근거:
+# examples/molit_recent_25gu_20260710.json·frame_25gu_20260710.json 괄호토큰 빈도 상위 — 2026-09-05).
+_PAREN_NON_IDENTITY = {"고층", "저층", "임대", "분양", "아파트", "주상복합", "도시형", "민간임대"}
+
+
+def canonical_complex_name(nm: str) -> str | None:
+    """단지명 → canonical 키(exact 매칭 전용 — 부분일치·prefix 매칭 폐지, 2026-09-05 P0 매칭결함 수정).
+    ① [..] 대괄호 태그 제거. ② 문자열 전체가 괄호(들)뿐이고 바깥 텍스트가 없으면("(791-16)" 같은
+    MOLIT 지번코드 placeholder) 그 자체가 식별자일 수 없으므로 통째로 제거한다(→ 대개 빈 문자열).
+    ③ 그 외의 괄호는 안 내용이 비식별 allowlist(_PAREN_NON_IDENTITY) 토큰만으로 구성될 때만
+    제거하고, 그 외 내용(동수·차수·브랜드명 등)은 식별자의 일부로 보존한다
+    ("현대(982)" ≠ "현대(209)"). ④ 공백 전부 제거. ⑤ 말미 "아파트" 접미 제거.
+    결과가 빈 문자열이면 매칭 불가로 None 반환 — 구멍(전부일치) 재발 방지를 위해 반드시
+    '무엇과도 매칭되지 않아야' 한다(빈 이름·지번코드뿐인 이름 등)."""
+    s = re.sub(r"\[.*?\]", "", nm)
+    if re.sub(r"\([^()]*\)", "", s).strip() == "":
+        return None   # 바깥 텍스트 없이 괄호(들)뿐 — 식별자 없음(지번코드 등)
+    def _drop_non_identity(m: re.Match) -> str:
+        toks = [t for t in re.split(r"[,\s]+", m.group(1).strip()) if t]
+        return "" if toks and all(t in _PAREN_NON_IDENTITY for t in toks) else m.group(0)
+    s = re.sub(r"\(([^()]*)\)", _drop_non_identity, s)
+    s = re.sub(r"\s+", "", s)
+    if s.endswith("아파트"):
+        s = s[:-3]
+    return s or None
+
+
+def _collapse_numbered_block(canon: str) -> str:
+    """번호블록 접미 collapse(2순위 매칭 전용) — 말미 '숫자+단지'/'숫자+차' 를 숫자만 남긴다
+    ("상계주공1단지"→"상계주공1", "상계주공1차"→"상계주공1")."""
+    return re.sub(r"(\d+)(단지|차)$", r"\1", canon)
+
+
+def match_molit_names(disp: str, names_in_lawd) -> set[str]:
+    """표시명 disp 를 같은 lawd(구) 안 원본 명칭 집합(names_in_lawd — MOLIT apt 명 또는 비교대상
+    단지명)과 canonical 등가로 매칭한다 — 부분일치·4자 prefix 폐지(2026-09-05 P0 매칭결함 수정).
+    1순위: canonical 완전일치. 2순위(1순위 0건일 때만): 양쪽에 _collapse_numbered_block 적용 후
+    비교 — 접은 키가 그 lawd 안에서 서로 다른 canonical 원본명 정확히 1개로만 이어질 때만 채택한다
+    (예: '주공1단지'·'주공1차' 가 둘 다 있으면 접어도 2개로 갈라져 무매칭 — 상계주공1~16단지가
+    서로 뭉치던 결함의 재발방지). 반환은 매칭된 '원본' 문자열 집합 — disp 가 canonical 불가(None,
+    예: 빈 이름)면 항상 빈 집합."""
+    cd = canonical_complex_name(disp)
+    if cd is None:
+        return set()
+    by_canon: dict[str, set[str]] = {}
+    for raw in names_in_lawd:
+        c = canonical_complex_name(raw)
+        if c is not None:
+            by_canon.setdefault(c, set()).add(raw)
+    exact = by_canon.get(cd)
+    if exact:
+        return set(exact)
+    cd_collapsed = _collapse_numbered_block(cd)
+    collapsed_map: dict[str, set[str]] = {}
+    for c in by_canon:
+        collapsed_map.setdefault(_collapse_numbered_block(c), set()).add(c)
+    group = collapsed_map.get(cd_collapsed)
+    if group and len(group) == 1:
+        return set(by_canon[next(iter(group))])
+    return set()
 
 
 def _match_records(c, lawd, molit) -> list[dict]:
-    """동일평형(±3.5㎡)·이름매칭된 lawd 의 12개월 RTMS 레코드(price·ym 보존 — tier_now 파생용)."""
-    cn = core(c.listing.complex_name); ar = c.listing.area_exclusive_m2
-    return [r for r in molit.get(lawd, []) if r.get("price") and abs(r["area"] - ar) <= 3.5
-            and (core(r["apt"]) in cn or cn in core(r["apt"]) or core(r["apt"])[:4] == cn[:4])]
+    """동일평형(±3.5㎡)·이름매칭(canonical 완전일치 — 부분/prefix 매칭 없음, 2026-09-05 수정)된
+    lawd 의 12개월 RTMS 레코드(price·ym 보존 — tier_now 파생용)."""
+    recs = molit.get(lawd, [])
+    ar = c.listing.area_exclusive_m2
+    matched = match_molit_names(c.listing.complex_name, (r["apt"] for r in recs))
+    return [r for r in recs if r.get("price") and abs(r["area"] - ar) <= 3.5 and r["apt"] in matched]
 
 
 def _median_of(recs: list[dict]) -> tuple[float | None, int]:
@@ -228,22 +293,23 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
 
 
 def _name_matched(disp: str, lawd: str, molit: dict) -> list[dict]:
-    """이름매칭만(면적 무제한) — 발행 방법론(_match_records)과 동일한 fuzzy 규칙
-    (core 부분일치/4자 prefix). 앵커(대표 전용면적) 후보 도출 전용."""
-    cn = core(disp)
-    return [r for r in molit.get(lawd, []) if r.get("price")
-            and (core(r["apt"]) in cn or cn in core(r["apt"]) or core(r["apt"])[:4] == cn[:4])]
+    """이름매칭만(면적 무제한) — 발행 방법론(match_molit_names)과 동일한 canonical 완전일치
+    규칙(부분일치·4자 prefix 폐지, 2026-09-05 수정). 앵커(대표 전용면적) 후보 도출 전용."""
+    recs = molit.get(lawd, [])
+    matched = match_molit_names(disp, (r["apt"] for r in recs))
+    return [r for r in recs if r.get("price") and r["apt"] in matched]
 
 
 def _match_records_public(disp: str, anchor_area: float, lawd: str, molit: dict) -> list[dict]:
     """발행 방법론(전용 ±3.5㎡ 동일평형·이름매칭)의 record 기반 변형 — _match_records 와 규칙 동일,
-    Candidate(호가 Listing) 대신 표시명+면적앵커를 받는다.
+    Candidate(호가 Listing) 대신 표시명+면적앵커를 받는다. 이름매칭은 match_molit_names 의 canonical
+    완전일치(부분일치·4자 prefix 폐지, 2026-09-05 수정).
     ★WS-0 v2(2026-07-10): v1(스캔용 밴드 55~66/78~95·band84 우선 매칭)은 게시된 방법론(±3.5㎡)과
     달라 기존 발행 단지의 공표 수치를 바꿔버림(동일성 게이트 FAIL 21.8%) → 방법론은 그대로 두고
     '앵커 소스'만 호가 리스팅→(universe 연속성 | 최다거래 평형)으로 교체."""
-    cn = core(disp)
-    return [r for r in molit.get(lawd, []) if r.get("price") and abs(r["area"] - anchor_area) <= 3.5
-            and (core(r["apt"]) in cn or cn in core(r["apt"]) or core(r["apt"])[:4] == cn[:4])]
+    recs = molit.get(lawd, [])
+    matched = match_molit_names(disp, (r["apt"] for r in recs))
+    return [r for r in recs if r.get("price") and abs(r["area"] - anchor_area) <= 3.5 and r["apt"] in matched]
 
 
 def _anchor_area_mode(named_recs: list[dict]) -> float:
@@ -260,9 +326,10 @@ def _anchor_area_mode(named_recs: list[dict]) -> float:
 def _build_anchor_resolver(anchor_universe: str | None):
     """기존 발행 연속성 앵커 리졸버 — universe 항목을 (표시명, 면적, 생활권)의 '게재 정체성'으로
     보존한다. 물리 조인 순서: ① complex_no 문자열 일치(단, universe 는 'A…' 별도 ID 체계가 섞여
-    있어 frame 숫자 cno 와 자주 불일치 — 2026-07-10 실측) → ② 같은 구에서 fuzzy 명칭(core 부분일치/
-    4자 prefix) 후보 중 세대수 최근접(코어 완전일치 우선). 반환: (uni_disp, area, saeng) | None.
-    연속성 단지는 매칭·발행 모두 universe 표시명으로 수행해야 fuzzy 레코드 집합까지 기존 경로와
+    있어 frame 숫자 cno 와 자주 불일치 — 2026-07-10 실측) → ② 같은 구에서 canonical 완전일치(필요시
+    번호블록 collapse, match_molit_names 와 동일 규칙 — 부분일치·4자 prefix 폐지, 2026-09-05 수정)
+    후보 중 세대수 최근접. 반환: (uni_disp, area, saeng) | None.
+    연속성 단지는 매칭·발행 모두 universe 표시명으로 수행해야 매칭 레코드 집합까지 기존 경로와
     동일해진다(frame 변형명으로 매칭하면 동일 앵커여도 표본이 달라짐 — 게이트 실측)."""
     if not anchor_universe:
         return lambda cno, disp, gu, units: None
@@ -285,15 +352,12 @@ def _build_anchor_resolver(anchor_universe: str | None):
         e = by_cno.get(str(cno))
         if e:
             return e[:3]
-        cd = core(disp)
-        cands = []
-        for u in by_gu.get(gu, []):
-            cu = core(u[0])
-            if cu == cd or cu in cd or cd in cu or cu[:4] == cd[:4]:
-                cands.append(u)
-        if not cands:
+        pool = by_gu.get(gu, [])
+        matched = match_molit_names(disp, (u[0] for u in pool))
+        if not matched:
             return None
-        best = min(cands, key=lambda u: (core(u[0]) != cd, abs((units or 0) - u[3])))
+        cands = [u for u in pool if u[0] in matched]
+        best = min(cands, key=lambda u: abs((units or 0) - u[3]))
         return best[:3]
 
     return resolve
@@ -323,9 +387,10 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         단지들에 한해 계속 입력으로 쓰인다(발행물엔 여전히 미게재 — A모델).
     (B) 공공 유입 파트: frame(공공 enumeration: complexNo·households·builtYm·far·type)+MOLIT 만으로
         (A)에 없는 신규 단지 행 생성 — 호가 Listing 불필요(레거시 결합 해소는 정확히 이 파트).
-        · 매칭 방법론은 게시된 그대로(전용 ±3.5㎡ 동일평형·이름매칭 — _match_records 와 동일 규칙).
+        · 매칭 방법론은 게시된 그대로(전용 ±3.5㎡ 동일평형·이름매칭 — _match_records 와 동일 규칙,
+          canonical 완전일치·부분/prefix 매칭 없음, 2026-09-05 수정).
           면적 앵커 = 12개월 최다 거래 평형(_anchor_area_mode, 공개 가능한 결정론 사실).
-        · (A) 억제: 같은 구에서 (A) 행과 fuzzy 명칭(core 부분일치/4자 prefix) 겹치는 frame 단지는
+        · (A) 억제: 같은 구에서 (A) 행과 canonical 명칭이 일치(match_molit_names)하는 frame 단지는
           생성하지 않는다 — universe('A…')와 frame(숫자)의 ID 체계가 달라 cno 조인 불가(실측),
           명칭 억제가 유일한 중복 방어. 보수적 편향이 옳다(억제 과다=신규 1개 지연,
           부족=실명 중복 발행).
@@ -349,7 +414,7 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     # ── (A) 연속성 파트 — 기존 경로 그대로 ──
     base_rows: list[dict] = []
     excluded = {"under_min_units": 0, "corridor": 0, "no_molit_match": 0, "base_overlap": 0}
-    suppress: dict[str, list[str]] = {}          # gu → [core(기존 발행명)] — (B) 중복 방어(명칭)
+    suppress: dict[str, list[str]] = {}          # gu → [기존 발행명(원본)] — (B) 중복 방어(명칭)
     base_cnos: set[str] = set()                  # (B) 중복 방어(cno) — universe 숫자 cno 는 frame 과 겹침
     if anchor_universe:
         base = build_dataset(anchor_universe, molit_path, asof, today)
@@ -357,14 +422,14 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         for k, v in base["excluded"].items():
             excluded[k] = excluded.get(k, 0) + v
         for b in base_rows:
-            suppress.setdefault(b["gu"], []).append(core(b["name"]))
+            suppress.setdefault(b["gu"], []).append(b["name"])
             if b.get("complex_no"):
                 base_cnos.add(str(b["complex_no"]))
 
     def _suppressed(disp: str, gu: str) -> bool:
-        cd = core(disp)
-        return any(cu == cd or cu in cd or cd in cu or cu[:4] == cd[:4]
-                   for cu in suppress.get(gu, ()))
+        """canonical 등가(match_molit_names)로 (A) 기존 발행명과 겹치는지 — 부분일치·4자 prefix
+        폐지(2026-09-05 수정)."""
+        return bool(match_molit_names(disp, suppress.get(gu, ())))
 
     # ── (B) 공공 유입 파트 ──
     by_cno: dict[str, list[dict]] = {}
@@ -465,12 +530,16 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
             "heating": "", "corridor_type": "", "parking_per_unit": None, "builder": "",
             "nearest_elem_school": None, "gongsi_man": None, "maint_fee_won": None,
         })
-    # (B) 내부 수렴 중복 제거 — frame 이 고층/저층 등 분할 cno 로 열거한 동일 표시명 단지는 1행만
-    # (표본 n 최대, 동률이면 complex_no 사전순 — 결정론).
+    # (B) 내부 수렴 중복 제거 — frame 이 고층/저층·도시형/주상복합 등 분할 cno 로 열거한 동일
+    # canonical 단지는 1행만(표본 n 최대, 동률이면 complex_no 사전순 — 결정론). canonical 판정은
+    # match_molit_names 와 동일 규칙(2026-09-05 수정 — 이전엔 원본 name 그대로가 키라 "(도시형)"/
+    # "(주상복합)" 태그 variant 가 별개 행으로 새 나가 동일시그니처 게이트에 걸렸다: 세운푸르지오
+    # 헤리시티·힐스테이트세운센트럴1/2단지 실측).
     ordered = sorted(rows, key=lambda r: (-(r["molit_n"] or 0), str(r["complex_no"])))
     uniq: dict[tuple, dict] = {}
     for r in ordered:
-        uniq.setdefault((r["name"], r["gu"], r["area_m2"]), r)
+        key = (canonical_complex_name(r["name"]) or r["name"], r["gu"], r["area_m2"])
+        uniq.setdefault(key, r)
     rows = base_rows + list(uniq.values())
     rows.sort(key=lambda x: (x["gu"], x["name"], x["area_m2"]))
     return {
@@ -508,18 +577,16 @@ def add_price_segment(ds: dict) -> dict:
     return ds
 
 
-def _norm_exact(nm: str) -> str:
-    """enrich_finalists.py trade_annual() 과 동일한 exact-match 정규화(괄호 이후 절단+공백/'단지' 제거)."""
-    return str(nm).split("(")[0].replace(" ", "").replace("단지", "")
-
-
 def _trade_annual_public(name: str, gu: str, molit: dict) -> float | None:
-    """단지 12개월 실거래 건수(전 평형, 이름 exact-match) — enrich_finalists.py trade_annual() 과
-    동일 규칙(정규화 exact-match, 밴드/면적 무관 — 거래회전율은 '그 단지 전체'가 분모라 밴드 제한 금지)."""
+    """단지 12개월 실거래 건수(전 평형, canonical 완전일치) — match_molit_names 와 동일 규칙
+    (부분일치·4자 prefix 폐지, 2026-09-05 수정. 이전 _norm_exact 정규화 대체 — 밴드/면적 무관은
+    유지: 거래회전율은 '그 단지 전체'가 분모라 면적 제한 금지)."""
     lawd = GU_LAWD.get(gu)
     if not lawd:
         return None
-    cnt = sum(1 for r in molit.get(lawd, []) if _norm_exact(r.get("apt", "")) == _norm_exact(name))
+    recs = molit.get(lawd, [])
+    matched = match_molit_names(name, (r.get("apt", "") for r in recs))
+    cnt = sum(1 for r in recs if r.get("apt", "") in matched)
     return float(cnt) if cnt else None
 
 
@@ -578,6 +645,25 @@ def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
             if r.get(f) in (None, "") and ov.get(f) is not None:
                 r[f] = ov[f]
     return ds
+
+
+def assert_no_duplicate_signatures(ds: dict) -> None:
+    """동일시그니처(매칭결함 재발) 게이트 — (molit_recent_eok, molit_n, molit_p25_eok, molit_p75_eok,
+    molit_trend_pct, molit_pos_52w) 가 완전히 같은 단지가 2개 이상(molit_n>=5 한정 — 소표본 우연
+    일치는 실제 매칭결함이 아닐 수 있어 제외) 있으면 이름매칭이 다시 뭉쳤다는 신호로 보고
+    ValueError(그룹 목록 포함)를 낸다. run_daily.py 가 write_out 직전에 호출해 회귀 시 발행을
+    막는다(2026-09-05, 188/690 동일시그니처 사고 재발방지 — [[feedback-realestate-regen-pipeline]])."""
+    groups: dict[tuple, list[str]] = {}
+    for r in ds["complexes"]:
+        if (r.get("molit_n") or 0) < 5:
+            continue
+        sig = (r.get("molit_recent_eok"), r.get("molit_n"), r.get("molit_p25_eok"),
+               r.get("molit_p75_eok"), r.get("molit_trend_pct"), r.get("molit_pos_52w"))
+        groups.setdefault(sig, []).append(f'{r.get("gu")}/{r.get("name")}')
+    dups = {sig: names for sig, names in groups.items() if len(names) > 1}
+    if dups:
+        lines = [f"  {sig} -> {names}" for sig, names in dups.items()]
+        raise ValueError(f"동일 시그니처(매칭결함 의심) 단지 그룹 {len(dups)}개:\n" + "\n".join(lines))
 
 
 def write_out(ds: dict, outdir: str) -> dict:

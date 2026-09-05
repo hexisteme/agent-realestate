@@ -82,6 +82,7 @@ def main():
         print(f"[run_daily] STALE (asof {a.asof}, D-{(date.fromisoformat(today)-date.fromisoformat(a.asof)).days}) + --block-stale → 발행 스킵")
         return
 
+    be.assert_no_duplicate_signatures(ds)   # 동일시그니처(매칭결함) 게이트 — 회귀 시 발행 대신 예외(2026-09-05)
     be.write_out(ds, a.out)                 # dataset.json + explorer.html
     summaries = be.write_posts(ds, a.out)   # 자치구별 실명 포스트 + claims + llms.txt
 
