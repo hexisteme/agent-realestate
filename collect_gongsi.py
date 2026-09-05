@@ -41,8 +41,23 @@ from blog.build_explorer import GU_LAWD, canonical_complex_name, match_molit_nam
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 EX = Path("examples")
-UNIVERSE = sorted(EX.glob("candidates_universe[0-9][0-9][0-9]_*.json"))[-1]
-MOLIT    = sorted(EX.glob("molit_recent*.json"))[-1]
+
+
+def latest_universe_path() -> Path:
+    """최신 candidates_universe 파일 — 호출 시점에 해소한다. import 시점에 [-1] 로 풀면 데이터 파일이 없는
+    CI(examples/*.json 미커밋)에서 테스트 수집 자체가 IndexError 로 중단된다(2026-09-05 CI 실측)."""
+    files = sorted(EX.glob("candidates_universe[0-9][0-9][0-9]_*.json"))
+    if not files:
+        raise SystemExit("examples/candidates_universe*.json 없음 — enumerate_25gu.py 산출물이 필요하다")
+    return files[-1]
+
+
+def latest_molit_path() -> Path:
+    """최신 MOLIT 실거래 파일 — latest_universe_path 와 같은 이유로 호출 시점 해소."""
+    files = sorted(EX.glob("molit_recent*.json"))
+    if not files:
+        raise SystemExit("examples/molit_recent*.json 없음 — fetch_molit_recent_25gu.py 산출물이 필요하다")
+    return files[-1]
 VWORLD_EP = "https://api.vworld.kr/ned/data/getApartHousingPriceAttr"
 STDR_YEAR = "2026"          # 당해 공시(1/1 기준, 4월 말 공시) — 라이브 존재 확인(2026-07-09)
 AREA_TOL  = 3.5             # 동일평형 톨러런스(㎡) — build_explorer._match_records 와 동일
@@ -209,9 +224,11 @@ def main() -> None:
     if not vkey or not mkey:
         raise SystemExit("VWORLD_API_KEY / MOLIT_API_KEY 미설정 (.env)")
 
-    universe: list[dict] = json.load(open(UNIVERSE, encoding="utf-8"))
-    molit: dict = json.load(open(MOLIT, encoding="utf-8"))
-    print(f"universe: {UNIVERSE.name} ({len(universe)}개) · molit: {MOLIT.name} · 기준연도 {STDR_YEAR}\n")
+    universe_path = latest_universe_path()
+    molit_path = latest_molit_path()
+    universe: list[dict] = json.load(open(universe_path, encoding="utf-8"))
+    molit: dict = json.load(open(molit_path, encoding="utf-8"))
+    print(f"universe: {universe_path.name} ({len(universe)}개) · molit: {molit_path.name} · 기준연도 {STDR_YEAR}\n")
 
     basis_cache: dict[str, dict] = {}     # kapt_code → basis raw item
     rec_cache: dict[str, list[dict]] = {} # pnu → VWorld 호별 레코드
@@ -293,8 +310,8 @@ def main() -> None:
         print(f"  [OK] {name} {area}㎡: {c['gongsi_man']:,}만 (n={len(prices)}"
               f"{', 공시가율 ' + format(gongsi_won / molit_med, '.2f') if molit_med else ''})")
 
-    json.dump(universe, open(UNIVERSE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print(f"\n✓ {UNIVERSE} 갱신")
+    json.dump(universe, open(universe_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print(f"\n✓ {universe_path} 갱신")
     print(f"  OK:{cnt_ok}  미검증코드:{cnt_no_code}  pnu/무자료:{cnt_no_rec}  "
           f"이름게이트:{cnt_gate}  평형무매칭:{cnt_no_area}  타당성가드:{cnt_guard}")
 

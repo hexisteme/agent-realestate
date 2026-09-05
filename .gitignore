@@ -47,6 +47,11 @@ dist/
 !/screen_25gu.py
 !/collect_public_enrich.py
 !/fetch_molit_jeonse_recent_25gu.py
+# 공시가 수집기·재검증(2026-09-05) — collect_public_enrich 가 collect_universe_enrich 를 import 하고 tests/test_collect_gongsi.py 가
+# 세 스크립트를 import 하므로 미추적이면 CI 수집이 ModuleNotFoundError 로 중단된다.
+!/collect_universe_enrich.py
+!/collect_gongsi.py
+!/revalidate_gongsi.py
 
 # AIOS 게이트 이벤트 로그(런타임 데이터) — docs/adr/0001
 .aios/observation/

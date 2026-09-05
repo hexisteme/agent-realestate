@@ -133,8 +133,8 @@ def test_main_end_to_end_mismatched_pnu_yields_none_and_matched_yields_median(
     uni_path.write_text(json.dumps(universe, ensure_ascii=False), encoding="utf-8")
     molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
 
-    monkeypatch.setattr(cg, "UNIVERSE", uni_path)
-    monkeypatch.setattr(cg, "MOLIT", molit_path)
+    monkeypatch.setattr(cg, "latest_universe_path", lambda: uni_path)   # import 시점 상수 → 지연 해소(2026-09-05 CI 수정)
+    monkeypatch.setattr(cg, "latest_molit_path", lambda: molit_path)
     monkeypatch.setenv("VWORLD_API_KEY", "dummy-vkey")
     monkeypatch.setenv("MOLIT_API_KEY", "dummy-mkey")
 
@@ -252,3 +252,14 @@ def test_identity_norm_collapses_numbered_danji_suffix_but_keeps_number():
     assert cg._identity_norm("상계주공1단지") != cg._identity_norm("상계주공2단지")
     assert cg._identity_fail_reason("도봉파크빌3", "도봉파크빌3단지", 200, 200,
                                     "서울특별시 도봉구 도봉동 644 도봉파크빌3단지") is None
+
+
+def test_latest_universe_path_is_lazy_and_fails_loud_when_missing(tmp_path, monkeypatch):
+    """import 시점 [-1] 해소가 CI(데이터 파일 없음) 수집을 깨던 회귀 차단(2026-09-05)."""
+    import collect_gongsi as cg
+    monkeypatch.setattr(cg, "EX", tmp_path)
+    with pytest.raises(SystemExit):
+        cg.latest_universe_path()
+    (tmp_path / "candidates_universe025_20260710.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "candidates_universe025_20260905.json").write_text("[]", encoding="utf-8")
+    assert cg.latest_universe_path().name == "candidates_universe025_20260905.json"
