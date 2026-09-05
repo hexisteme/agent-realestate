@@ -13,6 +13,8 @@ verify_parcel_identity(canonical 완전일치 또는 ≥5자 단방향포함+레
     python3 revalidate_gongsi.py                      # 전량, 40분 예산
     python3 revalidate_gongsi.py --budget-min 5        # 예산 축소(테스트용)
     python3 revalidate_gongsi.py --sample 60 --sample-min-gu 10   # 층화표본만(overlay 미기록)
+    python3 revalidate_gongsi.py --universe --sample 40   # universe 모드 층화표본(파일 미기록)
+    python3 revalidate_gongsi.py --universe               # universe 전량 재검증, in-place 갱신+백업
 
 멱등·재개가능: --cache(raw basis·VWorld 페치 캐시)·--decisions(완료된 cno) 를 스크래치패드에 저장,
 재실행 시 이미 처리된 cno 는 건너뛴다. rate-limited(SLEEP, 기존 배치와 동일 간격)."""
@@ -29,6 +31,7 @@ from agent_realestate import config
 config.load_env_file()
 
 from agent_realestate.collectors.kapt import BASIS_EP_V5, _get_json_item
+import collect_gongsi
 from collect_gongsi import (count_households,
     _pnu_from_basis, _fetch_vworld_all, _identity_fail_reason, _molit_median_won,
     AREA_TOL, RATIO_LO, RATIO_HI,
@@ -49,9 +52,11 @@ def _revalidate_one(kapt_code: str, name: str, district: str, area: float, units
     """단일 단지 재검증 — collect_public_enrich._gongsi_man 과 동일 파이프라인이되 실패 사유를
     세분화해 반환한다: (kept_or_pass, reason, new_value).
     reason ∈ no-basis|no-pnu|no-vworld-records|identity:name-mismatch|identity:count-mismatch|
-    no-area-match|ratio-guard|pass. gongsi_man 을 None 으로 되돌려야 하는 건 identity:* 뿐 —
-    그 외 실패는 이 재검증의 관심사가 아니므로(구 값 유지) reason 만 기록하고 kept=False 로 표시하지
-    않는다(호출측이 identity:* 만 보고 판단)."""
+    identity-ok-no-area|no-area-match|ratio-guard|pass. gongsi_man 을 None 으로 되돌려야 하는 건
+    identity:* 뿐 — 그 외 실패는 이 재검증의 관심사가 아니므로(구 값 유지) reason 만 기록하고
+    kept=False 로 표시하지 않는다(호출측이 identity:* 만 보고 판단). identity-ok-no-area 는 신원게이트는
+    통과했으나 area 가 없는 경우(frame 폴백 후보 — derive_frame_candidates 는 area=0.0 만 채운다)로,
+    콜론 없는 이름이라 identity:* 집계에 잡히지 않고 구 값이 유지된다."""
     if not raw_cache.get(kapt_code):   # 빈 dict 는 '미조회'로 취급 — 폐기 API 시절 빈 응답이 캐시에 남아 V5 전환 뒤에도 no-basis 로 오판하던 결함(2026-09-05)
         b = _get_json_item(BASIS_EP_V5, {"kaptCode": kapt_code}, molit_key)
         if not b:
@@ -78,6 +83,8 @@ def _revalidate_one(kapt_code: str, name: str, district: str, area: float, units
                                    kapt_addr=str(b.get("kaptAddr") or ""), frame_gu=district)
     if reason is not None:
         return False, f"identity:{reason}", None
+    if not area:
+        return False, "identity-ok-no-area", None
     prices = []
     for r in recs:
         try:
@@ -132,62 +139,87 @@ def load_resume_decisions(path: Path, sample_mode: bool) -> dict[str, dict]:
     return {k: v for k, v in loaded.items() if v.get("reason") not in RETRYABLE_REASONS}
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--overlay", default="examples/enrich_overlay_25gu_20260710.json")
-    ap.add_argument("--molit", default="examples/molit_recent_25gu_20260710.json")
-    ap.add_argument("--out", default="examples/enrich_overlay_25gu_20260905.json",
-                    help="run_daily._latest_or('examples/enrich_overlay_*.json') 가 마지막으로 "
-                         "고르도록 20260710 뒤에 lexicographic 하게 오는 이름이어야 함(대시 X)")
-    ap.add_argument("--cache", default=str(SCRATCH / "cache.json"))
-    ap.add_argument("--decisions", default=str(SCRATCH / "decisions.json"))
-    ap.add_argument("--budget-min", type=float, default=40.0)
-    ap.add_argument("--sample", type=int, default=0, help="0=전량, N>0=층화표본 N개(overlay 미기록)")
-    ap.add_argument("--sample-min-gu", type=int, default=10)
-    a = ap.parse_args()
-
-    vkey = os.environ.get("VWORLD_API_KEY", "")
-    mkey = os.environ.get("MOLIT_API_KEY", "")
-    if not vkey or not mkey:
-        raise SystemExit("VWORLD_API_KEY / MOLIT_API_KEY 미설정 (.env)")
-
-    overlay = json.load(open(a.overlay, encoding="utf-8"))
-    molit = json.load(open(a.molit, encoding="utf-8"))
-    targets = cpe.derive_public_targets()
-    by_cno = {t["complex_no"]: t for t in targets}
-
-    need = [cno for cno, e in overlay.items() if e.get("gongsi_man") is not None]
-    print(f"overlay={a.overlay} 총 {len(overlay)}개 중 gongsi_man 보유 {len(need)}개")
-
-    candidates = []
-    no_target = []
-    for cno in sorted(need):
-        t = by_cno.get(cno)
-        if not t:
-            no_target.append(cno)
+def derive_universe_candidates(rows: list[dict]) -> list[dict]:
+    """universe(candidates_universe*.json, list[dict]) 에서 gongsi_man 보유 행만 골라 overlay 모드와
+    동일 shape 의 재검증 후보로 변환한다. complex_no 없는 행은 건너뛴다(대상 특정 불가)."""
+    out: list[dict] = []
+    for row in rows:
+        if row.get("gongsi_man") is None:
             continue
-        candidates.append({"complex_no": cno, "name": t["name"], "gu": t["gu"],
-                           "district": _district_of(t["gu"]), "units": t["units"] or 0,
-                           "area": t["area_m2"] or 0.0, "kapt_code": overlay[cno].get("kapt_code")})
-    if no_target:
-        print(f"  (참고) derive_public_targets 에 없는 cno {len(no_target)}개 — 재검증 불가, 원값 유지: "
-              f"{no_target[:10]}{'...' if len(no_target) > 10 else ''}")
+        cno = row.get("complex_no")
+        if not cno:
+            continue
+        district = row["district"]
+        out.append({
+            "complex_no": str(cno),
+            "name": row["complex_name"],
+            "gu": district.split()[-1] if district else "",
+            "district": district,
+            "units": row.get("units") or 0,
+            "area": row.get("area_exclusive_m2") or 0.0,
+            "kapt_code": row.get("kapt_code") if row.get("kapt_verified") else None,
+        })
+    return out
 
-    sample_mode = a.sample > 0
-    if sample_mode:
-        candidates = _stratified_sample(candidates, a.sample, a.sample_min_gu)
-        print(f"층화표본 모드: {len(candidates)}개 / {len({c['gu'] for c in candidates})}개 구 "
-              "— overlay 는 기록하지 않음")
 
-    Path(a.cache).parent.mkdir(parents=True, exist_ok=True)
-    cache_path = Path(a.cache)
-    decisions_path = Path(a.decisions)
+def apply_gongsi_removals(rows: list[dict], removed_cnos: set[str]) -> int:
+    """removed_cnos(identity:* 탈락 cno)에 속한 행만 gongsi_man=None 으로 되돌린다 — 다른 필드는
+    절대 건드리지 않는다. 변경된 행 수를 반환."""
+    n = 0
+    for row in rows:
+        if str(row.get("complex_no")) in removed_cnos:
+            row["gongsi_man"] = None
+            n += 1
+    return n
+
+
+def write_universe_with_backup(path: Path, rows: list[dict], stamp: str) -> Path:
+    """path 를 <path>.bak-gongsi-revalidate-<stamp> 로 백업(동명 존재 시 -2,-3... 접미 부여 — 기존
+    백업은 절대 덮어쓰지 않는다)한 뒤 rows 를 collect_gongsi.main 과 동일 스타일로 in-place 기록한다.
+    백업 경로를 반환."""
+    backup = path.with_name(f"{path.name}.bak-gongsi-revalidate-{stamp}")
+    suffix = 2
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.bak-gongsi-revalidate-{stamp}-{suffix}")
+        suffix += 1
+    backup.write_bytes(path.read_bytes())
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    return backup
+
+
+def derive_frame_candidates(cnos: list[str], overlay: dict,
+                            frame_by_cno: dict) -> tuple[list[dict], list[str]]:
+    """derive_public_targets 후보에 없는 cno 를 collect_public_enrich.FRAME 원본으로 폴백 재검증
+    후보화한다 — area 는 frame 에 없어 0.0(→ _revalidate_one 이 신원게이트까지만 판정하고
+    identity-ok-no-area 로 구 값을 유지). frame 에도 없는 cno 는 missing 으로 분리 반환(재검증
+    불가, 원값 유지)."""
+    candidates: list[dict] = []
+    missing: list[str] = []
+    for cno in cnos:
+        fr = frame_by_cno.get(cno)
+        if not fr:
+            missing.append(cno)
+            continue
+        gu = fr["gu"]
+        candidates.append({"complex_no": cno, "name": fr["name"], "gu": gu,
+                           "district": _district_of(gu), "units": fr.get("households") or 0,
+                           "area": 0.0, "kapt_code": overlay[cno].get("kapt_code")})
+    return candidates, missing
+
+
+def _revalidate_candidates(candidates: list[dict], old_values: dict, molit: dict,
+                           vkey: str, mkey: str, cache_path: Path, decisions_path: Path,
+                           sample_mode: bool, budget_min: float) -> tuple[dict, bool]:
+    """overlay·universe 두 모드가 공유하는 budget/resume 루프 — decisions dict 와 partial 플래그를
+    반환한다. old_values 는 cno → 재검증 전 gongsi_man(overlay 모드는 overlay[cno], universe 모드는
+    universe row 값)."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = json.load(open(cache_path, encoding="utf-8")) if cache_path.exists() else \
         {"raw_basis": {}, "vworld": {}}
     decisions: dict[str, dict] = load_resume_decisions(decisions_path, sample_mode)
     raw_cache, vworld_cache = cache["raw_basis"], cache["vworld"]
 
-    budget_sec = a.budget_min * 60
+    budget_sec = budget_min * 60
     t0 = time.monotonic()
     processed_now = 0
     partial = False
@@ -198,17 +230,17 @@ def main() -> None:
         elapsed = time.monotonic() - t0
         if elapsed > budget_sec:
             partial = True
-            print(f"⏱ 예산({a.budget_min}분) 초과 — {i-1}/{len(candidates)} 처리 후 중단")
+            print(f"⏱ 예산({budget_min}분) 초과 — {i-1}/{len(candidates)} 처리 후 중단")
             break
-        if not c["kapt_code"] or not c["area"]:
-            decisions[cno] = {"name": c["name"], "gu": c["gu"], "reason": "no-kapt-or-area",
-                              "old_value": overlay[cno].get("gongsi_man")}
+        if not c["kapt_code"]:
+            decisions[cno] = {"name": c["name"], "gu": c["gu"], "reason": "no-kapt",
+                              "old_value": old_values.get(cno)}
             continue
         passed, reason, new_val = _revalidate_one(
             c["kapt_code"], c["name"], c["district"], c["area"], c["units"],
             molit, vkey, mkey, raw_cache, vworld_cache)
         decisions[cno] = {"name": c["name"], "gu": c["gu"], "reason": reason,
-                          "old_value": overlay[cno].get("gongsi_man"), "new_probe_value": new_val}
+                          "old_value": old_values.get(cno), "new_probe_value": new_val}
         processed_now += 1
         if processed_now % 20 == 0:
             json.dump(cache, open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
@@ -219,7 +251,12 @@ def main() -> None:
     json.dump(cache, open(cache_path, "w", encoding="utf-8"), ensure_ascii=False)
     if not sample_mode:
         json.dump(decisions, open(decisions_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    return decisions, partial
 
+
+def _summarize_decisions(candidates: list[dict], decisions: dict,
+                         partial: bool) -> list[tuple[str, str, "int | None"]]:
+    """사유별 집계 + identity:* 제거대상 목록을 출력하고 반환한다(overlay·universe 공통)."""
     done = [cno for cno in (c["complex_no"] for c in candidates) if cno in decisions]
     by_reason: dict[str, int] = {}
     removed: list[tuple[str, str, int | None]] = []
@@ -234,13 +271,108 @@ def main() -> None:
     print(f"신원게이트 탈락(identity:*) → gongsi_man 제거 대상 {len(removed)}건:")
     for cno, name, old in removed:
         print(f"   {cno} {name}: {old} → None")
+    return removed
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--overlay", default="examples/enrich_overlay_25gu_20260710.json")
+    ap.add_argument("--molit", default="examples/molit_recent_25gu_20260710.json")
+    ap.add_argument("--out", default="examples/enrich_overlay_25gu_20260905.json",
+                    help="run_daily._latest_or('examples/enrich_overlay_*.json') 가 마지막으로 "
+                         "고르도록 20260710 뒤에 lexicographic 하게 오는 이름이어야 함(대시 X)")
+    ap.add_argument("--cache", default=str(SCRATCH / "cache.json"))
+    ap.add_argument("--decisions", default=None,
+                    help="미지정시 --universe 는 decisions_universe.json, 아니면 decisions.json")
+    ap.add_argument("--budget-min", type=float, default=40.0)
+    ap.add_argument("--sample", type=int, default=0, help="0=전량, N>0=층화표본 N개(overlay/universe 미기록)")
+    ap.add_argument("--sample-min-gu", type=int, default=10)
+    ap.add_argument("--universe", action="store_true",
+                    help="overlay 대신 universe(candidates_universe*.json)를 직접 재검증 — "
+                         "in-place 갱신+백업, --out 무시")
+    ap.add_argument("--universe-path", default=None,
+                    help="미지정시 collect_gongsi.latest_universe_path() 지연 해소")
+    a = ap.parse_args()
+    if a.decisions is None:
+        a.decisions = str(SCRATCH / ("decisions_universe.json" if a.universe else "decisions.json"))
+
+    vkey = os.environ.get("VWORLD_API_KEY", "")
+    mkey = os.environ.get("MOLIT_API_KEY", "")
+    if not vkey or not mkey:
+        raise SystemExit("VWORLD_API_KEY / MOLIT_API_KEY 미설정 (.env)")
+
+    molit = json.load(open(a.molit, encoding="utf-8"))
+    cache_path = Path(a.cache)
+    decisions_path = Path(a.decisions)
+
+    if a.universe:
+        universe_path = Path(a.universe_path) if a.universe_path else collect_gongsi.latest_universe_path()
+        rows: list[dict] = json.load(open(universe_path, encoding="utf-8"))
+        candidates = derive_universe_candidates(rows)
+        old_values = {str(r["complex_no"]): r.get("gongsi_man") for r in rows if r.get("complex_no")}
+        print(f"universe={universe_path} 총 {len(rows)}개 중 gongsi_man 보유 {len(candidates)}개")
+    else:
+        overlay = json.load(open(a.overlay, encoding="utf-8"))
+        targets = cpe.derive_public_targets()
+        by_cno = {t["complex_no"]: t for t in targets}
+
+        need = [cno for cno, e in overlay.items() if e.get("gongsi_man") is not None]
+        print(f"overlay={a.overlay} 총 {len(overlay)}개 중 gongsi_man 보유 {len(need)}개")
+
+        candidates = []
+        no_target = []
+        for cno in sorted(need):
+            t = by_cno.get(cno)
+            if not t:
+                no_target.append(cno)
+                continue
+            candidates.append({"complex_no": cno, "name": t["name"], "gu": t["gu"],
+                               "district": _district_of(t["gu"]), "units": t["units"] or 0,
+                               "area": t["area_m2"] or 0.0, "kapt_code": overlay[cno].get("kapt_code")})
+        if no_target:
+            frame = json.load(open(cpe.FRAME, encoding="utf-8"))
+            frame_by_cno: dict[str, dict] = {}
+            for r in frame:
+                frame_by_cno.setdefault(str(r["complexNo"]), r)
+            frame_candidates, missing = derive_frame_candidates(no_target, overlay, frame_by_cno)
+            candidates.extend(frame_candidates)
+            print(f"  (참고) derive_public_targets 에 없는 cno {len(no_target)}개 중 frame 폴백으로 "
+                  f"{len(frame_candidates)}개 추가 재검증(신원게이트만 판정, area 없음)")
+            if missing:
+                print(f"  (참고) frame 에도 없어 재검증 불가, 원값 유지: "
+                      f"{missing[:10]}{'...' if len(missing) > 10 else ''}")
+        old_values = {cno: e.get("gongsi_man") for cno, e in overlay.items()}
+
+    sample_mode = a.sample > 0
+    if sample_mode:
+        candidates = _stratified_sample(candidates, a.sample, a.sample_min_gu)
+        print(f"층화표본 모드: {len(candidates)}개 / {len({c['gu'] for c in candidates})}개 구 "
+              "— overlay 는 기록하지 않음")
+
+    decisions, partial = _revalidate_candidates(candidates, old_values, molit, vkey, mkey,
+                                                cache_path, decisions_path, sample_mode, a.budget_min)
+    removed = _summarize_decisions(candidates, decisions, partial)
 
     if sample_mode:
-        print("\n(표본 모드) overlay 미기록 — 위 사유별/제거대상 목록이 산출물입니다.")
+        print("\n(표본 모드) overlay/universe 미기록 — 위 사유별/제거대상 목록이 산출물입니다.")
         return
     if partial:
-        print("\n예산 내 전량 완료 실패 — overlay 미기록(부분결과만 decisions.json 에 저장됨). "
+        print("\n예산 내 전량 완료 실패 — 파일 미기록(부분결과만 decisions.json 에 저장됨). "
               "재실행하면 decisions 에 없는 cno 부터 이어서 처리(멱등).")
+        return
+
+    if a.universe:
+        removed_cnos = {cno for cno, _name, _old in removed}
+        n_changed = apply_gongsi_removals(rows, removed_cnos)
+        done_cnos = {c["complex_no"] for c in candidates}
+        n_moved = sum(1 for cno in done_cnos
+                     if cno in decisions and decisions[cno]["reason"] == "pass"
+                     and decisions[cno].get("new_probe_value") != decisions[cno].get("old_value"))
+        stamp = time.strftime("%Y%m%d")
+        backup = write_universe_with_backup(universe_path, rows, stamp)
+        print(f"\n✓ universe in-place 갱신: {universe_path} (gongsi_man None 처리 {n_changed}건)")
+        print(f"  백업: {backup}")
+        print(f"  값 변동(참고용, 기록하지 않음): pass 판정 중 새 프로브값 ≠ 기존값 {n_moved}건")
         return
 
     new_overlay = json.loads(json.dumps(overlay))   # deep copy

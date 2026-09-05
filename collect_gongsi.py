@@ -105,12 +105,13 @@ def _fetch_vworld_all(pnu: str, key: str) -> list[dict]:
 def _identity_norm(nm: str) -> str:
     """단지 신원(identity) 검증 전용 느슨한 정규화 — build_explorer.canonical_complex_name(대괄호·비식별
     괄호·브랜드표기[IPARK/아이파크·e편한세상/이편한세상·SK뷰 계열·자이/XI] 을 이미 접는다) 위에 이 모듈
-    고유 확장 2종을 더한다: 'N차'→'N'(전위치, 하계1차청구↔하계1청구) · '주상' 삭제(삼창타워프라자↔
-    삼창타워주상프라자). match_molit_names(발행 경로)에는 쓰지 않는다 — 전위치 N차 collapse 는
+    고유 확장을 더한다: 'N차'→'N'(전위치, 하계1차청구↔하계1청구) · '주상' 삭제(삼창타워프라자↔
+    삼창타워주상프라자) · 지번 괄호 '(70-12)' 삭제 · 중간 위치 '아파트' 삭제(동도센트리움 아파트 오피스텔). match_molit_names(발행 경로)에는 쓰지 않는다 — 전위치 N차 collapse 는
     상계주공1~16단지 뭉침 재발 위험이라 발행 경로엔 부적합하고 이 모듈의 완화된 신원확인(§verify_
     parcel_identity)에서만 쓴다. 숫자 자체는 보존 — 단지 번호 차이는 여전히 불일치."""
     c = canonical_complex_name(nm) or ""
-    c = c.replace("주상", "")
+    c = re.sub(r"\(\s*\d+(?:-\d+)?\s*\)", "", c)   # 지번 괄호 제거 — VWorld aphusNm 은 필지 지번을 달고 온다('동도센트리움(70-12)', 레거시 재검증 2026-09-05). canonical 은 동수 식별용으로 보존하지만 신원확인은 같은 필지 안 비교라 지번은 식별자가 아니다
+    c = c.replace("아파트", "").replace("주상", "")   # 중간 위치 '아파트'(K-apt '동도센트리움 아파트 오피스텔') — canonical 은 말미 '아파트'만 제거
     c = re.sub(r"(\d)단지$", r"\1", c)   # 'N단지' 접미어 → 'N'(도봉파크빌3단지↔도봉파크빌3; 번호는 보존되어 1단지≠2단지)
     return re.sub(r"(\d)차", r"\1", c)
 

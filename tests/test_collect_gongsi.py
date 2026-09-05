@@ -263,3 +263,188 @@ def test_latest_universe_path_is_lazy_and_fails_loud_when_missing(tmp_path, monk
     (tmp_path / "candidates_universe025_20260710.json").write_text("[]", encoding="utf-8")
     (tmp_path / "candidates_universe025_20260905.json").write_text("[]", encoding="utf-8")
     assert cg.latest_universe_path().name == "candidates_universe025_20260905.json"
+
+
+# ── revalidate_gongsi: universe 모드(universe gongsi_man 직접 재검증, 2026-09-05) ─────
+# revalidate_gongsi 는 collect_public_enrich 등 무거운 의존성 체인을 모듈 최상단에서 import 하므로
+# (위 test_collect_public_enrich_imports_cleanly 와 동일 이유) 모듈 top-level import 대신 각 테스트
+# 안에서 importlib.import_module 로 불러온다 — 체인이 깨져도 이 파일의 다른 테스트 수집까지 막지 않는다.
+
+def test_derive_universe_candidates_maps_fields_and_skips_missing_gongsi():
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    rows = [
+        {"complex_no": 1, "complex_name": "단지A", "district": "서울 노원구", "units": 100,
+         "area_exclusive_m2": 59.0, "kapt_code": "K1", "kapt_verified": True, "gongsi_man": 30000},
+        {"complex_no": "2", "complex_name": "단지B", "district": "서울 강남구", "units": 200,
+         "area_exclusive_m2": 84.0, "kapt_code": "K2", "kapt_verified": False, "gongsi_man": 50000},
+        {"complex_no": "3", "complex_name": "단지C", "district": "서울 중구", "units": 50,
+         "area_exclusive_m2": 40.0, "kapt_code": "K3", "kapt_verified": True, "gongsi_man": None},
+        {"complex_name": "단지D(무cno)", "district": "서울 종로구", "gongsi_man": 1000},
+    ]
+    out = rv.derive_universe_candidates(rows)
+    by_cno = {c["complex_no"]: c for c in out}
+    assert set(by_cno) == {"1", "2"}                  # 단지C(gongsi None)·단지D(무cno) 제외
+    assert by_cno["1"]["complex_no"] == "1"           # int → str
+    assert by_cno["1"]["gu"] == "노원구"               # district 마지막 공백토큰
+    assert by_cno["1"]["district"] == "서울 노원구"
+    assert by_cno["1"]["units"] == 100
+    assert by_cno["1"]["area"] == 59.0
+    assert by_cno["1"]["kapt_code"] == "K1"
+    assert by_cno["2"]["kapt_code"] is None           # kapt_verified False → kapt_code None
+    assert by_cno["2"]["gu"] == "강남구"
+
+
+def test_apply_gongsi_removals_only_touches_listed_rows():
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    rows = [
+        {"complex_no": "1", "complex_name": "단지A", "gongsi_man": 30000, "other_field": "x"},
+        {"complex_no": "2", "complex_name": "단지B", "gongsi_man": 50000, "other_field": "y"},
+        {"complex_no": "3", "complex_name": "단지C", "gongsi_man": 10000, "other_field": "z"},
+    ]
+    n = rv.apply_gongsi_removals(rows, {"1", "3"})
+    assert n == 2
+    by_cno = {r["complex_no"]: r for r in rows}
+    assert by_cno["1"]["gongsi_man"] is None
+    assert by_cno["1"]["other_field"] == "x"          # 다른 필드 불변
+    assert by_cno["2"]["gongsi_man"] == 50000          # 미대상 불변
+    assert by_cno["3"]["gongsi_man"] is None
+    assert by_cno["3"]["other_field"] == "z"
+
+
+def test_write_universe_with_backup_creates_backup_and_never_overwrites_backup(tmp_path):
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    path = tmp_path / "candidates_universe999_test.json"
+    original_rows = [{"complex_no": "1", "gongsi_man": 30000}]
+    path.write_text(json.dumps(original_rows, ensure_ascii=False), encoding="utf-8")
+
+    new_rows = [{"complex_no": "1", "gongsi_man": None}]
+    b1 = rv.write_universe_with_backup(path, new_rows, "20260905")
+    assert b1.name == "candidates_universe999_test.json.bak-gongsi-revalidate-20260905"
+    assert json.loads(b1.read_text(encoding="utf-8")) == original_rows
+    assert json.loads(path.read_text(encoding="utf-8")) == new_rows
+
+    # 두번째 호출(같은 stamp) — path 의 현재(new_rows) 내용이 새 백업의 '원본'이 됨, 최초 백업은 보존
+    newer_rows = [{"complex_no": "1", "gongsi_man": 99999}]
+    b2 = rv.write_universe_with_backup(path, newer_rows, "20260905")
+    assert b2 != b1
+    assert b2.name == "candidates_universe999_test.json.bak-gongsi-revalidate-20260905-2"
+    assert json.loads(b1.read_text(encoding="utf-8")) == original_rows   # 최초 백업 그대로
+    assert json.loads(b2.read_text(encoding="utf-8")) == new_rows        # 두번째 백업은 직전 상태
+    assert json.loads(path.read_text(encoding="utf-8")) == newer_rows
+
+
+def test_derive_frame_candidates_uses_frame_and_reports_missing():
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    overlay = {"10": {"kapt_code": "K10"}, "20": {"kapt_code": None}}
+    frame_by_cno = {
+        "10": {"complexNo": "10", "name": "프레임단지", "gu": "노원", "households": 300},
+    }
+    candidates, missing = rv.derive_frame_candidates(["10", "20"], overlay, frame_by_cno)
+    assert missing == ["20"]
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c["complex_no"] == "10"
+    assert c["name"] == "프레임단지"
+    assert c["gu"] == "노원"
+    assert c["district"] == "서울 노원구"
+    assert c["units"] == 300
+    assert c["area"] == 0.0
+    assert c["kapt_code"] == "K10"
+
+
+def test_revalidate_one_identity_only_when_area_missing(monkeypatch):
+    """면적 없는 frame 폴백 후보는 신원게이트만 판정(identity-ok-no-area) — 면적이 있으면 정상 pass."""
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    monkeypatch.setattr(rv.time, "sleep", lambda *_a, **_k: None)
+    basis = {"kaptName": "상계주공2단지", "kaptAddr": "100", "bjdCode": "1135010200"}
+    monkeypatch.setattr(rv, "_get_json_item", lambda *a, **k: basis)
+    records = [{"aphusNm": "상계주공2단지", "dongNm": "101", "hoNm": str(i),
+               "prvuseAr": "59.0", "pblntfPc": "300000000"} for i in range(100)]
+    monkeypatch.setattr(rv, "_fetch_vworld_all", lambda *a, **k: records)
+
+    passed, reason, val = rv._revalidate_one("K1", "상계주공2단지", "서울 노원구", 0.0, 100,
+                                             {}, "vkey", "mkey", {}, {})
+    assert (passed, reason, val) == (False, "identity-ok-no-area", None)
+
+    passed2, reason2, val2 = rv._revalidate_one("K1", "상계주공2단지", "서울 노원구", 59.0, 100,
+                                                {}, "vkey", "mkey", {}, {})
+    assert (passed2, reason2, val2) == (True, "pass", 30000)
+
+
+def test_universe_mode_cli_writes_in_place_with_backup(tmp_path, monkeypatch):
+    """--universe 종단: derive_public_targets() 를 호출하면 안 되고(데이터 파일 불필요),
+    identity:* 탈락 cno 만 gongsi_man=None 처리되어 universe 파일에 in-place 반영 + 백업이 남아야 한다."""
+    import importlib
+    import sys
+    rv = importlib.import_module("revalidate_gongsi")
+
+    universe = [
+        {"complex_no": "1", "complex_name": "단지A", "district": "서울 노원구", "units": 100,
+         "area_exclusive_m2": 59.0, "kapt_code": "K1", "kapt_verified": True, "gongsi_man": 30000},
+        {"complex_no": "2", "complex_name": "단지B", "district": "서울 강남구", "units": 200,
+         "area_exclusive_m2": 84.0, "kapt_code": "K2", "kapt_verified": True, "gongsi_man": 50000},
+    ]
+    uni_path = tmp_path / "candidates_universe999_test.json"
+    molit_path = tmp_path / "molit_test.json"
+    cache_path = tmp_path / "cache.json"
+    decisions_path = tmp_path / "decisions.json"
+    uni_path.write_text(json.dumps(universe, ensure_ascii=False), encoding="utf-8")
+    molit_path.write_text("{}", encoding="utf-8")
+
+    def fake_revalidate_one(kapt_code, *a, **k):
+        if kapt_code == "K1":
+            return False, "identity:name-mismatch", None
+        return True, "pass", 123
+
+    def _no_public_targets():
+        raise AssertionError("universe 모드는 derive_public_targets() 를 호출하면 안 됨(데이터 파일 불필요)")
+
+    monkeypatch.setattr(rv, "_revalidate_one", fake_revalidate_one)
+    monkeypatch.setattr(rv.cpe, "derive_public_targets", _no_public_targets)
+    monkeypatch.setenv("VWORLD_API_KEY", "dummy-vkey")
+    monkeypatch.setenv("MOLIT_API_KEY", "dummy-mkey")
+    monkeypatch.setattr(sys, "argv", [
+        "revalidate_gongsi.py", "--universe",
+        "--universe-path", str(uni_path),
+        "--molit", str(molit_path),
+        "--cache", str(cache_path),
+        "--decisions", str(decisions_path),
+    ])
+
+    rv.main()
+
+    out = json.loads(uni_path.read_text(encoding="utf-8"))
+    by_cno = {r["complex_no"]: r for r in out}
+    assert by_cno["1"]["gongsi_man"] is None            # identity:* 탈락 → 제거
+    assert by_cno["2"]["gongsi_man"] == 50000           # pass 지만 새값(123)은 기록하지 않음(report-only)
+
+    backups = list(tmp_path.glob(f"{uni_path.name}.bak-gongsi-revalidate-*"))
+    assert len(backups) == 1
+    original = json.loads(backups[0].read_text(encoding="utf-8"))
+    assert {r["complex_no"]: r["gongsi_man"] for r in original} == {"1": 30000, "2": 50000}
+
+
+def test_identity_norm_strips_jibun_parenthesis_and_inner_apt_token():
+    """VWorld aphusNm 의 필지 지번 괄호와 K-apt 이름 중간의 '아파트' 는 신원 식별자가 아니다(동도센트리움 오탐, 2026-09-05).
+    단지 번호(N차·N단지)는 종전대로 보존된다."""
+    import collect_gongsi as cg
+    assert cg._identity_norm("동도센트리움(70-12)") == "동도센트리움"
+    assert cg._identity_norm("동도센트리움 아파트 오피스텔") == "동도센트리움오피스텔"
+    assert cg._identity_norm("상계주공16단지") == "상계주공16"
+    assert cg._identity_norm("현대(1차)아파트") == "현대(1)"
+
+
+def test_identity_gate_passes_mixed_use_same_parcel_with_jibun_suffix():
+    """동도센트리움[주상복합](구로 개봉동 70-12): aphusNm '동도센트리움(70-12)' ↔ kaptName '동도센트리움 아파트 오피스텔',
+    distinct 호수 136 = units 136 → 같은 필지. 이름이 다른 단지·호수가 다른 단지는 여전히 거부."""
+    import collect_gongsi as cg
+    addr = "서울특별시 구로구 개봉동 70-12 동도센트리움 아파트 오피스텔"
+    kw = dict(kapt_addr=addr, frame_gu="서울 구로구")
+    assert cg._identity_fail_reason("동도센트리움(70-12)", "동도센트리움 아파트 오피스텔", 136, 136, **kw) is None
+    assert cg._identity_fail_reason("개봉푸르지오(70-12)", "동도센트리움 아파트 오피스텔", 136, 136, **kw) == "name-mismatch"
+    assert cg._identity_fail_reason("동도센트리움(70-12)", "동도센트리움 아파트 오피스텔", 400, 136, **kw) == "count-mismatch"
