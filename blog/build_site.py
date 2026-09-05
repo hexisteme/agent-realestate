@@ -169,4 +169,6 @@ def build(today=None):
     return {"posts":len(posts),"site":SITE}
 
 if __name__=="__main__":
+    from agent_realestate import config
+    config.load_env_file()   # RE_EMAIL_TO(takedown 연락처) — standalone 실행 시에도 placeholder 방지
     print(build())
