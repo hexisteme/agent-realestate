@@ -773,6 +773,9 @@ def _cmd_daily_inner(args) -> None:
     # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
     #   (자체 점수 없음·공공 실거래만·세대수200/corridor 제외). build_site 가 site/ 로 조립.
     step("블로그 생성(실명 포스트+탐색기)", run_daily_cmd)
+    # 단지 페이지 월별 차트(2026-09-05 P2)가 방금 refresh 된 MOLIT 파일을 보도록 build_site 에 경로 전달(subprocess env 상속).
+    #   미지정 시 build_site 는 25gu 예제 경로로 폴백 — 11gu 스코프에선 다른 파일을 읽게 되는 구멍을 명시로 막는다.
+    os.environ["RE_MOLIT"] = str(molit_json)
     step("사이트 조립", ["python3", "-m", "blog.build_site"])
     site = root / "site"
     if site.is_dir() and subprocess.run(["git", "-C", str(site), "status", "--porcelain"],

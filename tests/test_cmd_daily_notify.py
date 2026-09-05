@@ -56,3 +56,25 @@ def test_notify_failure_does_not_mask_original_exception(monkeypatch):
     monkeypatch.setattr(cli, "_cmd_daily_inner", _raiser(NameError("boom")))
     with pytest.raises(NameError):
         cli.cmd_daily(object())
+
+
+def test_site_build_step_sees_refreshed_molit_path_via_env():
+    """P2 단지 페이지 월별 차트(2026-09-05): '사이트 조립' step 직전에 RE_MOLIT=molit_json 을 env 로 넘겨야
+    build_site 가 방금 refresh 된 파일을 읽는다(미지정 시 25gu 예제 경로 폴백 → 11gu 스코프 불일치).
+    _cmd_daily_inner 는 실파일 refresh(백업·unlink)를 수행해 실행형 테스트가 불가하므로 AST 로 배선 순서를 고정한다."""
+    import ast, inspect
+    tree = ast.parse(inspect.getsource(cli))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_cmd_daily_inner")
+    assign_at = call_at = None
+    for i, node in enumerate(ast.walk(fn)):
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
+            tgt = node.targets[0]
+            if ast.unparse(tgt.value) == "os.environ" and ast.unparse(tgt.slice) == "'RE_MOLIT'":
+                assign_at = i
+                assert ast.unparse(node.value) == "str(molit_json)"
+        if (isinstance(node, ast.Call) and ast.unparse(node.func) == "step"
+                and node.args and ast.unparse(node.args[0]) == "'사이트 조립'"):
+            call_at = i
+    assert assign_at is not None, "os.environ['RE_MOLIT'] 배선이 사라짐"
+    assert call_at is not None
+    assert assign_at < call_at, "RE_MOLIT 은 '사이트 조립' step 보다 먼저 설정돼야 한다"
