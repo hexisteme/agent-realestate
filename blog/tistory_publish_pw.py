@@ -31,6 +31,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tistory_publish import _parse_helper, _latest_draft  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
+
+
+def resolve_editor_url(post_id: str | None = None) -> str:
+    """새 글이면 newpost, 글번호를 주면 그 글의 편집 URL(같은 에디터, 경로에 번호만 붙는다).
+
+    발행 뒤 데이터 정정이 필요할 때 새 글을 또 올리면 URL·색인이 갈라진다 — 같은 글을 고쳐
+    원래 URL 을 유지한다(2026-09-06 소재구 정정)."""
+    if not post_id:
+        return NEWPOST_URL
+    return NEWPOST_URL.rstrip("/") + "/" + str(post_id).strip("/") + "/"
 CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")
 # 영속 프로필: EXT_SSD (APFS 가드 — 내장 디스크 금지). Tistory 로그인 쿠키 보관.
 PROFILE_DIR = os.environ.get(
@@ -175,7 +185,8 @@ def _resolve_draft(outroot: str, date: str | None) -> str | None:
 
 
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
-            headless: bool = False, login_wait_s: int = 300) -> str:
+            headless: bool = False, login_wait_s: int = 300,
+            post_id: str | None = None) -> str:
     from playwright.sync_api import sync_playwright
 
     today = datetime.date.today().isoformat()
@@ -183,7 +194,9 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
     attempted = os.path.join(outroot, ATTEMPT_MARKER)
     # 마커 게이트는 무인 모드(--date 없는 스케줄 실행)에서만 — --date 백필이 오늘 마커를
     # 오염시켜 당일 발행을 무음 소실시키는 결함 방지 (2026-07-06 리뷰). 백필은 마커 불관여.
-    unattended = (mode == "publish" and not date)
+    # 글번호 지정(기존 글 수정)은 스케줄 발행이 아니다 — 마커·stale 가드에 관여시키지 않는다.
+    unattended = (mode == "publish" and not date and not post_id)
+    target_url = resolve_editor_url(post_id)
     if unattended and _read_marker(marker) == today:
         return f"SKIP:already_published_today({today})"
 
@@ -251,7 +264,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             page.bring_to_front()
-            page.goto(NEWPOST_URL, wait_until="domcontentloaded", timeout=60000)
+            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
             page.bring_to_front()
 
             # 로그인 확인: #post-title-inp 가 뜰 때까지. 없으면 로그인 대기(사람 1회).
@@ -270,7 +283,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
                     except Exception:
                         return "ERR:login_timeout — 티스토리(카카오) 세션 만료, 재로그인 필요"
                     # 로그인 후 newpost 로 다시
-                    page.goto(NEWPOST_URL, wait_until="domcontentloaded", timeout=60000)
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_selector("#post-title-inp", timeout=30000)
 
             # 로그인 확인 후 → 카카오 keepalive → 세션 쿠키를 STATE_FILE 에 즉시 덤프.
@@ -399,7 +412,16 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             if unattended:
                 open(attempted, "w", encoding="utf-8").write(today)
             # 발행 클릭 + manage/posts 리다이렉트 대기 = 게시 성공 1차 신호
-            page.evaluate("document.getElementById('publish-btn').click()")
+            clicked = page.evaluate(
+                """() => { const b = document.getElementById('publish-btn');
+                    if (b) { b.click(); return 'id'; }
+                    const t = [].slice.call(document.querySelectorAll('button,a'))
+                      .filter(x => ['발행', '수정', '공개 발행'].indexOf((x.textContent || '').trim()) > -1)[0];
+                    if (t) { t.click(); return 'text'; }
+                    return ''; }""")
+            log.append(f"CLICK_PUBLISH:{clicked or 'NONE'}")
+            if not clicked:
+                return f"[{name}] ERR:publish_button_not_found | {' '.join(log)}"
             published = False
             try:
                 page.wait_for_url("**/manage/posts/**", timeout=20000)
@@ -455,9 +477,11 @@ def main():
     ap.add_argument("--outroot", default=".")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
+    ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
     a = ap.parse_args()
     try:
-        result = publish(a.outroot, a.mode, a.date, headless=a.headless, login_wait_s=a.login_wait)
+        result = publish(a.outroot, a.mode, a.date, headless=a.headless, login_wait_s=a.login_wait,
+                         post_id=a.post_id)
     except Exception as e:
         # 예외도 알림 경로로 접어 넣는다 — goto 타임아웃/프로필 크래시류가 무음 실패로
         # 며칠 발행이 끊기던 사고 클래스 차단 (2026-07-06 리뷰).
