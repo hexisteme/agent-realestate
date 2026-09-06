@@ -10,6 +10,7 @@ from urllib.parse import quote
 import blog.build_explorer as be
 import blog.complex_page as cp
 from blog.build_site import BASE_URL, ga4_snippet
+from blog.fact_lead import build_fact_leads, render_lead_block, render_lead_lines
 from blog.tistory_draft import _TBL, _TH, _TD, _MUT, TISTORY_TAGS
 from blog.wording_guard import assert_wording_ok
 
@@ -42,6 +43,11 @@ _SITE_CSS = (
     ".foot{font-size:12px;color:#8a857a;margin-top:18px;line-height:1.6}"
     "@media(max-width:760px){.wrap{padding:14px 14px 40px}.tiles{gap:8px}"
     ".tile{flex:1 1 45%;padding:10px 12px}table{font-size:12px}th,td{padding:6px 7px}}"
+    ".lead{background:#f7f5f0;color:#1b1a17;border:1px solid #e6e2d9;border-radius:10px;"
+    "padding:14px 16px;margin-bottom:4px;font-size:15px;font-variant-numeric:tabular-nums}"
+    ".lead h2{font-size:15px;font-weight:700;margin-bottom:8px;color:#1d6f6a}"
+    ".lead ul{margin:0;padding-left:18px}.lead li{margin-bottom:6px;line-height:1.5}"
+    ".lead-note{font-size:12px;color:#8a857a;margin-top:8px}"
 )
 
 
@@ -116,7 +122,7 @@ def _today_counts(ds: dict) -> dict:
     }
 
 
-def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
+def _render_tistory(today, asof, counts, sel, gu_rows, leads) -> str:
     def name_cell(r):
         href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a>({r["gu"]})'
@@ -146,7 +152,9 @@ def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
         f'<td style="{_TD}">▲{g["up"]}·▼{g["down"]}</td></tr>' for g in gu_rows)
 
     none_p = f'<p style="{_MUT}">기준 충족 단지 없음</p>'
+    lead_ps = [f"<p>{line}</p>" for line in render_lead_lines(leads)]
     parts = [
+        *lead_ps,
         f'<p><b>오늘의 숫자</b> — 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
         f'상승 {counts["up"]} · 하락 {counts["down"]} · 보합 {counts["flat"]}(국토부 실거래 사실, 자체 점수 없음)</p>',
         '<p><b>12개월 범위 상단 근접</b>(52주 위치 99% 이상)</p>',
@@ -162,8 +170,8 @@ def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
         f'<td style="{_TH}"><b>구 중위(억)</b></td><td style="{_TH}"><b>추세</b></td></tr>{gu_tr}</table>',
         f'<p style="{_MUT}">게이트: 상단/하단·전세가율·회전율 표는 아파트·전용 40㎡ 이상·매매표본 10건 이상만 대상'
         f'(전세가율은 추가로 전세표본 5건 이상·95% 이하, 회전율은 회전율 값 존재). '
-        f'3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님). '
-        f'52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%). '
+        f'3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음"). '
+        f'52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%, 예: 74%면 1년 범위에서 74% 지점). '
         f'회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위의 중위(억). '
         f'기준일 {asof}, 표본수는 각 셀 n 표기. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.</p>',
         f'<p style="{_MUT}">{be.DISCLAIMER} {be._takedown()}</p>',
@@ -172,7 +180,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows) -> str:
     return "".join(parts)
 
 
-def _render_site(today, asof, counts, sel, gu_rows, title) -> str:
+def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
     def name_cell(r):
         href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
@@ -224,7 +232,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title) -> str:
 <div class=crumb><a href="../index.html">서울</a> › 오늘의 변화</div>
 <h1>서울 아파트 오늘의 변화</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
-
+{render_lead_block(leads)}
 <h2>오늘의 숫자</h2>
 <div class=tiles>
 <div class=tile><span class=k>발행 단지</span><span class=v>{counts['n_total']}</span></div>
@@ -251,8 +259,9 @@ def _render_site(today, asof, counts, sel, gu_rows, title) -> str:
 
 <div class=foot>
 게이트: 상단/하단·전세가율·회전율 표는 아파트·전용 40㎡ 이상·매매표본 10건 이상만 대상(전세가율은 추가로 전세표본 5건 이상·95% 이하,
-회전율은 회전율 값 존재). 3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님). 52주 위치=최근 3개월 체결 중위의
-12개월 실거래 최저~최고 레인지 내 위치(%). 회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위의 중위(억).
+회전율은 회전율 값 존재). 3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음").
+52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%, 예: 74%면 1년 범위에서 74% 지점). 회전율=12개월 거래건수÷세대수×100(%).
+구 중위=게이트 통과 단지 중위의 중위(억).
 기준일 {asof}. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
 <a href="../methodology.html">방법론 전문</a> · <a href="../explorer.html">탐색기</a> ·
@@ -262,13 +271,15 @@ def _render_site(today, asof, counts, sel, gu_rows, title) -> str:
 </body></html>"""
 
 
-def build_daily_digest(ds: dict, today: str, asof: str) -> dict:
+def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = None) -> dict:
     """다이제스트 산출 — {"title","tags","tistory_html","site_html","summary"}.
-    tistory_html 은 30,000바이트 예산을 넘거나 금칙어가 섞이면 ValueError 로 발행을 막는다."""
+    tistory_html 은 30,000바이트 예산을 넘거나 금칙어가 섞이면 ValueError 로 발행을 막는다.
+    prev_ds(선택, 2026-09-06) = 직전 스냅샷 — 사실 리드(FactLead)의 패턴 재현 판정(§7 D)에만 쓰인다."""
     sel = _select_ranked(ds)
     gu_rows = _gu_summary_rows(ds)
     counts = _today_counts(ds)
     n_hi, n_lo = len(sel["hi"]), len(sel["lo"])
+    leads = build_fact_leads(ds, "seoul", prev_ds=prev_ds)
 
     title = f"서울 아파트 오늘의 변화 — {today} · 12개월 범위 상단 {n_hi}곳·하단 {n_lo}곳 · {counts['n_total']}단지"
     tags = TISTORY_TAGS + ",오늘의변화"
@@ -276,8 +287,8 @@ def build_daily_digest(ds: dict, today: str, asof: str) -> dict:
                f"상승 {counts['up']}·하락 {counts['down']}·보합 {counts['flat']} · "
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")
 
-    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows)
-    site_html = _render_site(today, asof, counts, sel, gu_rows, title)
+    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads)
+    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads)
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")
     assert_wording_ok(site_html, "daily_digest:site_html")

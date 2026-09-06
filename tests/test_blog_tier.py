@@ -83,7 +83,8 @@ def test_trend_direction_down():
 def test_sample_guards():
     # ① n<2 → 전부 null
     assert derive_tier_now([_rec(9.0)], "2026-06-30") == {
-        "p25_eok": None, "p75_eok": None, "trend_dir": None, "trend_pct": None, "pos_52w": None}
+        "p25_eok": None, "p75_eok": None, "trend_dir": None, "trend_pct": None, "pos_52w": None,
+        "trend_n_recent": 0, "trend_n_prior": 0}
     # ② n=4(<5) → 분포·52주위치 null, 추세는 각 분기 2표본이라 살아있음
     recs4 = ([_rec(8.0, ym) for ym in ("202506", "202507")]
              + [_rec(9.0, ym) for ym in ("202603", "202604")])
@@ -96,6 +97,28 @@ def test_sample_guards():
     assert out5["trend_dir"] is None and out5["trend_pct"] is None
     assert out5["pos_52w"] is None                              # 최근3개월 1표본 → 위치 미정
     assert out5["p25_eok"] is not None                         # 분포는 n>=5 라 유지
+
+
+def test_trend_window_sample_counts_present_regardless_of_stability_gate():
+    """molit_trend_n_recent/prior(2026-09-06 P0) — 추세 창 표본수는 trend_pct 안정성 게이트(각 창>=2)와
+    무관하게 항상 채워진다. n<2 인 표본부족 조건에서도 count 자체(0 또는 1)는 null 이 아니다."""
+    # recs5 와 동일 조건: 최근3개월(rp) 표본 1개(<2 → trend_pct null), 직전9개월(pp) 표본 4개.
+    recs5 = [_rec(p, "202506") for p in (8.0, 8.5, 9.0, 9.5)] + [_rec(10.0, "202605")]
+    out = derive_tier_now(recs5, "2026-06-30")
+    assert out["trend_pct"] is None                     # 안정성 게이트 미통과(최근표본<2)
+    assert out["trend_n_recent"] == 1                    # 그래도 원표본수는 노출
+    assert out["trend_n_prior"] == 4
+
+    # n<2(전체 표본 1개) 조기 반환 경로 — count 는 0(None 아님).
+    zero = derive_tier_now([_rec(9.0)], "2026-06-30")
+    assert zero["trend_n_recent"] == 0 and zero["trend_n_prior"] == 0
+
+    # 안정 게이트 통과(양쪽 창 표본>=2) 조건 — count 가 실제 표본수와 정확히 일치.
+    recs = ([_rec(8.0, ym) for ym in ("202506", "202507", "202508")]
+            + [_rec(9.2, ym) for ym in ("202603", "202604", "202605")])
+    out2 = derive_tier_now(recs, "2026-06-30")
+    assert out2["trend_pct"] == 15.0
+    assert out2["trend_n_recent"] == 3 and out2["trend_n_prior"] == 3
 
 
 def test_outlier_cut_shared_with_median():

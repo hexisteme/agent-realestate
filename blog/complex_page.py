@@ -16,6 +16,7 @@ import statistics as st
 from urllib.parse import quote
 
 import blog.build_explorer as be
+from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.wording_guard import assert_wording_ok
 
 _CSS = (
@@ -63,6 +64,11 @@ _CSS = (
     "@media(min-width:1024px){.layout{flex-direction:row;align-items:flex-start}"
     ".main{flex:1 1 0}.aside{width:360px;flex:0 0 360px;position:sticky;top:24px}}"
     "@media(max-width:760px){.wrap{padding:14px 14px 40px}.card{padding:14px}.t{font-size:12px}}"
+    ".lead{background:#f7f5f0;color:#1b1a17;border:1px solid #e6e2d9;border-radius:10px;"
+    "padding:14px 16px;margin-bottom:0;font-size:15px;font-variant-numeric:tabular-nums}"
+    ".lead h2{font-size:15px;font-weight:700;margin-bottom:8px;color:#1d6f6a}"
+    ".lead ul{margin:0;padding-left:18px}.lead li{margin-bottom:6px;line-height:1.5}"
+    ".lead-note{font-size:12px;color:#8a857a;margin-top:8px}"
 )
 
 
@@ -187,9 +193,12 @@ def _hero_card(row: dict) -> str:
     else:
         trend_word = f"{'상승' if d == '▲' else '하락'} {abs(p):g}%"
     badge = _trend_cell(row)
-    badge_html = f'<span style="font-size:16px;font-weight:600">{badge}</span>' if badge != "—" else ""
+    badge_cap = (f' <span style="font-size:11px;font-weight:400;color:#8a857a">'
+                 f'(직전 9개월보다 {abs(p):g}% {"높음" if d == "▲" else "낮음"})</span>'
+                 if (p is not None and d in ("▲", "▼")) else "")
+    badge_html = f'<span style="font-size:16px;font-weight:600">{badge}</span>{badge_cap}' if badge != "—" else ""
 
-    pos_txt = f"{pos}% 위치" if pos is not None else "표본 부족으로 위치 미산출"
+    pos_txt = f"1년 범위에서 {pos:g}% 지점" if pos is not None else "표본 부족으로 위치 미산출"
     posbar = ""
     if pos is not None:
         posbar = (
@@ -213,7 +222,7 @@ def _hero_card(row: dict) -> str:
         f"{trend_word}(과거 비교 사실, 전망 아님). 12개월 범위 내 {pos_txt}.</p>"
         '<div class="statgrid">'
         f'<div class="stat"><span class="k">12개월 중위</span><span class="v">{_eok(med)}</span><span class="k">n{n}</span></div>'
-        f'<div class="stat"><span class="k">중간 50%(P25~P75)</span><span class="v" style="font-size:14px">{_eok(p25)}~{_eok(p75)}</span></div>'
+        f'<div class="stat"><span class="k">중간 50%(거래의 가운데 절반)</span><span class="v" style="font-size:14px">{_eok(p25)}~{_eok(p75)}</span></div>'
         f'<div class="stat"><span class="k">평당(12개월 중위)</span><span class="v">{pyeong_txt}</span></div>'
         f'<div class="stat"><span class="k">{row.get("gu", "")} 중위 대비</span><span class="v">{cmp_txt}</span></div>'
         "</div>"
@@ -433,7 +442,7 @@ def _foot_block(asof: str) -> str:
         '<div class="foot">'
         "산식: 12개월 중위=전용 ±3.5㎡ 동일평형·canonical 이름매칭 12개월 실거래 중위(이상치 −40%컷). "
         "3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님). "
-        "52주 위치=최근 3개월 체결 중위가 12개월 실거래 최저~최고 레인지에서 차지하는 위치(%). "
+        "52주 위치=최근 3개월 체결 중위가 12개월 실거래 최저~최고 레인지에서 차지하는 위치(%, 예: 74%면 1년 범위에서 74% 지점). "
         "전세가율=전세 중위÷매매 중위(전세표본 5건 미만 또는 95% 초과 시 —). "
         "회전율=12개월 거래건수÷세대수×100(%). 구 중위 대비%=(단지 중위÷구 중위−1)×100."
         f" 기준일 {asof}. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>"
@@ -442,12 +451,16 @@ def _foot_block(asof: str) -> str:
     )
 
 
-def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None, asof: str, today: str) -> str:
+def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None, asof: str, today: str,
+                         ds: dict | None = None, prev_ds: dict | None = None) -> str:
     """단지 개별 페이지(전체 HTML) — row 는 dataset.json 의 그 단지 행(+ 선택적으로 build_site 가
     주입하는 '_gu_median_eok': 구 대비% 계산용, render_complex_page 자체는 구 전체 표본을 받지
-    않으므로 호출측이 미리 계산해 얹는다). monthly=None 이면 월별 차트 카드만 안내문으로 대체."""
+    않으므로 호출측이 미리 계산해 얹는다). monthly=None 이면 월별 차트 카드만 안내문으로 대체.
+    ds(선택, 2026-09-06) = 전체 dataset — 주면 사실 리드(FactLead)가 구 중위 대비 패밀리(C3~C6)까지
+    계산한다(같은 구 rows 를 ds 에서 뽑아 씀). 생략 시 peers 기반 패밀리(C1·C2)와 자기완결형 C7 만."""
     from blog.build_site import BASE_URL, ga4_snippet  # lazy: build_site 가 본 모듈을 import(순환 예방)
 
+    lead_html = render_lead_block(build_fact_leads(ds or {}, "complex", row, peers=peers, prev_ds=prev_ds))
     gu, name = row["gu"], row["name"]
     slug = complex_slug(gu, name)
     area = row.get("area_m2")
@@ -477,6 +490,7 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
         _header_block(row, asof)
         + '<div class="layout"><div class="main">'
         + _hero_card(row)
+        + lead_html
         + _monthly_chart_card(monthly)
         + _jeonse_card(row)
         + _liquidity_card(row)

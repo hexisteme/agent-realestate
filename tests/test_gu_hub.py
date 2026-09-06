@@ -50,7 +50,7 @@ def test_p25_never_exceeds_p75_regardless_of_input_order():
     p75 = round(be._pctile(gated, 0.75), 2)
     assert p25 <= p75
     out = render_gu_hub("노원", rows, "2026-09-04", "2026-09-05")
-    m = re.search(r'P25.P75\(단지 중위 분포\)</span><span class=v[^>]*>(.*?)</span>', out)
+    m = re.search(r'P25.P75\(거래의 가운데 절반\)</span><span class=v[^>]*>(.*?)</span>', out)
     assert m, "P25-P75 타일을 찾지 못함"
     tile_text = m.group(1)
     assert _eok(p25) in tile_text
@@ -173,7 +173,8 @@ def test_build_site_wires_25_gu_hubs_sitemap_index_feed(tmp_path, monkeypatch):
 
     index_html = (site_dir / "index.html").read_text(encoding="utf-8")
     for gu in gu_names:
-        assert f'gu/{quote(gu)}.html">{gu}</a>' in index_html
+        # 인덱스 재구성(2026-09-06 P0) — 구 링크가 bare 앵커에서 타일(<b>{gu}</b> + 단지수·중위 서브텍스트)로 바뀜.
+        assert f'href="gu/{quote(gu)}.html"><b>{gu}</b>' in index_html
     assert "테스트다이제스트" in index_html          # 다이제스트 CTA
     assert "G-TESTBUILD" in index_html                # GA4
 

@@ -11,15 +11,18 @@ from datetime import date
 
 import blog.build_explorer as be
 from blog.build_site import BASE_URL
+from blog.fact_lead import build_fact_leads, render_lead_lines
 from blog.wording_guard import assert_wording_ok
 
 _TOP_N = 3
 
 
-def build_weekly_summary(ds: dict, today: str) -> str:
+def build_weekly_summary(ds: dict, today: str, prev_ds: dict | None = None) -> str:
     """텔레그램 HTML parse_mode 본문(≤3,500자) — 발행 단지 수·표본, ▲/▼ 카운트,
-    12개월 범위 상단/하단 top3, 전세가율 top3, 다이제스트·인덱스 링크."""
+    12개월 범위 상단/하단 top3, 전세가율 top3, 다이제스트·인덱스 링크.
+    prev_ds(선택, 2026-09-06) = 직전 스냅샷 — 사실 리드(FactLead) 패턴 재현 판정에만 쓰인다."""
     cx = ds["complexes"]
+    lead_lines = render_lead_lines(build_fact_leads(ds, "seoul", prev_ds=prev_ds, limit=3))
     n_total = ds.get("count", len(cx))
     n_sample = sum(r.get("molit_n") or 0 for r in cx)
     up = sum(1 for r in cx if r.get("molit_trend_dir") == "▲")
@@ -39,6 +42,8 @@ def build_weekly_summary(ds: dict, today: str) -> str:
         "<b>서울 아파트 주간 요약</b>",
         f'기준일 {ds.get("data_asof", today)} · 발행 {n_total}단지 · 표본 {n_sample}건',
         f'▲{up} · ▼{down}',
+        "",
+        *lead_lines,
         "",
         "<b>12개월 범위 상단 근접</b>",
         *([line(r, f'52주 {r["molit_pos_52w"]:g}%') for r in hi] or ["· 해당 없음"]),
@@ -72,7 +77,9 @@ def send_weekly_summary(dataset_path: str, today: str, marker_path: str, weekday
     if os.path.exists(marker_path) and open(marker_path, encoding="utf-8").read().strip() == wk:
         return False   # 이번 주 이미 전송 — 멱등
     ds = json.load(open(dataset_path, encoding="utf-8"))
-    text = build_weekly_summary(ds, today)
+    from blog.snapshots import load_snapshot_days_ago
+    prev_ds = load_snapshot_days_ago(7, dir=os.path.join(os.path.dirname(dataset_path), "snapshots"))
+    text = build_weekly_summary(ds, today, prev_ds=prev_ds)
     from agent_realestate.notify.telegram import send_message
     ok = send_message(text, chat_id=os.environ.get("TELEGRAM_WEEKLY_CHAT_ID"))
     if ok:

@@ -126,7 +126,9 @@ def main():
     for r in ds["complexes"]:
         by[r["gu"]].append(r)
     if ds["complexes"]:
-        digest = dd.build_daily_digest(ds, today, a.asof)
+        from blog.snapshots import load_snapshot_days_ago
+        prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
+        digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds)
         draft = td.write_digest_draft(digest, today, a.out)
         print(f"티스토리 원고: {draft}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
         os.makedirs(f"{a.out}/daily", exist_ok=True)

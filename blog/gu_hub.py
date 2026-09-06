@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import blog.build_explorer as be
 import blog.complex_page as cp
+from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.wording_guard import assert_wording_ok
 
 _CSS = ("*{box-sizing:border-box}body{margin:0;background:#f7f5f0;color:#1b1a17;"
@@ -34,7 +35,12 @@ _CSS = ("*{box-sizing:border-box}body{margin:0;background:#f7f5f0;color:#1b1a17;
         ".foot{font-size:12px;color:#8a857a;margin-top:16px;line-height:1.6}"
         "@media(max-width:760px){.wrap{padding:14px 14px 40px}.tiles{gap:8px}"
         ".tile{flex:1 1 45%;padding:10px 12px}.tile .v{font-size:17px}"
-        "table{font-size:12px}th,td{padding:6px 7px}}")
+        "table{font-size:12px}th,td{padding:6px 7px}}"
+        ".lead{background:#f7f5f0;color:#1b1a17;border:1px solid #e6e2d9;border-radius:10px;"
+        "padding:14px 16px;margin-bottom:18px;font-size:15px;font-variant-numeric:tabular-nums}"
+        ".lead h2{font-size:15px;font-weight:700;margin-bottom:8px;color:#1d6f6a}"
+        ".lead ul{margin:0;padding-left:18px}.lead li{margin-bottom:6px;line-height:1.5}"
+        ".lead-note{font-size:12px;color:#8a857a;margin-top:8px}")
 
 
 def _eok(v: float | None) -> str:
@@ -62,10 +68,18 @@ def _trend_cell(r: dict) -> str:
     return f'<span class="{cls}">{d}{abs(p):g}%</span>'
 
 
-def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str) -> str:
-    """구 1개 허브 페이지(전체 HTML). rows = 그 구의 dataset complexes(전 유형 포함)."""
+def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
+                   ds: dict | None = None, prev_ds: dict | None = None,
+                   weekly_post_href: str | None = None) -> str:
+    """구 1개 허브 페이지(전체 HTML). rows = 그 구의 dataset complexes(전 유형 포함).
+    ds(선택, 2026-09-06) = 전체 dataset — 주면 사실 리드(FactLead)가 서울 참조가 필요한 패밀리까지
+    계산한다. 생략(None) 시 rows 만으로 합성 ds 를 만들어 구 내부 패밀리만 계산(서울 참조 패밀리는
+    자동 스킵 — build_fact_leads 가 '다른 구 표본이 없다'는 사실로 판정, 별도 플래그 불필요)."""
     from blog.build_site import BASE_URL, ga4_snippet  # lazy: build_site 가 본 모듈을 import(순환 예방)
 
+    lead_html = render_lead_block(build_fact_leads(ds or {"complexes": rows}, "gu", gu, prev_ds=prev_ds))
+    # 주간 리포트 링크는 호출측이 실존 파일을 줄 때만(2026-09-06 P0 — 구별 일간 포스트 중단으로 ../posts/{today}-{gu}.html 은 비월요일 404).
+    weekly_link = f'<a href="{weekly_post_href}">{gu} 최신 주간 리포트</a> · ' if weekly_post_href else ""
     n = len(rows)
     gated_vals = be.select_gated_medians(rows)
     gu_med = be.compute_gu_median(rows)
@@ -101,7 +115,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str) -> str:
     tiles = (
         f'<div class=tile><span class=k>단지 수</span><span class=v>{n}</span></div>'
         f'<div class=tile><span class=k>구 중위(중위의 중위)</span><span class=v>{_eok(gu_med)}</span></div>'
-        f'<div class=tile><span class=k>P25–P75(단지 중위 분포)</span>'
+        f'<div class=tile><span class=k>P25–P75(거래의 가운데 절반)</span>'
         f'<span class=v style="font-size:16px">{_eok(p25)}–{_eok(p75)}</span></div>'
         f'<div class=tile><span class=k>추세(3/9개월)</span>'
         f'<span class=v style="font-size:16px"><span class=up>▲{up}</span> · <span class=down>▼{down}</span> · —{flat}</span></div>'
@@ -138,6 +152,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str) -> str:
 <div class=crumb><a href="../index.html">서울</a> › {gu}</div>
 <h1>{gu} 아파트 실거래</h1>
 <p class=meta>{n}단지 · 기준 {asof} · 국토부 실거래(신고 지연 최대 30일) · 매일 자동 갱신</p>
+{lead_html}
 <div class=tiles>{tiles}</div>
 <div class=tblwrap><table><thead><tr>
 <th>단지</th><th>전용</th><th>중위 n</th><th>P25–P75</th><th>구중위대비%</th>
@@ -145,11 +160,11 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str) -> str:
 </tr></thead><tbody>{"".join(trs)}</tbody></table></div>
 <div class=foot>
 산식: 구 중위=아파트·전용40㎡+·매매표본10건+ 단지만 골라 그 단지들 중위의 중위(억). 구중위대비%=(단지 중위÷구 중위−1)×100.
-3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님). 52주 위치=최근 3개월 체결 중위가 12개월 실거래 최저~최고 레인지에서
-차지하는 위치(%). 전세가율=전세 중위÷매매 중위(전세표본 5건 미만 또는 95% 초과·매매표본 10건 미만·비아파트·40㎡ 미만은 —). 회전율=12개월
-거래건수÷세대수×100(%). 기준일 {asof} · 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>
+3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음"). 52주 위치=최근 3개월 체결 중위가
+12개월 실거래 최저~최고 레인지에서 차지하는 위치(%, 예: 74%면 1년 범위에서 74% 지점). 전세가율=전세 중위÷매매 중위(전세표본 5건 미만 또는 95% 초과·매매표본
+10건 미만·비아파트·40㎡ 미만은 —). 회전율=12개월 거래건수÷세대수×100(%). 기준일 {asof} · 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
-<a href="../methodology.html">방법론 전문</a> · <a href="../posts/{today}-{quote(gu)}.html">{gu} 최신 포스트</a> ·
+<a href="../methodology.html">방법론 전문</a> · {weekly_link}
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
 </div>
 </div>

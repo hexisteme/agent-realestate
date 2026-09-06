@@ -41,12 +41,36 @@ def inject_ga4_tag(html: str) -> str:
     return html[:m.end()] + "\n" + snip + html[m.end():]
 
 def _post_meta(p):
-    """포스트 파일에서 (date, title, description) 추출 — 파일명 YYYY-MM-DD-구.html 규약."""
+    """포스트 파일에서 (date, title, description) 추출 — 파일명 YYYY-MM-DD-구.html 규약(일간
+    다이제스트 daily/*.html 은 파일명이 YYYY-MM-DD.html 이라 앞 10자 규칙이 그대로 통한다)."""
     nm=os.path.basename(p); d=nm[:10]
     txt=open(p).read()
     t=re.search(r"<title>(.*?)</title>",txt,re.S)
     desc=re.search(r'<meta name=description content="(.*?)">',txt)
     return d,(t.group(1).strip() if t else nm[:-5]),(desc.group(1) if desc else "")
+
+
+def _fmt_eok(v: float | None) -> str:
+    """구 중위(억) 표시 — 값 없으면 —(gu_hub._eok 와 동일 포맷, 별도 모듈이라 재구현)."""
+    return f"{v:g}억" if v is not None else "—"
+
+
+def _latest_gu_post_href(posts: list[str], gu: str) -> str | None:
+    """구허브 푸터용 최신 주간 리포트 상대경로(gu/ 기준 ../posts/…). 주간 포스트는 월요일에만 생기므로
+    (2026-09-06 P0) 존재하는 파일 중 최신을 고르고, 없으면 None → 허브가 링크를 생략(비월요일 404 차단)."""
+    mine = sorted((p for p in posts if os.path.basename(p).endswith(f"-{gu}.html")), reverse=True)
+    return f"../posts/{quote(os.path.basename(mine[0]))}" if mine else None
+
+
+def _index_leads(ds_all: dict) -> str:
+    """인덱스 리드 블록(2026-09-06 P0) — FactLead(별도 워커 병행 작업, blog/fact_lead.py)를 배선.
+    모듈이 아직 없거나 무엇이든 예외를 내면 조용히 빈 문자열로 저하 — 인덱스 빌드가 이 때문에
+    깨지면 안 된다."""
+    try:
+        from blog.fact_lead import build_fact_leads, render_lead_block
+        return render_lead_block(build_fact_leads(ds_all, "seoul"))
+    except Exception:
+        return ""
 
 
 def assert_dataset_not_shrunk(new_path: str, old_path: str, min_ratio: float = 0.5) -> None:
@@ -86,21 +110,30 @@ def build(today=None, molit_path=None):
     assert_dataset_not_shrunk(f"{SRC}/dataset.json", f"{SITE}/dataset.json")   # 축소 가드(2026-09-05) — 11gu 기본값 데이터셋이 25gu 사이트 위에 조립되는 사고 차단
     for f in ("dataset.json","explorer.html"):
         if os.path.exists(f"{SRC}/{f}"): shutil.copy(f"{SRC}/{f}",f"{SITE}/{f}")
+    # 1c) 일별 스냅샷(2026-09-06 P0) — 주간/기간 비교용 dataset.json 보관 + 14일 보존. dir 은 SRC 기준
+    #   (report/blog/snapshots 기본값과 일치)이라 BLOG_SRC_DIR 오버라이드(테스트) 시 실 데이터를 안 건드린다.
+    if os.path.exists(f"{SRC}/dataset.json"):
+        from blog.snapshots import save_snapshot
+        save_snapshot(f"{SRC}/dataset.json", today, dir=f"{SRC}/snapshots")
+    from blog.snapshots import load_snapshot_days_ago
+    prev_ds=load_snapshot_days_ago(7, dir=f"{SRC}/snapshots")   # 7일 전(±1일) 스냅샷 — 사실 리드 '패턴' 재현 판정용, 없으면 None('이번 주 관측' 표기)
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
     # 2a) 구 허브 25개(2026-09-05 P1) — dataset.json 에서 직접 렌더(gu_hub.render_gu_hub), site/gu/ 로.
     gu_list=[]
     complex_count=0   # 2a-2 에서 채움(P2) — ds_path 없으면 0 유지
+    ds_all=None        # 인덱스 재구성(2026-09-06 P0)이 아래 if 밖에서도 참조 — 없으면 None 유지
     ds_path=f"{SITE}/dataset.json"
     if os.path.exists(ds_path):
         import blog.gu_hub as gh
         import blog.complex_page as cp
+        import blog.daily_digest as dd
         ds_all=json.load(open(ds_path,encoding="utf-8"))
         by_gu={}
         for r in ds_all["complexes"]: by_gu.setdefault(r["gu"],[]).append(r)
         asof=ds_all.get("data_asof",today)
         gen=ds_all.get("generated",today)   # 포스트 파일명(posts/{gen}-{gu}.html)과 일치시켜야 허브 링크가 안 깨짐
         for gu in sorted(by_gu):
-            open(f"{SITE}/gu/{gu}.html","w").write(gh.render_gu_hub(gu,by_gu[gu],asof,gen))
+            open(f"{SITE}/gu/{gu}.html","w").write(gh.render_gu_hub(gu,by_gu[gu],asof,gen,ds=ds_all,prev_ds=prev_ds,weekly_post_href=_latest_gu_post_href(posts,gu)))
             gu_list.append(gu)
         # 2a-2) 단지 개별 페이지(2026-09-05 P2) — 게이트(아파트·40㎡+·매매표본30건+) 통과 단지만.
         #   raw MOLIT(mp) 없으면 월별차트만 생략(render_complex_page 가 monthly=None 을 안내문으로 대체).
@@ -120,7 +153,7 @@ def build(today=None, molit_path=None):
                     monthly = cp.build_monthly_medians(recs, asof)
             row2 = {**r, "_gu_median_eok": be.compute_gu_median(gu_rows)}
             slug = cp.complex_slug(gu, r["name"])
-            open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen))
+            open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen, ds=ds_all, prev_ds=prev_ds))
             written_slugs.add(slug)
             complex_count += 1
         # 이번 회차에 쓰지 않은 단지 페이지 제거 — 단지가 다른 구로 정정되거나(2026-09-06 소재구 확정)
@@ -133,32 +166,99 @@ def build(today=None, molit_path=None):
     # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
     digest_latest=f"{SITE}/daily/latest.html"
     digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None
-    # 2c) 랜딩 index.html
-    items=""
-    for p in posts:
-        nm=os.path.basename(p); title=nm[:-5]
-        items+=f'<li><a href="posts/{nm}">{title}</a> · <a href="posts/{title}.claims.jsonl">claims.jsonl</a></li>\n'
+    # 2c) 랜딩 index.html 재구성(2026-09-06 P0) — 기존 3,448개 포스트 링크 나열(235KB)을
+    #   헤더+리드+엔트리카드+25구 타일+최근 리포트+아카이브 링크+푸터로 대체(예산 <60KB). 전체 목록은
+    #   archive.html 로 이전(claims.jsonl 링크 포함, 기존 items 마크업 그대로).
+    asof_idx = ds_all.get("data_asof", today) if ds_all is not None else today
+    lead_html = _index_leads(ds_all) if ds_all is not None else ""
+    gu_summary = dd._gu_summary_rows(ds_all) if ds_all is not None else []
+    chips = ('<span class=chip>기준 ' + asof_idx + '</span>'
+             '<span class=chip>국토부 실거래 · 신고 지연 최대 30일</span>'
+             '<span class=chip>매일 07:05 자동 갱신</span>')
+    gu_tiles = "".join(
+        f'<a class=gutile href="gu/{quote(g["gu"])}.html"><b>{g["gu"]}</b>'
+        f'<span class=gk>{g["n"]}단지 · {_fmt_eok(g.get("gu_median"))}'
+        f' · <span class=up>▲{g["up"]}</span>·<span class=down>▼{g["down"]}</span></span></a>'
+        for g in gu_summary)
+    digest_desc = html.escape(digest_meta[1]) if digest_meta else "일간 신규 신고 변화 요약"
+    entry_cards = (
+        '<div class=cards>'
+        '<a class=card href="explorer.html"><h3>🔎 탐색기</h3>'
+        '<p>예산·평형·연식·유형으로 단지를 필터하고 공공 실거래로 정렬</p></a>'
+        f'<a class=card href="daily/latest.html"><h3>📰 오늘의 변화</h3><p>{digest_desc}</p></a>'
+        '<a class=card href="methodology.html"><h3>📖 방법론</h3>'
+        '<p>왜 이 숫자를 믿을 수 있나 — 측정·출처·한계</p></a>'
+        '</div>')
+    recent_items = "".join(
+        f'<li><a href="posts/{os.path.basename(p)}">{html.escape(_post_meta(p)[1])}</a></li>'
+        for p in posts[:5])
+    if digest_meta:
+        recent_items += f'<li><a href="daily/latest.html">{digest_desc} (최신 일간)</a></li>'
     idx=f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <meta name="google-site-verification" content="mawCVnPZxYdhhtBgHlck2zvNYTTb7ydP6hg58_kBVCs">
-<title>서울 부동산 데이터 스냅샷 — 개인 연구</title>
+<title>서울 부동산 데이터 스냅샷</title>
 <meta name=description content="서울 자치구 아파트 단지의 국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음). 방법론 공개. 투자자문 아님.">
 <script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"서울 부동산 데이터 스냅샷","inLanguage":"ko","license":"https://creativecommons.org/licenses/by-nc/4.0/","description":"국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음)."}}</script>
-<style>body{{font:16px/1.7 -apple-system,Pretendard,sans-serif;max-width:760px;margin:0 auto;padding:28px;color:#1a1a1a}}a{{color:#0969da}}li{{margin:4px 0}}.d{{font-size:13px;color:#666;border-top:1px solid #ddd;margin-top:24px;padding-top:12px}}.gugrid{{display:flex;flex-wrap:wrap;gap:6px;padding:0;list-style:none}}.gugrid li{{margin:0}}.gugrid a{{display:inline-block;padding:4px 10px;border:1px solid #ddd;border-radius:14px;font-size:13px}}</style>
+<style>
+:root{{--paper:#f7f5f0;--ink:#1b1a17;--accent:#1d6f6a;--mut:#5c584f;--line:#e6e2d9}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans KR",-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;font-size:15px;line-height:1.6;font-variant-numeric:tabular-nums}}
+a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}}
+.wrap{{max-width:1080px;margin:0 auto;padding:28px 20px 56px}}
+h1{{font-size:27px;font-weight:700;letter-spacing:-.02em;margin:0 0 8px}}
+.lead{{color:var(--mut);margin:0 0 14px}}
+.chips{{margin-bottom:18px}}.chip{{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:14px;padding:4px 12px;font-size:12px;color:var(--mut);margin:0 6px 6px 0}}
+.cards{{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0 26px}}
+.card{{flex:1 1 220px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px;color:var(--ink);display:block}}
+.card h3{{margin:0 0 6px;font-size:16px}}.card p{{margin:0;color:var(--mut);font-size:13px}}
+h2{{font-size:18px;margin:28px 0 12px}}
+.gugrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}}
+.gutile{{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}}
+.gutile b{{font-size:14px;color:var(--ink)}}.gk{{font-size:12px;color:var(--mut)}}
+.up{{color:#c43d2f}}.down{{color:#2f5fc4}}
+.reports{{list-style:none;padding:0;margin:0}}.reports li{{margin:4px 0;font-size:13px}}
+.d{{font-size:12px;color:var(--mut);border-top:1px solid var(--line);margin-top:28px;padding-top:14px;line-height:1.7}}
+@media(max-width:640px){{.cards{{flex-direction:column}}}}
+</style>
 {ga4_snippet()}
 </head><body>
+<div class=wrap>
 <h1>서울 부동산 데이터 스냅샷</h1>
-<p>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재 — 공공 실거래 named 게재는 합법). 자체 평가·점수·순위 없는 <b>사실 스냅샷</b>. 방법론 공개.</p>
-<p class=d style="border:0">⚖ 개인 연구·정보 공유이며 투자자문·매수권유 아님. 부동산은 자본시장법 금융투자상품이 아님. 수치는 게시 시점 기준 — 거래 전 원출처 재확인.</p>
-<p style="font-size:17px"><a href="explorer.html"><b>🔎 탐색기 — 내 기준으로 필터</b></a> <span style="color:#666;font-size:13px">예산·평형·연식·유형으로 단지를 필터하고 공공 실거래로 정렬</span></p>
-{('<p style="font-size:17px"><a href="daily/latest.html"><b>📰 오늘의 변화 — ' + html.escape(digest_meta[1]) + '</b></a></p>') if digest_meta else ''}
-<p><a href="methodology.html">방법론 — 왜 이 숫자를 믿을 수 있나</a></p>
-{(f'<p style="font-size:15px"><a href="#gu-hubs">단지 페이지 {complex_count}개(표본 30건 이상)</a></p>') if complex_count else ''}
-<h2 id=gu-hubs>자치구 허브 (25개 구)</h2><ul class=gugrid>{"".join(f'<li><a href="gu/{quote(gu)}.html">{gu}</a></li>' for gu in gu_list)}</ul>
-<h2>최근 포스트</h2><ul>{items}</ul>
-<div class=d>방법론: 국토부 RTMS 12개월 동일평형 실거래 중위·분포(P25–P75)·추세·52주 위치(이상치 −40%컷). 자체 평가·점수·순위 없음. 사설 호가·민간시세는 사용·게재하지 않습니다. AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0.</div>
+<p class=lead>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재). 자체 평가·점수·순위 없는 사실 스냅샷.</p>
+<div class=chips>{chips}</div>
+{lead_html}
+{entry_cards}
+<h2>자치구 (25개)</h2>
+<div class=gugrid>{gu_tiles}</div>
+<h2>최근 리포트</h2>
+<ul class=reports>{recent_items}</ul>
+<p><a href="archive.html">전체 포스트 아카이브 →</a></p>
+<div class=d>
+⚖ {be.DISCLAIMER} 부동산은 자본시장법 금융투자상품이 아님.<br>
+방법론: 국토부 RTMS 12개월 동일평형 실거래 중위·분포(P25–P75)·추세·52주 위치(이상치 −40%컷). 자체 평가·점수·순위 없음. 민간 시세(네이버·KB 등)는 사용·게재하지 않습니다.<br>
+{be._takedown()}<br>
+<a href="methodology.html">방법론 전문</a> · AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0 · 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
+</div>
+</div>
 </body></html>"""
     open(f"{SITE}/index.html","w").write(idx)
+    # 2d) archive.html — 기존 인덱스가 나열하던 전체 포스트 목록(같은 마크업·claims.jsonl 링크)을 이전.
+    archive_items=""
+    for p in posts:
+        nm=os.path.basename(p); title=nm[:-5]
+        archive_items+=f'<li><a href="posts/{nm}">{title}</a> · <a href="posts/{title}.claims.jsonl">claims.jsonl</a></li>\n'
+    open(f"{SITE}/archive.html","w").write(f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>전체 포스트 아카이브 — 서울 부동산 데이터 스냅샷</title>
+<meta name=description content="자치구별 실명 사실 포스트 전체 목록과 provenance(claims.jsonl). 자체 점수·순위 없음, 투자자문 아님.">
+<style>body{{font:16px/1.7 -apple-system,Pretendard,sans-serif;max-width:760px;margin:0 auto;padding:28px;color:#1a1a1a}}a{{color:#0969da}}li{{margin:4px 0}}.d{{font-size:13px;color:#666;border-top:1px solid #ddd;margin-top:24px;padding-top:12px}}</style>
+{ga4_snippet()}
+</head><body>
+<h1>전체 포스트 아카이브</h1>
+<p><a href="./">← 인덱스</a></p>
+<ul>{archive_items}</ul>
+<div class=d>{len(posts)}편 · <a href="methodology.html">방법론</a> · <a href="llms.txt">/llms.txt</a></div>
+</body></html>""")
     # 2b) 방법론 고정 페이지 — 매 포스트가 링크하는 "왜 이 숫자를 믿을 수 있나" 앵커 (슈퍼샘플, 2026-06-11)
     open(f"{SITE}/methodology.html","w").write(f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -204,7 +304,10 @@ def build(today=None, molit_path=None):
     complex_urls="".join(f"<url><loc>{BASE_URL}/complex/{quote(os.path.basename(p))}</loc><lastmod>{today}</lastmod></url>" for p in complex_files)
     def _urlset(body): return f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{body}</urlset>'
     # sitemap.xml 은 sitemapindex 로 분할(2026-09-05 P2, urlset 항목 급증 대비) — 자식 3개: core(랜딩·방법론·구허브·다이제스트)·complex(단지)·posts(전체 포스트).
-    core_body=f"<url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url><url><loc>{BASE_URL}/methodology.html</loc><lastmod>{today}</lastmod></url>{gu_urls}{digest_urls}"
+    core_body=(f"<url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/methodology.html</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/archive.html</loc><lastmod>{today}</lastmod></url>"
+               f"{gu_urls}{digest_urls}")
     open(f"{SITE}/sitemap-core.xml","w").write(_urlset(core_body))
     open(f"{SITE}/sitemap-complex.xml","w").write(_urlset(complex_urls))
     open(f"{SITE}/sitemap-posts.xml","w").write(_urlset(urls))
@@ -213,18 +316,19 @@ def build(today=None, molit_path=None):
     open(f"{SITE}/sitemap.xml","w").write(
         f'<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{sub_sitemaps}</sitemapindex>')
     # 3b) feed.xml — RSS 2.0 (네이버 서치어드바이저 요구 item 필드: title/link/description/pubDate/guid)
-    #     일간 다이제스트({today}.html, 있으면)를 최신글보다 앞선 첫 item 으로(2026-09-05 P1).
-    digest_item=""
-    digest_dated=f"{SITE}/daily/{today}.html"
-    if os.path.exists(digest_dated):
-        dd_,dt_,ddesc_=_post_meta(digest_dated); dlink=f"{BASE_URL}/daily/{quote(os.path.basename(digest_dated))}"
-        dpub=format_datetime(datetime.fromisoformat(dd_).replace(hour=7,minute=12,tzinfo=KST))
-        digest_item=(f"<item><title>{html.escape(dt_)}</title><link>{dlink}</link>"
-                     f"<description>{html.escape(ddesc_)}</description>"
-                     f"<pubDate>{dpub}</pubDate><guid isPermaLink=\"true\">{dlink}</guid></item>")
+    #     posts/*.html ∪ daily/*.html(latest.html 제외, 2026-09-06 P0) 합집합을 날짜 내림차순 정렬해 상위
+    #     FEED_MAX — 예전엔 오늘자 다이제스트만 별도 특례로 맨 앞에 붙였으나(2026-09-05 P1), 과거 다이제스트가
+    #     피드에서 통째로 빠지는 문제라 posts 와 동일 규칙(파일명 앞 10자=날짜, _post_meta)으로 병합한다.
+    daily_dated=[p for p in glob.glob(f"{SITE}/daily/*.html") if os.path.basename(p)!="latest.html"]
+    feed_srcs=sorted(posts+daily_dated, key=lambda p:_post_meta(p)[0], reverse=True)
     items=""
-    for p in posts[:FEED_MAX]:
-        d,t,desc=_post_meta(p); link=f"{BASE_URL}/posts/{quote(os.path.basename(p))}"
+    for p in feed_srcs[:FEED_MAX]:
+        is_daily=p in daily_dated
+        d,t,desc=_post_meta(p)
+        if is_daily:
+            desc=t   # 다이제스트는 meta description 대신 제목을 그대로 재사용
+        rel="daily" if is_daily else "posts"
+        link=f"{BASE_URL}/{rel}/{quote(os.path.basename(p))}"
         pub=format_datetime(datetime.fromisoformat(d).replace(hour=7,minute=5,tzinfo=KST))
         items+=(f"<item><title>{html.escape(t)}</title><link>{link}</link>"
                 f"<description>{html.escape(desc)}</description>"
@@ -234,7 +338,7 @@ def build(today=None, molit_path=None):
         f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
         f"<title>서울 부동산 데이터 스냅샷</title><link>{BASE_URL}/</link>"
         f"<description>서울 자치구 아파트 단지의 국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음). 방법론 공개. 투자자문 아님.</description>"
-        f"<language>ko</language><lastBuildDate>{now}</lastBuildDate>{digest_item}{items}</channel></rss>")
+        f"<language>ko</language><lastBuildDate>{now}</lastBuildDate>{items}</channel></rss>")
     # 4) robots.txt (AI 크롤러 명시 허용) + ai.txt(사용정책)
     open(f"{SITE}/robots.txt","w").write(
         "User-agent: *\nAllow: /\n# AI crawlers explicitly allowed (educational; named public MOLIT transaction stats, no scores)\n"

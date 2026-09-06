@@ -199,9 +199,13 @@ def derive_tier_now(recs: list[dict], asof: str) -> dict:
       ③ 52주위치: 최근3개월 체결 중위가 12개월(52주) 실거래 min~max 레인지에서 차지하는 위치(0~100%).
                  '현재'=최근3개월 중위(헤드라인 12개월 중위와 기준점 다름) — 지금 고점/저점 근처 신호 보존.
     표본부족 가드(오도방지): 분포 n<5(분위수 불안정), 52주위치 n<5 또는 최근3개월 표본<2(현재 시세 미정),
-    추세 각 분기 표본<2 → None. 무점수 정합: 분위수·과거중위비교·레인지내 위치(전부 사실값)만 — 점수·등급·추천·전망 없음."""
+    추세 각 분기 표본<2 → None. 무점수 정합: 분위수·과거중위비교·레인지내 위치(전부 사실값)만 — 점수·등급·추천·전망 없음.
+    trend_n_recent/trend_n_prior(2026-09-06 P0) — 추세 두 창의 원표본수(int, 표본 0 이면 0). trend_pct/
+    trend_dir 는 각 창 표본>=2 게이트를 통과해야 값이 서지만, n 자체는 그 게이트와 무관하게 항상 채운다
+    (표본 수 병기가 목적 — '왜 null 인지'도 이 n 으로 설명 가능해야 한다)."""
     px_all = [r["price"] for r in recs]
-    out = {"p25_eok": None, "p75_eok": None, "trend_dir": None, "trend_pct": None, "pos_52w": None}
+    out = {"p25_eok": None, "p75_eok": None, "trend_dir": None, "trend_pct": None, "pos_52w": None,
+           "trend_n_recent": 0, "trend_n_prior": 0}
     if len(px_all) < 2:
         return out
     m0 = st.median(px_all)
@@ -216,6 +220,7 @@ def derive_tier_now(recs: list[dict], asof: str) -> dict:
     recent_set, prior_set = _month_windows(asof)
     rp = [r["price"] for r in clean if r.get("ym") in recent_set]
     pp = [r["price"] for r in clean if r.get("ym") in prior_set]
+    out["trend_n_recent"], out["trend_n_prior"] = len(rp), len(pp)
     if len(rp) >= 2 and len(pp) >= 2:
         prior_med = st.median(pp)
         chg = round((st.median(rp) - prior_med) / prior_med * 100, 1)
@@ -274,6 +279,8 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
                 "molit_p75_eok": tier["p75_eok"],                # ① 동일평형 실거래 P75(억) — 협상 레인지 상단
                 "molit_trend_dir": tier["trend_dir"],            # ② 최근3개월 vs 직전9개월 중위 방향(▲/▼/—)
                 "molit_trend_pct": tier["trend_pct"],            # ② 변화%(과거 비교 사실 — 전망 아님)
+                "molit_trend_n_recent": tier["trend_n_recent"],  # ② 최근3개월 창 표본수
+                "molit_trend_n_prior": tier["trend_n_prior"],    # ② 직전9개월 창 표본수
                 "molit_pos_52w": tier["pos_52w"],                # ③ 최근3개월 체결 중위의 12개월(52주) 레인지 내 위치(%)
                 "pyeong_price_man": round(md * 1e8 / pyeong / 1e4) if (md and pyeong) else None,  # 평단가(만원/평) 파생 공개사실
                 # ★ 점수·순위·등급·강점축·세그먼트 일절 없음(A 모델) — 사실 수치만.
@@ -573,6 +580,8 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
             "molit_p75_eok": tier["p75_eok"],
             "molit_trend_dir": tier["trend_dir"],
             "molit_trend_pct": tier["trend_pct"],
+            "molit_trend_n_recent": tier["trend_n_recent"],
+            "molit_trend_n_prior": tier["trend_n_prior"],
             "molit_pos_52w": tier["pos_52w"],
             "pyeong_price_man": round(md * 1e8 / pyeong / 1e4) if (md and pyeong) else None,
             # ★ 점수·순위·등급·강점축·세그먼트 일절 없음(A 모델) — 사실 수치만.
@@ -836,6 +845,7 @@ tbody tr:hover{background:#f6faff}
 <header>
   <h1>서울 부동산 탐색기 <span class=muted style="font-size:13px">— 공공 실거래 + 단지정보</span></h1>
   <div class=disc id=disc>불러오는 중…</div>
+  <div class=disc>모든 수치는 국토부 실거래 사실(F)이며 표본 n 을 동반합니다.</div>
 </header>
 <div class=wrap>
   <aside class=panel id=filters></aside>
@@ -864,15 +874,15 @@ const COLS=[
   {k:"built_year",t:"준공",num:true,fmt:r=>r.built_year},
   {k:"product_type",t:"유형",num:false,fmt:r=>`<span class=tag>${r.product_type}</span>`},
   {k:"molit_recent_eok",t:"공공 실거래(중위)",num:true,
-     fmt:r=>r.molit_recent_eok!=null?`<b>${r.molit_recent_eok}억</b><sup class=sup> F</sup> <span class=muted>n${r.molit_n}</span>`
+     fmt:r=>r.molit_recent_eok!=null?`<b>${r.molit_recent_eok}억</b> <span class=muted>n${r.molit_n}</span>`
        +(r.molit_p25_eok!=null?`<br><span class=muted>${r.molit_p25_eok}–${r.molit_recent_eok}–${r.molit_p75_eok} <span class=sup>P25·중위·P75</span></span>`:``)
        :`<span class=muted>—</span>`},
   {k:"price_segment",t:"가격대",num:false,
    fmt:r=>r.price_segment?`<span class=tag>${esc(r.price_segment)}</span>`:`<span class=muted>—</span>`},
   {k:"molit_trend_pct",t:"추세<span class=muted style=font-weight:400> 3/9개월</span>",num:true,
-     fmt:r=>r.molit_trend_pct!=null?`${r.molit_trend_dir}${Math.abs(r.molit_trend_pct)}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
+     fmt:r=>r.molit_trend_pct!=null?`${r.molit_trend_dir}${Math.abs(r.molit_trend_pct)}%`:`<span class=muted>—</span>`},
   {k:"molit_pos_52w",t:"52주위치<span class=muted style=font-weight:400> 최근3개월</span>",num:true,
-     fmt:r=>r.molit_pos_52w!=null?`${r.molit_pos_52w}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
+     fmt:r=>r.molit_pos_52w!=null?`${r.molit_pos_52w}%`:`<span class=muted>—</span>`},
   {k:"pyeong_price_man",t:"평단가",num:true,fmt:r=>r.pyeong_price_man!=null?`${r.pyeong_price_man.toLocaleString()}만`:`<span class=muted>—</span>`},
   // ── 입지·인프라 추가 열(기본 숨김, '인프라 보기' 토글로 표시) ──
   {k:"subway_m",t:"지하철(m)",num:true,extra:true,
@@ -901,13 +911,13 @@ const COLS=[
   {k:"gu_jeonse_ratio_pct",t:"전세가율(서울전체)",num:true,extra:true,
    fmt:r=>r.gu_jeonse_ratio_pct!=null?`${r.gu_jeonse_ratio_pct}%<span class=muted> 서울전체 R-ONE</span>`:`<span class=muted>—</span>`},
   {k:"jeonse_ratio_complex_pct",t:"전세가율(단지)",num:true,extra:true,
-   fmt:r=>r.jeonse_ratio_complex_pct!=null?`${r.jeonse_ratio_complex_pct}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
+   fmt:r=>r.jeonse_ratio_complex_pct!=null?`${r.jeonse_ratio_complex_pct}%`:`<span class=muted>—</span>`},
   {k:"gap_eok",t:"매매-전세 갭",num:true,extra:true,
-   fmt:r=>r.gap_eok!=null?`${r.gap_eok}억<sup class=sup> F</sup><br><span class=muted>전세${r.jeonse_recent_eok}억 n${r.jeonse_n}</span>`:`<span class=muted>—</span>`},
+   fmt:r=>r.gap_eok!=null?`${r.gap_eok}억<br><span class=muted>전세${r.jeonse_recent_eok}억 n${r.jeonse_n}</span>`:`<span class=muted>—</span>`},
   {k:"trade_annual",t:"연거래수",num:true,extra:true,
    fmt:r=>r.trade_annual!=null?`${r.trade_annual}건/년`:`<span class=muted>—</span>`},
   {k:"turnover_pct",t:"거래회전율",num:true,extra:true,
-   fmt:r=>r.turnover_pct!=null?`${r.turnover_pct}%<sup class=sup> F</sup>`:`<span class=muted>—</span>`},
+   fmt:r=>r.turnover_pct!=null?`${r.turnover_pct}%`:`<span class=muted>—</span>`},
   {k:"transit",t:"입지",num:false,extra:true,
    fmt:r=>r.transit?`<span class=muted>${esc(r.transit)}</span>`:`<span class=muted>—</span>`},
   {k:"mart_800",t:"마트(800m)",num:true,extra:true,
@@ -936,6 +946,10 @@ const COLS=[
 const uniq=a=>[...new Set(a)];
 const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
+// GA4 계측(2026-09-06 P0) — gtag 는 build_site.inject_ga4_tag 가 나중에 <head> 에 넣으므로(explorer.html
+// 자체를 report/blog 에서 직접 열면 미주입) 항상 존재 확인 후 호출. 쿼리 원문·개인정보는 절대 전송하지 않는다.
+function track(name,params){if(typeof gtag==='function')gtag('event',name,params);}
+
 // 프리셋 딥링크(2026-09-05 P2) — ?gu=&band=&sort=&dir=&q= 를 첫 render() 전에 S 에 반영.
 // 허브/단지페이지/다이제스트가 이 쿼리로 explorer.html 을 가리키면 그 필터가 이미 걸린 채로 뜬다.
 function applyPreset(){
@@ -945,7 +959,18 @@ function applyPreset(){
   const q=p.get("q"); if(q) S.q=q;
   const sort=p.get("sort"); if(sort&&COLS.some(c=>c.k===sort)) S.sort=sort;
   const dir=p.get("dir"); if(dir==="1"||dir==="-1") S.dir=+dir;
+  const qs=location.search.slice(1);
+  if(qs) track('explorer_preset',{params:qs.slice(0,120)});
 }
+// 단지 개별 페이지 링크 클릭(2026-09-06 P0) — 표 자체엔 아직 그런 링크가 없을 수 있어(다른 워커 작업
+// 병행) tbody 위임으로 걸어둔다: 나중에 어떤 셀이 /complex/*.html 링크를 내더라도 자동으로 잡힌다.
+// 네이버 매물 링크(m.land.naver.com/complex/info/…)는 .html 로 끝나지 않아 이 셀렉터에 안 걸린다.
+document.getElementById("tbody").addEventListener("click",e=>{
+  const a=e.target.closest('a[href*="/complex/"][href$=".html"]');
+  if(!a) return;
+  const slug=decodeURIComponent(a.getAttribute("href").split("/").pop().replace(/\.html$/,""));
+  track('complex_click',{slug});
+});
 // 현재 상태(S)를 쿼리스트링으로 클립보드에 복사 — "이 필터 그대로" 공유용.
 function copyStateLink(btn){
   const p=new URLSearchParams();
@@ -983,9 +1008,15 @@ function init(){
     const v=+c.dataset.v; const prev=S.units_min;
     S.units_min=(prev===v?null:v);
     F.querySelectorAll(".chip[data-k='units_min']").forEach(x=>x.classList.toggle("on",+x.dataset.v===S.units_min));
+    track('explorer_filter',{field:'units_min',value:S.units_min});
     render();});
-  F.querySelectorAll(".chip:not([data-k='units_min'])").forEach(c=>c.onclick=()=>{const k=c.dataset.k,v=c.dataset.v;S[k].has(v)?S[k].delete(v):S[k].add(v);c.classList.toggle("on");render();});
-  document.getElementById("q").oninput=e=>{S.q=e.target.value.trim();render();};
+  F.querySelectorAll(".chip:not([data-k='units_min'])").forEach(c=>c.onclick=()=>{const k=c.dataset.k,v=c.dataset.v;S[k].has(v)?S[k].delete(v):S[k].add(v);c.classList.toggle("on");track('explorer_filter',{field:k,value:v});render();});
+  let _searchTimer=null;
+  document.getElementById("q").oninput=e=>{
+    S.q=e.target.value.trim();render();
+    clearTimeout(_searchTimer);
+    _searchTimer=setTimeout(()=>track('explorer_search',{q_len:S.q.length}),800);
+  };
   // 프리셋(applyPreset)으로 이미 채워진 S 를 필터 UI에도 반영(체크표시·검색창 값) — 없으면 렌더는 맞는데 칩만 꺼져 보임.
   document.getElementById("q").value=S.q;
   F.querySelectorAll(".chip").forEach(c=>{
@@ -993,18 +1024,20 @@ function init(){
     if(k==="units_min"){ if(+v===S.units_min) c.classList.add("on"); }
     else if(S[k]&&S[k].has&&S[k].has(v)) c.classList.add("on");
   });
-  document.getElementById("emin").oninput=e=>{S.emin=e.target.value===""?null:+e.target.value;render();};
-  document.getElementById("emax").oninput=e=>{S.emax=e.target.value===""?null:+e.target.value;render();};
-  document.getElementById("ppmin").oninput=e=>{S.ppmin=e.target.value===""?null:+e.target.value;render();};
-  document.getElementById("ppmax").oninput=e=>{S.ppmax=e.target.value===""?null:+e.target.value;render();};
+  document.getElementById("emin").oninput=e=>{S.emin=e.target.value===""?null:+e.target.value;track('explorer_filter',{field:'emin',value:S.emin});render();};
+  document.getElementById("emax").oninput=e=>{S.emax=e.target.value===""?null:+e.target.value;track('explorer_filter',{field:'emax',value:S.emax});render();};
+  document.getElementById("ppmin").oninput=e=>{S.ppmin=e.target.value===""?null:+e.target.value;track('explorer_filter',{field:'ppmin',value:S.ppmin});render();};
+  document.getElementById("ppmax").oninput=e=>{S.ppmax=e.target.value===""?null:+e.target.value;track('explorer_filter',{field:'ppmax',value:S.ppmax});render();};
   // 헤더
   document.getElementById("thead").innerHTML="<tr>"+COLS.map(c=>
     `<th class="${[c.num?'num':'',c.extra?'extra-col':''].filter(Boolean).join(' ')}" data-k="${c.k}">${c.t}<span class=ar data-ar="${c.k}"></span></th>`).join("")+"</tr>";
   document.querySelectorAll("#thead th").forEach(th=>th.onclick=()=>{
-    const k=th.dataset.k; if(S.sort===k)S.dir*=-1; else{S.sort=k;S.dir=(COLS.find(c=>c.k===k).num?-1:1);} render();});
+    const k=th.dataset.k; if(S.sort===k)S.dir*=-1; else{S.sort=k;S.dir=(COLS.find(c=>c.k===k).num?-1:1);}
+    track('explorer_sort',{key:S.sort,dir:S.dir});
+    render();});
   document.getElementById("foot").innerHTML=
     "<b>출처·고지</b><br>"+DB.sources.map(s=>`• ${esc(s.name)}${s.url?` — <a href="${esc(s.url)}">${esc(s.url)}</a>`:""}${s.note?` <span class=muted>(${esc(s.note)})</span>`:""}`).join("<br>")
-    +`<br>• 가격은 국토부 공공 실거래가(12개월 동일평형 중위)만 표시 — 사설 시세(호가)는 게재하지 않습니다. <sup class=sup>F</sup>=공공 실거래 사실, n=표본수.`
+    +`<br>• 가격은 국토부 공공 실거래가(12개월 동일평형 중위)만 표시 — 사설 시세(호가)는 게재하지 않습니다. 모든 수치는 국토부 실거래 사실(F)이며 n=표본수입니다.`
     +`<br>• P25·중위·P75 = 동일평형 실거래 분위수(협상 레인지). 추세 = 최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주위치 = <b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지에서 차지하는 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 구간은 —.`
     +`<br>• 자체 평가·점수·순위를 매기지 않습니다. 공개된 사실 수치만 제공합니다.`
     +`<br>• <b>가격대</b> = 매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천을 의미하지 않습니다 — 대출 가능 여부·금리·한도는 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오.`
@@ -1073,9 +1106,49 @@ def _tier_cell(r: dict) -> str:
     return f'<span class=mut>{"<br>".join(f)}<sup>F</sup></span>' if f else '<span class=mut>—</span>'
 
 
+def build_gu_claims(gu: str, rows: list[dict], asof: str) -> list[dict]:
+    """구 1개의 실명 사실 claims(provenance 원장, claims.jsonl 사이드카 소스) — render_gu_post 의
+    claims 구성 로직을 추출(2026-09-06 P0). render_gu_post(일간, back-compat)·render_gu_weekly_post
+    (주간, 현재 발행 경로) 양쪽이 재사용 — 표기가 어느 렌더러를 거쳤든 동일 provenance 를 낸다.
+    molit_recent_eok 내림차순(뷰와 동일 정렬)으로 순회하지만 claims.jsonl 자체엔 순서 의미 없음."""
+    srt = sorted(rows, key=lambda r: (r["molit_recent_eok"] is None, -(r["molit_recent_eok"] or 0), r["name"]))
+    claims: list[dict] = []
+    for r in srt:
+        if r["molit_recent_eok"] is not None:
+            claims.append({"name": r["name"], "gu": gu, "claim": "recent_transaction_median_eok",
+                           "value": r["molit_recent_eok"], "grade": "fact", "source": "MOLIT_RTMS_public",
+                           "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
+        if r.get("molit_p25_eok") is not None:   # ① 분포 IQR(분위수 사실)
+            claims.append({"name": r["name"], "gu": gu, "claim": "transaction_iqr_eok",
+                           "p25": r["molit_p25_eok"], "p75": r["molit_p75_eok"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
+        if r.get("molit_trend_pct") is not None:  # ② 최근3개월 vs 직전9개월 중위 변화(과거 비교 사실)
+            claims.append({"name": r["name"], "gu": gu, "claim": "recent3m_vs_prior9m_median_change_pct",
+                           "value": r["molit_trend_pct"], "direction": r["molit_trend_dir"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
+        if r.get("molit_pos_52w") is not None:    # ③ 12개월 레인지 내 위치(사실)
+            claims.append({"name": r["name"], "gu": gu, "claim": "position_in_52w_range_pct",
+                           "value": r["molit_pos_52w"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
+        if r.get("gap_eok") is not None:           # D(2026-07-10) 매매-전세 갭 — 양쪽 다 RTMS 실거래
+            claims.append({"name": r["name"], "gu": gu, "claim": "sale_jeonse_gap_eok",
+                           "value": r["gap_eok"], "jeonse_median_eok": r["jeonse_recent_eok"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["jeonse_n"], "area_m2": r["area_m2"]})
+        if r.get("trade_annual") is not None:      # C(2026-07-10) 연 거래건수(전 평형)
+            claims.append({"name": r["name"], "gu": gu, "claim": "annual_trade_count",
+                           "value": r["trade_annual"], "grade": "fact",
+                           "source": "MOLIT_RTMS_public", "asof": asof})
+        claims.append({"name": r["name"], "gu": gu, "claim": "units", "value": r["units"], "grade": "fact", "source": "public_record"})
+        claims.append({"name": r["name"], "gu": gu, "claim": "built_year", "value": r["built_year"], "grade": "fact", "source": "public_record"})
+    return claims
+
+
 def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
     """구 1개 = 실명 사실 per-구 포스트(A모델 — 점수 없음, 공공 실거래·단지정보만). SEO 본체.
-    반환: {html, jsonld, claims, llms_line, n, top_eok}."""
+    반환: {html, jsonld, claims, llms_line, n, top_eok}.
+    2026-09-06 P0: 구별 일간 포스트 생성은 중단(→ render_gu_weekly_post, write_posts 참조) —
+    본 함수는 더 이상 write_posts 에서 매일 호출되지 않는다. 기존 호출부·테스트 back-compat 을 위해
+    존치(orphan 후보, 삭제하지 않음)."""
     from blog.build_site import ga4_snippet   # lazy import — build_site 가 gu_hub 경유로 본 모듈을 참조할 수 있어 순환 예방
     stale = (date.fromisoformat(today) - date.fromisoformat(asof)).days > FRESH_DAYS
     badge = (f'<span class="badge stale">⚠ STALE · 데이터 {asof}</span>' if stale
@@ -1148,34 +1221,7 @@ P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최�
             {"@type": "PropertyValue", "name": "position_in_52w_range_pct", "description": "최근3개월 체결 중위의 12개월(52주) 실거래 최저~최고 레인지 내 위치(%) — 헤드라인 12개월 중위와 기준점 다름"}],
         "isAccessibleForFree": True, "keywords": ["부동산", "실거래", "공공데이터", "서울", gu]}
     html = html.replace("{JSONLD}", json.dumps(jsonld, ensure_ascii=False))
-    claims = []
-    for r in srt:
-        if r["molit_recent_eok"] is not None:
-            claims.append({"name": r["name"], "gu": gu, "claim": "recent_transaction_median_eok",
-                           "value": r["molit_recent_eok"], "grade": "fact", "source": "MOLIT_RTMS_public",
-                           "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
-        if r.get("molit_p25_eok") is not None:   # ① 분포 IQR(분위수 사실)
-            claims.append({"name": r["name"], "gu": gu, "claim": "transaction_iqr_eok",
-                           "p25": r["molit_p25_eok"], "p75": r["molit_p75_eok"], "grade": "fact",
-                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
-        if r.get("molit_trend_pct") is not None:  # ② 최근3개월 vs 직전9개월 중위 변화(과거 비교 사실)
-            claims.append({"name": r["name"], "gu": gu, "claim": "recent3m_vs_prior9m_median_change_pct",
-                           "value": r["molit_trend_pct"], "direction": r["molit_trend_dir"], "grade": "fact",
-                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
-        if r.get("molit_pos_52w") is not None:    # ③ 12개월 레인지 내 위치(사실)
-            claims.append({"name": r["name"], "gu": gu, "claim": "position_in_52w_range_pct",
-                           "value": r["molit_pos_52w"], "grade": "fact",
-                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["molit_n"], "area_m2": r["area_m2"]})
-        if r.get("gap_eok") is not None:           # D(2026-07-10) 매매-전세 갭 — 양쪽 다 RTMS 실거래
-            claims.append({"name": r["name"], "gu": gu, "claim": "sale_jeonse_gap_eok",
-                           "value": r["gap_eok"], "jeonse_median_eok": r["jeonse_recent_eok"], "grade": "fact",
-                           "source": "MOLIT_RTMS_public", "asof": asof, "n": r["jeonse_n"], "area_m2": r["area_m2"]})
-        if r.get("trade_annual") is not None:      # C(2026-07-10) 연 거래건수(전 평형)
-            claims.append({"name": r["name"], "gu": gu, "claim": "annual_trade_count",
-                           "value": r["trade_annual"], "grade": "fact",
-                           "source": "MOLIT_RTMS_public", "asof": asof})
-        claims.append({"name": r["name"], "gu": gu, "claim": "units", "value": r["units"], "grade": "fact", "source": "public_record"})
-        claims.append({"name": r["name"], "gu": gu, "claim": "built_year", "value": r["built_year"], "grade": "fact", "source": "public_record"})
+    claims = build_gu_claims(gu, rows, asof)
     top_eok = max((r["molit_recent_eok"] for r in priced), default=None)
     llms_line = (f"- [{today} {gu}](/posts/{today}-{gu}.html): {gu} {len(rows)}단지 공공 실거래·단지정보(실명). "
                  f"사실 데이터만·점수 없음·CC-BY-NC. provenance 동봉(claims.jsonl).")
@@ -1183,27 +1229,86 @@ P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최�
             "n": len(rows), "top_eok": top_eok, "stale": stale}
 
 
+def should_write_weekly_posts(today: str) -> bool:
+    """구별 주간 리포트 발행 여부(2026-09-06 P0) — 기본은 월요일(weekday()==0)에만 True.
+    구별 일간 포스트(25편/일 누적 3천+)가 실질 중복 콘텐츠였다는 진단(브리핑 §1.1) 이후 주 1회로 전환.
+    env `RE_WEEKLY_POSTS` 오버라이드: "1"=요일 무관 강제 발행, "0"=월요일이어도 강제 억제, 그 외/미설정=요일 판정."""
+    override = os.environ.get("RE_WEEKLY_POSTS")
+    if override == "1":
+        return True
+    if override == "0":
+        return False
+    return date.fromisoformat(today).weekday() == 0  # 0=월요일
+
+
+def render_gu_weekly_post(gu: str, rows: list[dict], asof: str, today: str,
+                          ds: dict | None = None, prev_ds: dict | None = None) -> dict:
+    """구 주간 리포트(2026-09-06 P0) — 구별 일간 포스트(25편/일) 대신 월요일 1회 발행되는 본체.
+    본문은 구허브 스냅샷을 재사용(render_gu_hub — 동일 표·집계이므로 실질 중복 콘텐츠를 새로 만들지
+    않는다), 포스트 메타만 후처리: <title>을 "{gu} 아파트 주간 리포트 — {today}"로, 설명을 주간 리포트
+    프레이밍으로 교체, <link rel=canonical> 을 구허브(gu/{gu}.html)로 추가 — 검색엔진에 "이 주간 스냅샷의
+    정본은 허브"임을 알린다. build_site._post_meta 가 파싱하는 정확한 형식(<title>…</title>·
+    <meta name=description content="…">)을 유지해야 sitemap-posts.xml·feed.xml·archive.html 이 안 깨진다.
+    claims.jsonl 사이드카는 build_gu_claims 재사용(render_gu_post 와 동일 provenance 계약).
+    반환 스키마는 render_gu_post 와 동일(write_posts/naver_teaser 공용): {html, claims, llms_line, n, top_eok, stale}."""
+    from blog.gu_hub import render_gu_hub          # lazy — gu_hub 가 build_explorer 를 top-level import(순환 예방)
+    from blog.build_site import BASE_URL           # lazy — build_site 가 build_explorer 를 top-level import(순환 예방)
+    stale = (date.fromisoformat(today) - date.fromisoformat(asof)).days > FRESH_DAYS
+    hub_html = render_gu_hub(gu, rows, asof, today, ds=ds, prev_ds=prev_ds)   # 푸터 주간 링크 없음(자기 링크 방지)
+    title = f"{gu} 아파트 주간 리포트 — {today}"
+    desc = (f"{gu} 아파트 {len(rows)}단지 국토부 공공 실거래 주간 스냅샷({today} 기준). "
+            f"자체 평가·점수·순위 없음 — 공개된 사실 수치만. 투자자문 아님.")
+    html_out = re.sub(r"<title>.*?</title>", f"<title>{title}</title>", hub_html, count=1, flags=re.S)
+    html_out = re.sub(r'<meta name=description content="(.*?)">',
+                      f'<meta name=description content="{desc}">', html_out, count=1, flags=re.S)
+    canonical = f'<link rel="canonical" href="{BASE_URL}/gu/{quote(gu)}.html">'
+    html_out = html_out.replace("</head>", canonical + "</head>", 1)
+    priced = [r for r in rows if r["molit_recent_eok"] is not None]
+    top_eok = max((r["molit_recent_eok"] for r in priced), default=None)
+    llms_line = (f"- [{today} {gu} 주간](/posts/{today}-{gu}.html): {gu} {len(rows)}단지 공공 실거래·단지정보"
+                 f"(실명) 주간 리포트. 사실 데이터만·점수 없음·CC-BY-NC. provenance 동봉(claims.jsonl).")
+    return {"html": html_out, "claims": build_gu_claims(gu, rows, asof), "llms_line": llms_line,
+            "n": len(rows), "top_eok": top_eok, "stale": stale}
+
+
 def write_posts(ds: dict, outdir: str) -> list[dict]:
-    """dataset 의 complexes 를 구별로 묶어 실명 사실 per-구 포스트 + claims.jsonl + llms.txt 작성.
-    반환: 구별 summary [{gu, n, top_eok, llms, stale, post}] (tistory/naver teaser 입력)."""
+    """dataset 의 complexes 를 구별로 묶어 요약 반환 + llms.txt 매일 재작성. 구별 주간 리포트(html+
+    claims.jsonl)는 should_write_weekly_posts(today) 가 True 일 때만 실제로 쓴다(2026-09-06 P0 —
+    구별 일간 포스트 25편/일·누적 3천+ 실질 중복 콘텐츠 중단, render_gu_weekly_post 참조).
+    llms.txt 는 그 날 실제로 쓴 포스트만 인덱싱(과거 발행 이력 재열거는 하지 않음 — 매일 새로
+    재작성되는 크롤러 인덱스이지 아카이브가 아니다. 아카이브는 archive.html/site 정적 파일이 정본).
+    반환: 구별 summary [{gu, n, top_eok, stale, skipped, llms?, post?}] — naver_teaser.build_teaser_text
+    가 이미 skipped=True 항목을 active 집계에서 제외하는 계약을 갖고 있어 그대로 재사용한다(오늘 발행된
+    포스트가 없는 구는 "오늘 있었던 것처럼" 티저에 노출하지 않는다)."""
     from collections import defaultdict
     os.makedirs(f"{outdir}/posts", exist_ok=True)
+    from blog.snapshots import load_snapshot_days_ago
+    prev_ds = load_snapshot_days_ago(7, dir=f"{outdir}/snapshots")   # 7일 전(±1일) 스냅샷 — 리드 '패턴' 재현 판정, 없으면 None
     by = defaultdict(list)
     for r in ds["complexes"]:
         by[r["gu"]].append(r)
     asof, today = ds["data_asof"], ds["generated"]
+    write_weekly = should_write_weekly_posts(today)
     out, llms = [], []
     for gu in sorted(by):
-        post = render_gu_post(gu, by[gu], asof, today)
+        rows = by[gu]
+        priced = [r for r in rows if r["molit_recent_eok"] is not None]
+        top_eok = max((r["molit_recent_eok"] for r in priced), default=None)
+        stale = (date.fromisoformat(today) - date.fromisoformat(asof)).days > FRESH_DAYS
+        if not write_weekly:
+            out.append({"gu": gu, "n": len(rows), "top_eok": top_eok, "stale": stale, "skipped": True})
+            continue
+        post = render_gu_weekly_post(gu, rows, asof, today, ds=ds, prev_ds=prev_ds)
         open(f"{outdir}/posts/{today}-{gu}.html", "w").write(post["html"])
         with open(f"{outdir}/posts/{today}-{gu}.claims.jsonl", "w") as f:
             for cl in post["claims"]:
                 f.write(json.dumps(cl, ensure_ascii=False) + "\n")
         llms.append(post["llms_line"])
         out.append({"gu": gu, "n": post["n"], "top_eok": post["top_eok"],
-                    "llms": post["llms_line"], "stale": post["stale"], "post": post})
+                    "llms": post["llms_line"], "stale": post["stale"], "post": post, "skipped": False})
     hdr = ("# 서울 아파트 공공 실거래 + 단지정보 (개인 연구)\n\n"
-           "> 자치구별 국토부 공공 실거래가 + 세대수·연식·평형(실명). 자체 평가·점수 없음. 투자자문 아님. CC-BY-NC.\n\n## Posts\n")
+           "> 자치구별 국토부 공공 실거래가 + 세대수·연식·평형(실명). 자체 평가·점수 없음. 투자자문 아님. CC-BY-NC.\n"
+           "> 구별 리포트는 매주 월요일 발행(주간 스냅샷) — 이 색인 자체는 매일 재생성됩니다.\n\n## Posts\n")
     open(f"{outdir}/llms.txt", "w").write(hdr + "\n".join(llms) + "\n")
     return out
 

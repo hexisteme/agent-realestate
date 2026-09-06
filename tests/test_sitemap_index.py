@@ -78,10 +78,11 @@ def test_sitemap_xml_is_a_valid_sitemapindex_with_three_children(tmp_path, monke
 def test_sitemap_core_has_index_methodology_gu_hubs_and_digests(tmp_path, monkeypatch):
     site_dir, _ = _build_fixture(tmp_path, monkeypatch)
     locs = _urlset_locs(site_dir, "sitemap-core.xml")
-    # 고정 2(랜딩+방법론) + 구허브 3(강남/노원/서초) + 다이제스트 2(날짜본+latest) = 7
-    assert len(locs) == 7
+    # 고정 3(랜딩+방법론+아카이브) + 구허브 3(강남/노원/서초) + 다이제스트 2(날짜본+latest) = 8
+    assert len(locs) == 8
     assert any(loc.endswith("/") for loc in locs)
     assert any(loc.endswith("/methodology.html") for loc in locs)
+    assert any(loc.endswith("/archive.html") for loc in locs)
     assert any(loc.endswith("/daily/2026-09-05.html") for loc in locs)
     assert any(loc.endswith("/daily/latest.html") for loc in locs)
     for gu in ("강남", "노원", "서초"):
