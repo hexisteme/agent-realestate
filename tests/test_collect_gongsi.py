@@ -399,6 +399,36 @@ def test_derive_frame_candidates_joins_all_gus_for_border_complex():
     assert "서울 강동구" in c["district"]
 
 
+def test_derive_frame_candidates_pins_true_district_over_scan_gus():
+    """좌표 소재구 맵이 있으면 스캔 구 결합 대신 소재구 하나만 쓴다(2026-09-06 실측 결함).
+
+    FRAME 의 gu 는 스캔 구역이라, 소재구가 스캔 후보에 아예 없는 단지(마포 성원 ↔ 서대문 홍제성원)는
+    스캔 구 전체를 '/'로 묶어 넘기는 순간 타 구 K-apt 코드가 신원게이트를 그대로 통과한다."""
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    overlay = {"842": {"kapt_code": "A12009201"}}
+    frame_by_cno = {"842": {"name": "성원", "households": 260, "gus": ["종로", "용산", "서대문", "마포"]}}
+    dmap = {"842": {"sido": "서울특별시", "gu": "마포", "dong": "신수동",
+                    "scan_gus": ["종로", "용산", "서대문", "마포"]}}
+    c = rv.derive_frame_candidates(["842"], overlay, frame_by_cno, dmap)[0][0]
+    assert c["gu"] == "마포"                        # 층화표본용 단일값도 소재구로 고정
+    assert c["district"] == "서울 마포구"             # 스캔 구 결합이 아니라 소재구 하나
+    assert "서대문" not in c["district"]
+
+
+def test_derive_frame_candidates_falls_back_to_scan_gus_when_district_unknown_or_outside_seoul():
+    """맵에 없는 cno·서울 밖 cno 는 기존 스캔 구 결합 폴백을 그대로 쓴다(소재구를 지어내지 않는다)."""
+    import importlib
+    rv = importlib.import_module("revalidate_gongsi")
+    overlay = {"896": {"kapt_code": "K896"}, "700": {"kapt_code": "K700"}}
+    frame_by_cno = {"896": {"name": "둔촌하이츠", "households": 500, "gus": ["송파", "강동"]},
+                    "700": {"name": "광명단지", "households": 300, "gus": ["구로", "금천"]}}
+    dmap = {"700": {"sido": "경기도", "gu": "광명", "dong": "철산동", "scan_gus": ["구로", "금천"]}}
+    cands = {c["complex_no"]: c for c in rv.derive_frame_candidates(["896", "700"], overlay, frame_by_cno, dmap)[0]}
+    assert cands["896"]["district"] == "서울 송파구/서울 강동구"     # 맵에 없음 → 폴백
+    assert cands["700"]["district"] == "서울 구로구/서울 금천구"     # 서울 밖 → 폴백(경기 구를 만들지 않음)
+
+
 def test_revalidate_one_identity_only_when_area_missing(monkeypatch):
     """면적 없는 frame 폴백 후보는 신원게이트만 판정(identity-ok-no-area) — 면적이 있으면 정상 pass."""
     import importlib

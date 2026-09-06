@@ -237,10 +237,15 @@ CORRIDOR_EXCLUDE = {"구로현대", "구로두산", "두산"}  # ② 대림역~�
 def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict:
     uni = load_candidates(universe)
     molit = json.load(open(molit_path))
-    # complex_no: Candidate 도메인 미포함 필드 → raw JSON 에서 이름매핑으로 추출
+    # complex_no: Candidate 도메인 미포함 필드 → raw JSON 에서 (구, 표시명) 매핑으로 추출.
+    # 이름만으로 키를 잡으면 동명 단지가 서로의 번호를 가져간다(2026-09-06 실측: universe 의 '두산' 4·
+    # '삼환' 2·'현대' 2 → 마지막 행이 이김. 발행 데이터셋 4행이 타 구 단지 번호를 달고 나갔다 —
+    # 노원 두산 763→3271[동대문 두산 739], 성북 두산 1998→3271, 구로 삼환 783→719[영등포 삼환 1174],
+    # 동대문 현대 601→3349[구로 현대 2412]). complex_no 는 네이버 매물 링크이자 add_enrich_overlay 의
+    # 조인 키라, 틀리면 타 단지 매물 링크가 걸리고 그 단지의 K-apt·공시가·관리비가 병합될 수 있다.
     raw_uni = json.load(open(universe, encoding="utf-8"))
-    complex_no_map = {re.sub(r"\[.*?\]", "", d.get("complex_name", "")).strip(): str(d["complex_no"])
-                      for d in raw_uni if d.get("complex_no")}
+    complex_no_map = {(d.get("district") or "", re.sub(r"\[.*?\]", "", d.get("complex_name", "")).strip()):
+                      str(d["complex_no"]) for d in raw_uni if d.get("complex_no")}
     rows = []
     excluded = {"under_min_units": 0, "corridor": 0}
     for gu, lawd in GU_LAWD.items():
@@ -281,7 +286,7 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
                 "subway_m": int((c.infra or {}).get("subway_m")) if (c.infra or {}).get("subway_m") else None,  # 최근접 지하철(m)
                 "cbd_km": c.cbd_km,                                                           # 주요 업무지구까지(km)
                 "cbd_name": c.cbd_name or "",
-                "complex_no": complex_no_map.get(disp, ""),                                   # 네이버 매물링크용
+                "complex_no": complex_no_map.get((c.district, disp), ""),                     # 네이버 매물링크용 + overlay 조인키(구 포함 키 — 동명 단지 오배정 방지)
                 "facing": c.listing.facing or "",                                              # 향(남향 등)
                 # ── 단지·학군·시세 사실 필드(A 모델 확장, 2026-07-03 2차) ──
                 # 대지지분(평) — 재건축 환급 단위. 추정값(is_estimate, universe 플레이스홀더 11.0)은
@@ -404,7 +409,8 @@ def product_type_from_frame(ftype: str, name: str) -> str:
 def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str,
                          survivors_path: str | None = None,
                          anchor_universe: str | None = None,
-                         gu_allowlist: set[str] | None = None) -> dict:
+                         gu_allowlist: set[str] | None = None,
+                         district_map_path: str | None = None) -> dict:
     """public-only 발행 경로(WS-0 v3, 2026-07-10) — 두 파트 병합.
 
     (A) 연속성 파트: anchor_universe(기존 발행 유니버스 JSON)를 기존 경로 build_dataset 으로
@@ -429,9 +435,20 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     gu_allowlist(2026-07-10, 풀확대 3단계 구별 단계오픈): 지정 시 (B) 는 이 구 목록만 생성 —
     enrichment 백필 완료 전 구를 실수로 노출하지 않는 안전판. (A) 는 이미 검증된 발행분이라 미적용.
     None(기본)이면 frame 의 모든 구 생성(제한 없음 — 호출측이 --public-gu-allow 로 명시할 책임).
+
+    district_map_path(2026-09-06, collect_frame_district.py 산출): cno → 좌표로 확정한 법정 소재구.
+    frame 의 `gu` 는 **스캔 구역**이지 소재구가 아니다 — 경계 단지는 이웃 구 스캔에도 잡히고 서울 밖
+    (하남·부천·광명) 단지까지 들어온다. 지정하면 그 단지의 후보 구를 소재구 하나로 고정하고 서울 밖은
+    발행하지 않는다(excluded['outside_scope']). 미지정이면 기존 동작(스캔 구 후보 중 MOLIT 표본 최다)
+    으로 폴백하는데, 그 경로는 소재구가 후보에 없을 때 **엉뚱한 구의 동명 단지 거래**로 표본을 채운
+    채 그 구로 발행한다(2026-09-06 실측 31행: 도봉 한신 1200세대=노원 하계동, 성동 건영=강남 청담동,
+    구로 주공1단지=광명 하안동 등). 그래서 일일 파이프라인은 이 맵을 항상 넘긴다.
     """
     frame = json.load(open(frame_path, encoding="utf-8"))
     molit = json.load(open(molit_path))
+    district_map: dict[str, dict] = {}
+    if district_map_path and os.path.exists(district_map_path):
+        district_map = json.load(open(district_map_path, encoding="utf-8"))
     surv: set[str] | None = None
     if survivors_path:
         sdata = json.load(open(survivors_path, encoding="utf-8"))
@@ -439,7 +456,8 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
 
     # ── (A) 연속성 파트 — 기존 경로 그대로 ──
     base_rows: list[dict] = []
-    excluded = {"under_min_units": 0, "corridor": 0, "no_molit_match": 0, "base_overlap": 0}
+    excluded = {"under_min_units": 0, "corridor": 0, "no_molit_match": 0, "base_overlap": 0,
+                "outside_scope": 0}
     suppress: dict[str, list[str]] = {}          # gu → [기존 발행명(원본)] — (B) 중복 방어(명칭)
     base_cnos: set[str] = set()                  # (B) 중복 방어(cno) — universe 숫자 cno 는 frame 과 겹침
     if anchor_universe:
@@ -469,9 +487,16 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         if cno in base_cnos:                       # (A) 와 같은 물리단지(cno 일치) — 중복 발행 방지
             excluded["base_overlap"] += 1
             continue
+        frame_rows = by_cno[cno]
+        true = district_map.get(cno)
+        if true:                                   # ★소재구 확정(2026-09-06) — 스캔 구 후보 대신 좌표의 법정구 하나만
+            if not str(true.get("sido", "")).startswith("서울") or true["gu"] not in GU_LAWD:
+                excluded["outside_scope"] += 1     # 서울 밖(하남·부천·광명 등) — 스캔에 섞여 들어온 단지
+                continue
+            frame_rows = [{**frame_rows[0], "gu": true["gu"]}]
         candidates = []
         under_units_hit = corridor_hit = suppressed_hit = False
-        for c in by_cno[cno]:
+        for c in frame_rows:
             gu = c.get("gu")
             if gu not in GU_LAWD:
                 continue

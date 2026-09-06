@@ -192,14 +192,25 @@ def write_universe_with_backup(path: Path, rows: list[dict], stamp: str) -> Path
     return backup
 
 
+def latest_district_map() -> dict:
+    """최신 examples/frame_district_*.json(cno → 좌표 소재구) — 없으면 {}. 호출 시점 해소."""
+    files = sorted(Path("examples").glob("frame_district_*.json"))
+    return json.load(open(files[-1], encoding="utf-8")) if files else {}
+
+
 def derive_frame_candidates(cnos: list[str], overlay: dict,
-                            frame_by_cno: dict) -> tuple[list[dict], list[str]]:
+                            frame_by_cno: dict,
+                            district_map: dict | None = None) -> tuple[list[dict], list[str]]:
     """derive_public_targets 후보에 없는 cno 를 collect_public_enrich.FRAME 원본(cno →
     {"name","households","gus":[스캔구역...]})으로 폴백 재검증 후보화한다 — area 는 frame 에 없어
     0.0(→ _revalidate_one 이 신원게이트까지만 판정하고 identity-ok-no-area 로 구 값을 유지). frame
     에도 없는 cno 는 missing 으로 분리 반환(재검증 불가, 원값 유지).
 
-    district 는 그 cno 가 걸친 모든 gu 를 '/'로 이어붙인 문자열이다(2026-09-05 경계단지 라이브감사
+    district 는 좌표로 확정한 소재구 하나다(2026-09-06, collect_frame_district.py) — 맵에 없는 cno 만
+    아래 스캔 구 전체 결합으로 폴백한다. FRAME 의 gu 는 스캔 구역이라 소재구가 아니고, 소재구가 스캔
+    후보에 아예 없는 단지(마포 성원·동대문 동아·광진 삼성)가 실재한다.
+
+    (폴백) district 는 그 cno 가 걸친 모든 gu 를 '/'로 이어붙인 문자열이다(2026-09-05 경계단지 라이브감사
     수정) — FRAME 은 (스캔구역, complexNo) 행이라 경계단지는 중복행을 갖고, 첫 행의 gu 는 스캔구역일
     뿐 실제 소재구가 아닐 수 있다(강남자곡힐스테이트 첫 행 gu=서초·실제=강남, 둔촌하이츠 첫 행
     gu=송파·실제=강동). 후보 gu 전부를 넘겨야 _identity_fail_reason 의 포함검사
@@ -213,6 +224,9 @@ def derive_frame_candidates(cnos: list[str], overlay: dict,
             missing.append(cno)
             continue
         gus = fr["gus"]
+        true = (district_map or {}).get(cno)     # 좌표 소재구가 있으면 그것만(2026-09-06) — 스캔 구는 소재구가 아니다
+        if true and str(true.get("sido", "")).startswith("서울") and true.get("gu"):
+            gus = [true["gu"]]
         candidates.append({"complex_no": cno, "name": fr["name"], "gu": gus[0],
                            "district": "/".join(_district_of(g) for g in gus),
                            "units": fr.get("households") or 0,
@@ -382,7 +396,8 @@ def main() -> None:
                                                       "households": r.get("households"), "gus": []})
                 if r["gu"] not in entry["gus"]:
                     entry["gus"].append(r["gu"])
-            frame_candidates, missing = derive_frame_candidates(no_target, overlay, frame_by_cno)
+            frame_candidates, missing = derive_frame_candidates(no_target, overlay, frame_by_cno,
+                                                                latest_district_map())
             candidates.extend(frame_candidates)
             print(f"  (참고) derive_public_targets 에 없는 cno {len(no_target)}개 중 frame 폴백으로 "
                   f"{len(frame_candidates)}개 추가 재검증(신원게이트만 판정, area 없음)")

@@ -92,6 +92,30 @@ def derive_overlay_candidates(overlay: dict, frame_by_cno: dict, dataset_gu_by_c
     return out
 
 
+def latest_district_map_path() -> str:
+    """최신 examples/frame_district_*.json — 없으면 "". 호출 시점 해소(import 시점 금지)."""
+    files = sorted(EX.glob("frame_district_*.json"))
+    return str(files[-1]) if files else ""
+
+
+def resolve_gu_by_cno(dataset_path: str, district_map_path: str) -> dict[str, str]:
+    """cno → 소재구. 좌표 소재구 맵(collect_frame_district.py)을 깔고 발행 데이터셋 구로 덮는다.
+
+    FRAME 의 gu 는 스캔 구역이지 소재구가 아니다(2026-09-06) — 스캔 구 전체를 후보로 쓰면 소재구가
+    후보에 없는 단지의 타 구 K-apt 코드가 통과해버린다(마포 성원 ↔ 서대문 홍제성원 등 3건 실적발).
+    발행 데이터셋의 구는 실거래 LAWD 로 확정된 값이라 최우선, 서울 밖·구 미상은 무시한다."""
+    out: dict[str, str] = {}
+    if district_map_path and Path(district_map_path).exists():
+        for cno, v in json.load(open(district_map_path, encoding="utf-8")).items():
+            if str(v.get("sido", "")).startswith("서울") and v.get("gu"):
+                out[str(cno)] = str(v["gu"])
+    if dataset_path and Path(dataset_path).exists():
+        out.update({str(r.get("complex_no")): str(r.get("gu") or "")
+                    for r in json.load(open(dataset_path, encoding="utf-8")).get("complexes", [])
+                    if r.get("complex_no") and r.get("gu")})
+    return out
+
+
 def index_frame(frame_rows: list[dict]) -> dict[str, dict]:
     """FRAME 행(스캔 구별 중복) → cno 별 name·households(첫 행) + gus(모든 행의 구, 순서 유지)."""
     out: dict[str, dict] = {}
@@ -156,10 +180,7 @@ def main() -> None:
     overlay = json.load(open(overlay_path, encoding="utf-8"))
     rows = json.load(open(universe_path, encoding="utf-8"))
     frame_by_cno = index_frame(json.load(open(a.frame, encoding="utf-8")))
-    dataset_gu_by_cno: dict[str, str] = {}
-    if a.dataset and Path(a.dataset).exists():
-        dataset_gu_by_cno = {str(r.get("complex_no")): str(r.get("gu") or "") for r in
-                             json.load(open(a.dataset, encoding="utf-8")).get("complexes", []) if r.get("complex_no") and r.get("gu")}
+    dataset_gu_by_cno = resolve_gu_by_cno(a.dataset, latest_district_map_path())
     basis: dict[str, dict] = {}
     for p in (a.cache, a.extra_cache):
         if Path(p).exists():

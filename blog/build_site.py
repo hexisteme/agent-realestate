@@ -108,6 +108,7 @@ def build(today=None, molit_path=None):
         molit_raw = (json.load(open(mp, encoding="utf-8"))
                      if gated_complexes and mp and os.path.exists(mp) else None)   # 게이트 0개면 로드 스킵(테스트·소형빌드 절약)
         os.makedirs(f"{SITE}/complex", exist_ok=True)
+        written_slugs: set[str] = set()
         for r in gated_complexes:
             gu = r["gu"]; gu_rows = by_gu.get(gu, [])
             peers = cp.select_peers(r, gu_rows)
@@ -120,7 +121,15 @@ def build(today=None, molit_path=None):
             row2 = {**r, "_gu_median_eok": be.compute_gu_median(gu_rows)}
             slug = cp.complex_slug(gu, r["name"])
             open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen))
+            written_slugs.add(slug)
             complex_count += 1
+        # 이번 회차에 쓰지 않은 단지 페이지 제거 — 단지가 다른 구로 정정되거나(2026-09-06 소재구 확정)
+        # 게이트(n≥30) 아래로 내려가면 '{구}-{이름}' slug 이 바뀌어 옛 파일이 남는다. 남으면 잘못된 구의
+        # 페이지가 사이트맵(complex/*.html glob)에 계속 실려 색인된다.
+        for stale in glob.glob(f"{SITE}/complex/*.html"):
+            if os.path.splitext(os.path.basename(stale))[0] not in written_slugs:
+                os.remove(stale)
+                print(f"  [정리] 옛 단지 페이지 삭제: {os.path.basename(stale)}")
     # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
     digest_latest=f"{SITE}/daily/latest.html"
     digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None

@@ -223,6 +223,127 @@ def test_build_dataset_public_distinguishes_prefix_sharing_complexes(tmp_path):
     assert_no_duplicate_signatures(ds)
 
 
+# ── build_dataset_public: district_map 이 소재구를 스캔 구 후보 위에 고정(2026-09-06) ─────────
+# collect_frame_district.py 산출물을 흉내낸 합성 district_map 으로, 소재구가 스캔 구 후보에 없을 때
+# district_map_path 미지정(기존 동작)이면 엉뚱한 구로 발행되고, 지정하면 좌표로 확정한 소재구
+# 하나로 고정되는지 둘 다 검증한다(실측 결함 재현: 도봉 스캔에 잡힌 노원 하계동 단지).
+
+def test_district_map_pins_true_gu_over_scan_gu_and_no_map_falls_back_to_scan_gu(tmp_path):
+    frame = [
+        {"complexNo": 501, "name": "테스트한신", "gu": "도봉", "households": 1200,
+         "builtYm": "198801", "far": 200, "type": "아파트"},
+    ]
+    molit = {
+        "11320": [{"apt": "테스트한신", "area": 59.0, "price": int(5.0e8), "ym": "202605"}
+                  for _ in range(6)],   # 도봉 LAWD — 함정(동명 단지 오매칭 가격)
+        "11350": [{"apt": "테스트한신", "area": 59.0, "price": int(9.0e8), "ym": "202605"}
+                  for _ in range(6)],   # 노원 LAWD — 실제 소재구 가격
+    }
+    district_map = {"501": {"sido": "서울특별시", "gu": "노원", "dong": "하계동", "scan_gus": ["도봉"]}}
+
+    frame_path = tmp_path / "frame.json"
+    molit_path = tmp_path / "molit.json"
+    dmap_path = tmp_path / "dmap.json"
+    frame_path.write_text(json.dumps(frame, ensure_ascii=False), encoding="utf-8")
+    molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
+    dmap_path.write_text(json.dumps(district_map, ensure_ascii=False), encoding="utf-8")
+
+    # 맵 미지정(기존 동작) — 스캔 구 후보(도봉)로 발행되고 함정 가격(5억)을 그대로 담는다
+    ds_no_map = build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06")
+    rows_no_map = [r for r in ds_no_map["complexes"] if r["name"] == "테스트한신"]
+    assert len(rows_no_map) == 1
+    assert rows_no_map[0]["gu"] == "도봉"
+    assert rows_no_map[0]["molit_recent_eok"] == 5.0
+
+    # 맵 지정 — 좌표로 확정한 소재구(노원) 하나로 고정, 노원 실거래 값(9억)을 담는다
+    ds_map = build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06",
+                                   district_map_path=str(dmap_path))
+    rows_map = [r for r in ds_map["complexes"] if r["name"] == "테스트한신"]
+    assert len(rows_map) == 1
+    assert rows_map[0]["gu"] == "노원"
+    assert rows_map[0]["molit_recent_eok"] == 9.0
+
+
+def test_district_map_excludes_outside_seoul_cno_as_outside_scope(tmp_path):
+    frame = [
+        {"complexNo": 601, "name": "경기외곽아파트", "gu": "노원", "households": 500,
+         "builtYm": "199001", "far": 180, "type": "아파트"},
+    ]
+    molit = {"11350": [{"apt": "경기외곽아파트", "area": 59.0, "price": int(7.0e8), "ym": "202605"}
+                        for _ in range(6)]}
+    # sido 가 서울이 아님(스캔엔 잡혔지만 실제 소재는 경기) — 발행되지 않고 outside_scope 로 빠져야 함
+    district_map = {"601": {"sido": "경기도", "gu": "하남", "dong": "덕풍동", "scan_gus": ["노원"]}}
+
+    frame_path = tmp_path / "frame.json"
+    molit_path = tmp_path / "molit.json"
+    dmap_path = tmp_path / "dmap.json"
+    frame_path.write_text(json.dumps(frame, ensure_ascii=False), encoding="utf-8")
+    molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
+    dmap_path.write_text(json.dumps(district_map, ensure_ascii=False), encoding="utf-8")
+
+    ds = build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06",
+                               district_map_path=str(dmap_path))
+    assert "경기외곽아파트" not in {r["name"] for r in ds["complexes"]}
+    assert ds["excluded"]["outside_scope"] == 1
+
+
+def test_district_map_excludes_gu_not_in_gu_lawd_as_outside_scope(tmp_path):
+    frame = [
+        {"complexNo": 602, "name": "없는구아파트", "gu": "노원", "households": 500,
+         "builtYm": "199001", "far": 180, "type": "아파트"},
+    ]
+    molit = {"11350": [{"apt": "없는구아파트", "area": 59.0, "price": int(7.0e8), "ym": "202605"}
+                        for _ in range(6)]}
+    # sido 는 서울이지만 GU_LAWD 커버리지 밖 구명 — 서울 안이라도 outside_scope 로 빠져야 함
+    district_map = {"602": {"sido": "서울특별시", "gu": "없는구", "dong": "어딘가동", "scan_gus": ["노원"]}}
+
+    frame_path = tmp_path / "frame.json"
+    molit_path = tmp_path / "molit.json"
+    dmap_path = tmp_path / "dmap.json"
+    frame_path.write_text(json.dumps(frame, ensure_ascii=False), encoding="utf-8")
+    molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
+    dmap_path.write_text(json.dumps(district_map, ensure_ascii=False), encoding="utf-8")
+
+    ds = build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06",
+                               district_map_path=str(dmap_path))
+    assert "없는구아파트" not in {r["name"] for r in ds["complexes"]}
+    assert ds["excluded"]["outside_scope"] == 1
+
+
+# ── build_dataset: complex_no 는 (구, 표시명) 으로 배정 ───────────────────────
+
+def _uni_row(name: str, district: str, cno: str, units: int) -> dict:
+    """load_candidates 가 요구하는 최소 universe 행."""
+    return {"complex_name": name, "dong_ho": "101동", "area_exclusive_m2": 59.0, "floor": "3/15층",
+            "facing": "남향", "price_krw": int(8.0e8), "agent_name": "테스트공인", "confirmed_date": "2026-06-03",
+            "units": units, "built_year": 1995, "far_pct": 200.0, "land_share_pyeong": 12.0,
+            "land_share_is_estimate": False, "jeonse_krw": None, "district": district,
+            "saenghwalgwon": "테스트생활권", "cbd_km": 5.0, "cbd_name": "여의도", "slope_pct": 3.0,
+            "complex_no": cno, "broker_count": 1, "regulated": False, "redev_stage": "NONE"}
+
+
+def test_build_dataset_assigns_complex_no_per_gu_for_same_named_complexes(tmp_path):
+    """동명 단지(구 다름)가 서로의 complex_no 를 가져가지 않아야 한다(2026-09-06 실측 결함).
+
+    complex_no 는 네이버 매물 링크이자 add_enrich_overlay 의 조인 키다 — 이름만으로 매핑하면
+    universe 의 '두산' 4·'삼환' 2·'현대' 2 중 마지막 행이 이겨, 발행 데이터셋 4행이 타 구 단지의
+    번호를 달고 나갔다(노원 두산 763 ← 동대문 두산 739 의 3271 등). 그 상태로 그 번호에 overlay
+    항목이 생기면 타 단지의 K-apt·공시가·관리비가 병합된다."""
+    from blog.build_explorer import build_dataset
+    uni = [_uni_row("두산", "서울 노원구", "194", 763), _uni_row("두산", "서울 성북구", "1183", 1998)]
+    uni_path = tmp_path / "uni.json"
+    uni_path.write_text(json.dumps(uni, ensure_ascii=False), encoding="utf-8")
+    molit = {"11350": [{"apt": "두산", "area": 59.0, "price": int(8.0e8), "ym": "202605"} for _ in range(6)],
+             "11290": [{"apt": "두산", "area": 59.0, "price": int(9.0e8), "ym": "202605"} for _ in range(6)]}
+    molit_path = tmp_path / "molit.json"
+    molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
+
+    ds = build_dataset(str(uni_path), str(molit_path), "2026-09-06", "2026-09-06")
+    by_gu = {r["gu"]: r for r in ds["complexes"]}
+    assert by_gu["노원"]["complex_no"] == "194"
+    assert by_gu["성북"]["complex_no"] == "1183"
+
+
 # ── 실데이터 종단(examples 파일 있을 때만) ─────────────────────────────────
 
 FRAME_25GU = "examples/frame_25gu_20260710.json"
@@ -241,3 +362,22 @@ def test_real_data_no_duplicate_signatures_and_sanggye_2danji_sample_shrinks():
     assert sanggye, "노원 상계주공2단지 행이 존재해야 함"
     # 4자 prefix 로 상계주공1~16단지가 뭉쳐 n≈605-633 이던 결함 수정 확인(그 단지 자신의 표본만 남아야 함)
     assert sanggye[0]["molit_n"] < 100
+
+
+@pytest.mark.skipif(not os.path.exists(FRAME_25GU), reason="실데이터 example 파일 없음")
+def test_real_data_published_complex_no_matches_frame_identity():
+    """발행 데이터셋의 complex_no 가 프레임의 그 번호(이름·세대수)와 같은 단지를 가리켜야 한다.
+    2026-09-06 실측: 이름만으로 매핑하던 레거시 경로 때문에 4행이 타 구 단지 번호를 달고 발행됐다."""
+    uni = sorted(glob.glob("examples/candidates_universe159_*.json"))
+    if not (uni and os.path.exists(MOLIT_25GU)):
+        pytest.skip("실데이터 example 파일 없음")
+    ds = build_dataset_public(FRAME_25GU, MOLIT_25GU, asof="2026-07-10", today="2026-09-06",
+                              anchor_universe=uni[-1])
+    frame_by_cno = {}
+    for r in json.load(open(FRAME_25GU, encoding="utf-8")):
+        frame_by_cno.setdefault(str(r["complexNo"]), (r["name"], r.get("households")))
+    bad = [(r["gu"], r["name"], r["units"], r["complex_no"], frame_by_cno[str(r["complex_no"])])
+           for r in ds["complexes"]
+           if str(r.get("complex_no") or "") in frame_by_cno
+           and frame_by_cno[str(r["complex_no"])][1] != r["units"]]
+    assert not bad, f"프레임 신원과 다른 complex_no 를 단 행: {bad}"

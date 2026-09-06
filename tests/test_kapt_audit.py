@@ -68,3 +68,34 @@ def test_candidate_derivation_uses_frame_and_universe_fields():
             {"complex_no": 8, "complex_name": "x", "district": "서울 강서구", "units": 1, "kapt_code": None}]
     u = m.derive_universe_kapt_candidates(rows)
     assert u == [{"source": "universe", "key": "7", "name": "부영", "gus": ["서울 강서구"], "households": 712, "kapt_code": "A1"}]
+
+
+def test_resolve_gu_by_cno_layers_district_map_under_published_dataset(tmp_path):
+    """구 판정 정본 = 발행 데이터셋(실거래 LAWD 확정) > 좌표 소재구 맵. 서울 밖은 아예 넣지 않는다.
+
+    FRAME 스캔 구를 후보로 쓰면 소재구가 후보에 없는 단지의 타 구 K-apt 코드가 통과한다
+    (2026-09-06 감사에서 마포 성원·동대문 동아·광진 삼성 3건 실적발)."""
+    import json
+    m = _m()
+    dmap = tmp_path / "frame_district_20260906.json"
+    dmap.write_text(json.dumps({
+        "842": {"sido": "서울특별시", "gu": "마포", "dong": "신수동"},
+        "111": {"sido": "서울특별시", "gu": "성동", "dong": "성수동1가"},
+        "999": {"sido": "경기도", "gu": "하남", "dong": "덕풍동"},
+        "888": {"sido": "서울특별시", "gu": ""},
+    }, ensure_ascii=False), encoding="utf-8")
+    ds = tmp_path / "dataset.json"
+    ds.write_text(json.dumps({"complexes": [{"complex_no": "111", "gu": "광진"}]},
+                             ensure_ascii=False), encoding="utf-8")
+
+    out = m.resolve_gu_by_cno(str(ds), str(dmap))
+    assert out["842"] == "마포"        # 맵 단독
+    assert out["111"] == "광진"        # 발행 데이터셋이 맵을 덮는다
+    assert "999" not in out           # 서울 밖 제외
+    assert "888" not in out           # 구 미상 제외
+
+
+def test_resolve_gu_by_cno_tolerates_missing_files(tmp_path):
+    m = _m()
+    assert m.resolve_gu_by_cno("", "") == {}
+    assert m.resolve_gu_by_cno(str(tmp_path / "none.json"), str(tmp_path / "none2.json")) == {}

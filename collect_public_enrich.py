@@ -74,11 +74,23 @@ def _district_of(gu: str) -> str:
     return f"서울 {gu}" if gu.endswith("구") else f"서울 {gu}구"
 
 
+def latest_district_map_path() -> str:
+    """최신 examples/frame_district_*.json(collect_frame_district.py 산출) — 없으면 ""(폴백).
+    호출 시점 해소: import 시점 glob 은 데이터가 없는 CI 트리에서 깨진다."""
+    files = sorted(EX.glob("frame_district_*.json"))
+    return str(files[-1]) if files else ""
+
+
 def derive_public_targets() -> list[dict]:
     """build_dataset_public 결과 중 기존 universe complex_no 에 *없는* 행(= 공공 유입 신규)만 대상.
-    complex_no·name·gu·units·built_year·area_m2 는 dataset 행에서, lat/lng 는 frame 원본에서 조인."""
+    complex_no·name·gu·units·built_year·area_m2 는 dataset 행에서, lat/lng 는 frame 원본에서 조인.
+
+    gu 는 반드시 발행 데이터셋과 같은 소재구여야 한다(2026-09-06) — enrich_complex 가 이 gu 로
+    K-apt 시군구 목록을 뒤지고 신원게이트의 구 검사도 이 gu 로 하기 때문에, 스캔 구가 섞이면
+    엉뚱한 구의 동명 단지 코드를 붙이거나(신당삼성) 올바른 코드를 gu-mismatch 로 버린다(마포삼성)."""
     ds = be.build_dataset_public(str(FRAME), str(MOLIT), ASOF, TODAY,
-                                 survivors_path=str(SURVIVORS), anchor_universe=str(ANCHOR))
+                                 survivors_path=str(SURVIVORS), anchor_universe=str(ANCHOR),
+                                 district_map_path=latest_district_map_path())
     uni = json.load(open(ANCHOR, encoding="utf-8"))
     uni_cno = {str(d["complex_no"]) for d in uni if d.get("complex_no")}
 

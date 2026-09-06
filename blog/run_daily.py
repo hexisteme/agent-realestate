@@ -68,6 +68,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--enrich-overlay", default=(os.environ.get("RE_ENRICH_OVERLAY") or
                     _latest_or("examples/enrich_overlay_*.json", "")),
                     help="public 신규단지 K-apt/공시가/관리비/카카오 overlay(collect_public_enrich.py 산출). 없으면 스킵.")
+    ap.add_argument("--frame-district", default=(os.environ.get("RE_FRAME_DISTRICT") or
+                    _latest_or("examples/frame_district_*.json", "")),
+                    help="프레임 cno → 좌표로 확정한 법정 소재구 맵(collect_frame_district.py 산출). "
+                         "frame 의 gu 는 스캔 구역이라 소재구가 아니다 — 이 맵이 없으면 소재구가 스캔 "
+                         "후보에 없는 단지가 엉뚱한 구의 동명 단지 거래로 발행된다(2026-09-06 실측 31행).")
     ap.add_argument("--jeonse", default=(os.environ.get("RE_JEONSE_RECENT") or
                     (str(inputs["jeonse"]) if inputs["jeonse"] else None) or
                     _latest_or("examples/molit_jeonse_recent*.json", "")),
@@ -84,7 +89,8 @@ def main():
     a = ap.parse_args()
     today = a.today or date.today().isoformat()
     from agent_realestate.scope_inputs import current_scope
-    print(f"[run_daily] scope={current_scope()} public_frame={a.public_frame} survivors={a.survivors}")
+    print(f"[run_daily] scope={current_scope()} public_frame={a.public_frame} survivors={a.survivors} "
+          f"frame_district={a.frame_district or '없음(스캔구 폴백)'}")
 
     if a.public_frame:
         gu_allow = ({g.strip() for g in a.public_gu_allow.split(",") if g.strip()}
@@ -92,7 +98,7 @@ def main():
         # anchor_universe=a.universe — 기존 발행 단지의 면적 앵커(수치 연속성). 신규 단지는 최다거래 평형.
         ds = be.build_dataset_public(a.public_frame, a.molit, a.asof, today,
                                      survivors_path=a.survivors, anchor_universe=a.universe,
-                                     gu_allowlist=gu_allow)
+                                     gu_allowlist=gu_allow, district_map_path=a.frame_district)
         ds = be.add_enrich_overlay(ds, a.enrich_overlay)   # K-apt·공시가·관리비·카카오(신규단지, 없으면 스킵)
     else:
         ds = be.build_dataset(a.universe, a.molit, a.asof, today)
