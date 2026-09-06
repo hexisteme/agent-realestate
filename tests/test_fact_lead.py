@@ -6,6 +6,7 @@ compute_surprise_score), blog.wording_guard(assert_lead_wording_ok).
 그대로 불러 "기대값"을 만들지 않는다(그러면 회귀를 못 잡는다). 정확한 도출 과정은 각 fixture 주석 참고.
 """
 from __future__ import annotations
+import os
 import json
 
 import pytest
@@ -253,6 +254,8 @@ def test_max_one_per_type_and_limit_respected():
 # ── 6. 실데이터 스모크(site/dataset.json) ────────────────────────────────
 
 def _real_ds() -> dict:
+    if not os.path.exists("site/dataset.json"):   # 빌드 산출물(.gitignore) — CI 엔 없다(test_blog_matching 관례와 동일)
+        pytest.skip("실데이터 site/dataset.json 없음")
     with open("site/dataset.json", encoding="utf-8") as f:
         return json.load(f)
 
