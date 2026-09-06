@@ -449,6 +449,14 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     district_map: dict[str, dict] = {}
     if district_map_path and os.path.exists(district_map_path):
         district_map = json.load(open(district_map_path, encoding="utf-8"))
+    # 맵이 프레임보다 낡으면 새 cno 가 조용히 스캔 구 폴백으로 샌다 — 그게 이 결함의 원래 모습이었다.
+    # 커버리지를 세어 크게 알린다(프레임 갱신 시 collect_frame_district.py 재실행이 선행 조건).
+    uncovered = ({str(r.get("complexNo") or "") for r in frame} - {""}) - set(district_map)
+    if district_map and uncovered:
+        print(f"⚠ 소재구 맵 미커버 {len(uncovered)}단지 — 스캔 구 폴백. "
+              f"프레임을 갱신했다면 collect_frame_district.py 를 먼저 돌려라({district_map_path}).")
+    elif not district_map:
+        print("⚠ 소재구 맵 없음 — 전 단지 스캔 구 폴백(프레임 gu 는 스캔 구역이지 소재구가 아니다).")
     surv: set[str] | None = None
     if survivors_path:
         sdata = json.load(open(survivors_path, encoding="utf-8"))

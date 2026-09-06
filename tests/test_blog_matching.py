@@ -310,6 +310,32 @@ def test_district_map_excludes_gu_not_in_gu_lawd_as_outside_scope(tmp_path):
     assert ds["excluded"]["outside_scope"] == 1
 
 
+def test_build_dataset_public_warns_when_district_map_is_stale_or_absent(tmp_path, capsys):
+    """맵이 프레임보다 낡으면(새 cno 미커버) 조용히 스캔 구로 폴백하던 게 이 결함의 원래 모습이다 —
+    폴백 자체는 유지하되 커버리지 구멍을 크게 알린다."""
+    frame = [
+        {"complexNo": 701, "name": "맵있는단지", "gu": "노원", "households": 500,
+         "builtYm": "199001", "far": 180, "type": "아파트"},
+        {"complexNo": 702, "name": "맵없는신규단지", "gu": "노원", "households": 500,
+         "builtYm": "199001", "far": 180, "type": "아파트"},
+    ]
+    molit = {"11350": [{"apt": n, "area": 59.0, "price": int(7.0e8), "ym": "202605"}
+                       for n in ("맵있는단지", "맵없는신규단지") for _ in range(6)]}
+    dmap = {"701": {"sido": "서울특별시", "gu": "노원", "dong": "하계동", "scan_gus": ["노원"]}}
+    frame_path, molit_path, dmap_path = (tmp_path / "f.json", tmp_path / "m.json", tmp_path / "d.json")
+    frame_path.write_text(json.dumps(frame, ensure_ascii=False), encoding="utf-8")
+    molit_path.write_text(json.dumps(molit, ensure_ascii=False), encoding="utf-8")
+    dmap_path.write_text(json.dumps(dmap, ensure_ascii=False), encoding="utf-8")
+
+    build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06",
+                         district_map_path=str(dmap_path))
+    out = capsys.readouterr().out
+    assert "소재구 맵 미커버 1단지" in out
+
+    build_dataset_public(str(frame_path), str(molit_path), "2026-07-10", "2026-09-06")
+    assert "소재구 맵 없음" in capsys.readouterr().out
+
+
 # ── build_dataset: complex_no 는 (구, 표시명) 으로 배정 ───────────────────────
 
 def _uni_row(name: str, district: str, cno: str, units: int) -> dict:
