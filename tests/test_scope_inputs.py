@@ -21,12 +21,21 @@ ROOT = Path("/fake/root")
 
 def test_resolve_25gu_returns_exact_four_paths(monkeypatch):
     monkeypatch.delenv("RE_PUBLIC_GU_ALLOW", raising=False)
+    monkeypatch.delenv("RE_SURVIVORS", raising=False)
     inputs = resolve_scope_inputs("25gu", ROOT)
     assert inputs["molit"] == ROOT / "examples/molit_recent_25gu_20260710.json"
     assert inputs["jeonse"] == ROOT / "examples/molit_jeonse_recent_25gu_20260710.json"
     assert inputs["public_frame"] == "examples/frame_25gu_20260710.json"
     assert inputs["survivors"] == "examples/screen_25gu_survivors_20260710.json"
     assert inputs["public_gu_allow"] == ""
+
+
+def test_resolve_25gu_survivors_env_override_and_default(monkeypatch):
+    """RE_SURVIVORS(2026-09-07 풀 컷오버 스위치) — 있으면 그 경로, 지우면 07-10 기본값으로 복귀."""
+    monkeypatch.setenv("RE_SURVIVORS", "examples/screen_25gu_survivors_20260907.json")
+    assert resolve_scope_inputs("25gu", ROOT)["survivors"] == "examples/screen_25gu_survivors_20260907.json"
+    monkeypatch.delenv("RE_SURVIVORS", raising=False)
+    assert resolve_scope_inputs("25gu", ROOT)["survivors"] == "examples/screen_25gu_survivors_20260710.json"
 
 
 def test_resolve_25gu_public_gu_allow_reads_env(monkeypatch):

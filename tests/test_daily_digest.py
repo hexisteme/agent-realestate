@@ -143,3 +143,16 @@ def test_write_digest_draft_roundtrips_through_parse_helper(tmp_path):
     assert parsed["title"] == d["title"]
     assert parsed["tags"] == d["tags"]
     assert parsed["body"] == d["tistory_html"]
+
+
+# ── 가격대별 요약(2026-09-07 4밴드) ─────────────────────────────────────
+
+def test_band_summary_rows_and_tables_present():
+    from blog.daily_digest import _band_summary_rows
+    rows = _band_summary_rows(_sample_ds())
+    assert [r["band"] for r in rows] == ["10억 미만", "10~15억", "15~20억", "20억 이상"]
+    by = {r["band"]: r for r in rows}
+    assert by["20억 이상"]["n"] == 2 and by["20억 이상"]["hi"] == 1      # 25억 주상복합은 단지 수엔 들고 게이트 집계엔 빠진다
+    assert by["10억 미만"]["n"] == 1
+    out = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
+    assert "가격대별 요약" in out["tistory_html"] and "가격대별 요약" in out["site_html"]

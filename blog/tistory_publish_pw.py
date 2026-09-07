@@ -24,11 +24,12 @@ mode: inject(주입+카테고리, 발행 안함) | draft(임시저장) | publish
 """
 from __future__ import annotations
 import datetime
-import os, sys, argparse
+import glob
+import os, re, sys, argparse
 
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tistory_publish import _parse_helper, _latest_draft  # noqa: E402
+from tistory_publish import _parse_helper  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -58,6 +59,28 @@ def _read_marker(path: str) -> str:
         return open(path, encoding="utf-8").read().strip()
     except OSError:
         return ""
+
+
+def marker_paths(outroot: str, kind: str = "daily") -> tuple[str, str, str]:
+    """(발행, 시도, 알림) 마커 경로 — daily 는 기존 이름 그대로(cron_daily.sh 멱등 가드가 읽는다), 그 외 kind 는
+    접미사(-{kind}) — 하루 2편째(periodic=주간결산/월간결산, 2026-09-07)가 daily 의 "오늘 이미 발행" 게이트에 막히지 않게."""
+    suf = "" if kind == "daily" else f"-{kind}"
+    return (os.path.join(outroot, PUBLISH_MARKER + suf), os.path.join(outroot, ATTEMPT_MARKER + suf),
+            os.path.join(outroot, ALERT_MARKER + suf))
+
+
+_DAILY_DRAFT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-tistory-draft\.html$")
+
+
+def _latest_draft_for_kind(outroot: str, kind: str = "daily") -> str | None:
+    """kind 별 최신 원고 — daily 는 {date}-tistory-draft.html 만(periodic 원고를 daily 로 잘못 집어 이중 발행하는 경로 차단)."""
+    hits = glob.glob(os.path.join(outroot, "report/blog/tistory/*-tistory-draft.html"))
+    if kind == "daily":
+        hits = [h for h in hits if _DAILY_DRAFT_RE.match(os.path.basename(h))]
+    else:
+        hits = [h for h in hits if os.path.basename(h).endswith(f"-{kind}-tistory-draft.html")]
+    hits.sort(reverse=True)
+    return hits[0] if hits else None
 
 
 def _load_state(ctx, log: list[str]) -> None:
@@ -177,21 +200,21 @@ def _verify_published_on_blog(title: str, log: list[str]) -> bool:
         return False
 
 
-def _resolve_draft(outroot: str, date: str | None) -> str | None:
+def _resolve_draft(outroot: str, date: str | None, kind: str = "daily") -> str | None:
     if date:
-        p = os.path.join(outroot, f"report/blog/tistory/{date}-tistory-draft.html")
+        nm = f"{date}-tistory-draft.html" if kind == "daily" else f"{date}-{kind}-tistory-draft.html"
+        p = os.path.join(outroot, "report/blog/tistory", nm)
         return p if os.path.isfile(p) else None
-    return _latest_draft(outroot)
+    return _latest_draft_for_kind(outroot, kind)
 
 
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             headless: bool = False, login_wait_s: int = 300,
-            post_id: str | None = None) -> str:
+            post_id: str | None = None, kind: str = "daily") -> str:
     from playwright.sync_api import sync_playwright
 
     today = datetime.date.today().isoformat()
-    marker = os.path.join(outroot, PUBLISH_MARKER)
-    attempted = os.path.join(outroot, ATTEMPT_MARKER)
+    marker, attempted, _ = marker_paths(outroot, kind)   # kind 별 마커(2026-09-07) — daily 는 종전 경로 그대로
     # 마커 게이트는 무인 모드(--date 없는 스케줄 실행)에서만 — --date 백필이 오늘 마커를
     # 오염시켜 당일 발행을 무음 소실시키는 결함 방지 (2026-07-06 리뷰). 백필은 마커 불관여.
     # 글번호 지정(기존 글 수정)은 스케줄 발행이 아니다 — 마커·stale 가드에 관여시키지 않는다.
@@ -200,7 +223,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
     if unattended and _read_marker(marker) == today:
         return f"SKIP:already_published_today({today})"
 
-    path = _resolve_draft(outroot, date)
+    path = _resolve_draft(outroot, date, kind)
     if not path:
         return f"ERR:no draft helper found (date={date})"
     name = os.path.basename(path)
@@ -446,7 +469,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             ctx.close()
 
 
-def _notify_failure(detail: str, outroot: str = ".") -> None:
+def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> None:
     """발행 실패(주로 세션 만료) 시 텔레그램 알림 + 재로그인 명령.
     cron 로그인셸(-lc)엔 토큰이 없어 config.load_env_file 로 .env 를 직접 주입 후 전송.
     미설정/전송실패는 비치명(무음). 재시도 스케줄 도입으로 nag-once/day (2026-07-06)."""
@@ -455,7 +478,7 @@ def _notify_failure(detail: str, outroot: str = ".") -> None:
         from agent_realestate.notify.telegram import send_message
         load_env_file()
         today = datetime.date.today().isoformat()
-        alert_marker = os.path.join(outroot, ALERT_MARKER)
+        alert_marker = marker_paths(outroot, kind)[2]
         if _read_marker(alert_marker) == today:
             print("[notify] 오늘 이미 알림 발송 — skip (nag-once)")
             return
@@ -478,10 +501,13 @@ def main():
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
     ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
+    ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) — kind 별 원고·마커")
     a = ap.parse_args()
+    if not re.fullmatch(r"[a-z]+", a.kind):
+        raise SystemExit(f"--kind 는 소문자 영문만: {a.kind!r}")
     try:
         result = publish(a.outroot, a.mode, a.date, headless=a.headless, login_wait_s=a.login_wait,
-                         post_id=a.post_id)
+                         post_id=a.post_id, kind=a.kind)
     except Exception as e:
         # 예외도 알림 경로로 접어 넣는다 — goto 타임아웃/프로필 크래시류가 무음 실패로
         # 며칠 발행이 끊기던 사고 클래스 차단 (2026-07-06 리뷰).
@@ -493,7 +519,7 @@ def main():
     # SKIP(오늘 이미 발행/프로필 락)은 정상 경로 — 알림 제외. 마커 기록 실패는 성공이어도 알림.
     if a.mode == "publish" and not result.startswith("SKIP") \
             and ("PUBLISHED" not in result or "MARKER_FAIL" in result):
-        _notify_failure(result, a.outroot)
+        _notify_failure(result, a.outroot, kind=a.kind)
 
 
 if __name__ == "__main__":

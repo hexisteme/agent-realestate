@@ -33,13 +33,16 @@ def resolve_scope_inputs(scope: str, root: Path) -> dict:
       public_frame, survivors — str (25gu 가 아니면 None — public 경로 자체가 없음)
       public_gu_allow     — str (25gu 일 때만 RE_PUBLIC_GU_ALLOW 를 읽는다·cli.py 의 기존 동작과
                             동일, 아니면 '')
+      survivors 는 RE_SURVIVORS 가 있으면 그 경로(2026-09-07 풀 컷오버 스위치), 없으면 07-10 기본값.
     """
     if scope == "25gu":
         return {
             "molit": root / "examples/molit_recent_25gu_20260710.json",
             "jeonse": root / "examples/molit_jeonse_recent_25gu_20260710.json",
             "public_frame": "examples/frame_25gu_20260710.json",
-            "survivors": "examples/screen_25gu_survivors_20260710.json",
+            # RE_SURVIVORS(2026-09-07): 발행 풀 컷오버 스위치 — 무캡 스크린(screen_25gu_survivors_<날짜>.json)으로
+            #   바꿀 때 .env 한 줄로 전환하고, 지우면 07-10 풀로 되돌아간다(cli.cmd_daily·run_daily 양쪽 동일 값).
+            "survivors": os.environ.get("RE_SURVIVORS") or "examples/screen_25gu_survivors_20260710.json",
             "public_gu_allow": os.environ.get("RE_PUBLIC_GU_ALLOW", ""),
         }
     return {

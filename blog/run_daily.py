@@ -106,6 +106,8 @@ def main():
     ds = be.add_price_segment(ds)
     ds = be.add_liquidity_facts(ds, a.molit)
     ds = be.add_jeonse_facts(ds, a.jeonse)              # jeonse 파일 없으면 조용히 스킵
+    ds = be.add_gongsi_multiple(ds)                     # 공시가 배율(S4, overlay 병합 뒤 — 면적 일치분만)
+    ds = be.add_area_spread(ds, a.molit, frame_path=a.public_frame, district_map_path=a.frame_district)   # 동명 단지 가드에 프레임 필요                # 평형 격차 59↔84(S4, 같은 MOLIT 파일)
     if a.districts:
         keep = {g.strip() for g in a.districts.split(",")}
         ds["complexes"] = [r for r in ds["complexes"] if r["gu"] in keep]
@@ -127,8 +129,21 @@ def main():
         by[r["gu"]].append(r)
     if ds["complexes"]:
         from blog.snapshots import load_snapshot_days_ago
+        # 거시 지표 스냅샷(2026-09-07 MacroContext S1) — 실패해도 일간 발행은 계속(카드 생략 경로).
+        macro_ctx = macro_snap = None
+        try:
+            from agent_realestate.collectors.macro import collect_macro
+            from blog.macro_context import build_macro_context
+            from blog.snapshots import save_macro_snapshot, load_macro_snapshot_latest
+            mdir = f"{a.out}/snapshots/macro"
+            macro = collect_macro(today, prev=load_macro_snapshot_latest(dir=mdir))
+            print(f"거시 지표: {macro['n_ok']}개 수집 · 실패 {sorted(macro['errors'])} → {save_macro_snapshot(macro, today, dir=mdir)}")
+            macro_snap = macro
+            macro_ctx = build_macro_context(macro, today)              # 카드 0개·문구 위반이면 None/예외 → 스트립 생략
+        except Exception as e:                                   # noqa: BLE001
+            print(f"거시 지표 수집 건너뜀: {type(e).__name__}")
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
-        digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds)
+        digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx)
         draft = td.write_digest_draft(digest, today, a.out)
         print(f"티스토리 원고: {draft}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
         os.makedirs(f"{a.out}/daily", exist_ok=True)
@@ -137,6 +152,11 @@ def main():
         print(f"일간 다이제스트: {a.out}/daily/{today}.html · {a.out}/daily/latest.html")
         naver = nt.write_naver_teaser(summaries, today, a.asof, outdir=a.out)
         print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 등록)")
+        # 주간결산/월간결산(2026-09-07) — 일요일/월 마지막 일요일에만 posts/{today}-{주간|월간}결산.html + periodic 티스토리 원고.
+        #   base 스냅샷이 없으면(첫 회차 등) skip 사유만 남긴다. 신고 델타는 snapshots/molit 아카이브가 base 날짜에 있을 때만.
+        from blog.period_delta import write_period_post
+        pp = write_period_post(ds, today, a.out, molit_path=a.molit, macro_snapshot=macro_snap)   # 월간 '거시 맥락' 절(S5, site 만)
+        print(f"기간 결산: {pp}")
     print(f"발행 {len(by)}구 / {ds['count']}단지 · today={today} asof={a.asof} · 제외 {ds.get('excluded')}"
           + (" · ⚠STALE" if stale else ""))
 

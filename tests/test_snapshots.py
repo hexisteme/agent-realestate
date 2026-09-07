@@ -56,3 +56,41 @@ def test_load_snapshot_days_ago_none_when_absent_or_out_of_tolerance(tmp_path):
 
     missing_dir = str(tmp_path / "does_not_exist")
     assert load_snapshot_days_ago(days=7, tolerance=1, dir=missing_dir) is None   # 디렉토리 자체가 없음
+
+
+# ── 계층 보존·날짜 지정 로더·MOLIT 아카이브 (2026-09-07 주간결산/월간결산) ──
+
+from blog.snapshots import (_should_keep, is_last_sunday_of_month, load_molit_archive_on, load_snapshot_on,
+                            save_molit_archive)
+
+
+def test_should_keep_tiers():
+    today = date(2026, 12, 6)
+    assert _should_keep(date(2026, 11, 25), today)          # 11일 — 일반 보존
+    assert not _should_keep(date(2026, 11, 17), today)      # 19일 화요일 → 삭제
+    assert _should_keep(date(2026, 9, 13), today)           # 일요일 84일 → 보존
+    assert not _should_keep(date(2025, 9, 14), today)       # 일요일 448일, 월 마지막 아님 → 삭제
+    assert _should_keep(date(2025, 9, 28), today)           # 2025-09 마지막 일요일 → 영구
+    assert is_last_sunday_of_month(date(2026, 9, 27)) and not is_last_sunday_of_month(date(2026, 9, 20))
+
+
+def test_save_snapshot_keeps_sunday_beyond_14_days(tmp_path):
+    d = tmp_path / "s"; d.mkdir()
+    _write_ds(d / "dataset-2026-09-06.json")   # 일요일, 28일 전
+    _write_ds(d / "dataset-2026-09-08.json")   # 화요일, 26일 전
+    _write_ds(tmp_path / "dataset.json", n=3)
+    save_snapshot(str(tmp_path / "dataset.json"), "2026-10-04", dir=str(d))
+    assert (d / "dataset-2026-09-06.json").exists() and not (d / "dataset-2026-09-08.json").exists()
+
+
+def test_load_snapshot_on_and_molit_archive_roundtrip(tmp_path):
+    d = tmp_path / "s"; d.mkdir()
+    _write_ds(d / "dataset-2026-09-06.json", n=3)
+    assert load_snapshot_on(date(2026, 9, 7), 1, str(d))["count"] == 3
+    assert load_snapshot_on(date(2026, 9, 9), 1, str(d)) is None
+    m = tmp_path / "molit.json"
+    m.write_text(json.dumps({"11680": [{"apt": "A"}], "_done": []}), encoding="utf-8")
+    p = save_molit_archive(str(m), "2026-09-13", dir=str(tmp_path / "m"))
+    assert p.endswith("molit-2026-09-13.json.gz")
+    assert load_molit_archive_on(date(2026, 9, 13), 0, str(tmp_path / "m"))["11680"][0]["apt"] == "A"
+    assert load_molit_archive_on(date(2026, 9, 6), 0, str(tmp_path / "m")) is None

@@ -13,19 +13,22 @@ def _ds(rows):
 
 
 def test_price_segment_boundaries():
+    """가격대(PriceBand) 4밴드(2026-09-07) — 반개구간 [lo, hi): 경계값은 위 밴드."""
     assert price_segment(None) is None
-    assert price_segment(6.0) == "6억 이하"
-    assert price_segment(6.01) == "6~10억"
-    assert price_segment(10.0) == "6~10억"
-    assert price_segment(10.01) == "10~15억"
-    assert price_segment(15.0) == "10~15억"
-    assert price_segment(15.01) == "15억 초과"
+    assert price_segment(6.0) == "10억 미만"
+    assert price_segment(9.99) == "10억 미만"
+    assert price_segment(10.0) == "10~15억"
+    assert price_segment(14.99) == "10~15억"
+    assert price_segment(15.0) == "15~20억"
+    assert price_segment(19.99) == "15~20억"
+    assert price_segment(20.0) == "20억 이상"
+    assert price_segment(33.75) == "20억 이상"
 
 
 def test_add_price_segment_fills_field():
     ds = _ds([{"molit_recent_eok": 8.0}, {"molit_recent_eok": None}])
     out = add_price_segment(ds)
-    assert out["complexes"][0]["price_segment"] == "6~10억"
+    assert out["complexes"][0]["price_segment"] == "10억 미만"
     assert out["complexes"][1]["price_segment"] is None
 
 

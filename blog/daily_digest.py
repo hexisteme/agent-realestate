@@ -111,6 +111,20 @@ def _gu_summary_rows(ds: dict) -> list[dict]:
             for gu in sorted(by)]
 
 
+def _band_summary_rows(ds: dict) -> list[dict]:
+    """가격대(PriceBand) 4밴드 요약(2026-09-07) — 단지 수(전체)·중위의 중위(게이트 통과)·52주 상단/하단 근접 수(게이트 통과).
+    밴드는 12개월 중위에서 재계산(price_segment 필드와 동일 함수) — 필드 없는 입력(테스트·옛 스냅샷)도 같은 결과."""
+    by: dict[str, list[dict]] = {b: [] for _, b in be.PRICE_SEGMENTS}
+    for r in ds["complexes"]:
+        b = be.price_segment(r.get("molit_recent_eok"))
+        if b:
+            by[b].append(r)
+    return [{"band": b, "n": len(rows), "median": be.compute_gu_median(rows),
+             "hi": sum(1 for r in rows if be.passes_rank_gate(r) and (r.get("molit_pos_52w") or 0) >= _HI_POS),
+             "lo": sum(1 for r in rows if be.passes_rank_gate(r) and r.get("molit_pos_52w") is not None and r["molit_pos_52w"] <= _LO_POS)}
+            for b, rows in by.items()]
+
+
 def _today_counts(ds: dict) -> dict:
     cx = ds["complexes"]
     return {
@@ -122,7 +136,7 @@ def _today_counts(ds: dict) -> dict:
     }
 
 
-def _render_tistory(today, asof, counts, sel, gu_rows, leads) -> str:
+def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, macro_html="") -> str:
     def name_cell(r):
         href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a>({r["gu"]})'
@@ -153,10 +167,16 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads) -> str:
 
     none_p = f'<p style="{_MUT}">기준 충족 단지 없음</p>'
     lead_ps = [f"<p>{line}</p>" for line in render_lead_lines(leads)]
+    band_tr = "".join(f'<tr><td style="{_TD}">{b["band"]}</td><td style="{_TD}">{b["n"]}</td>'
+                      f'<td style="{_TD}">{_eok(b["median"])}</td><td style="{_TD}">▲{b["hi"]}·▼{b["lo"]}</td></tr>' for b in (band_rows or []))
     parts = [
         *lead_ps,
+        *([macro_html] if macro_html else []),   # 거시 지표 스트립(2026-09-07 S2) — 컨텍스트 없으면 생략
         f'<p><b>오늘의 숫자</b> — 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
         f'상승 {counts["up"]} · 하락 {counts["down"]} · 보합 {counts["flat"]}(국토부 실거래 사실, 자체 점수 없음)</p>',
+        *([ '<p><b>가격대별 요약</b>(12개월 중위 구간·사실)</p>',
+            f'<table style="{_TBL}"><tr><td style="{_TH}"><b>가격대</b></td><td style="{_TH}"><b>단지 수</b></td>'
+            f'<td style="{_TH}"><b>중위(억)</b></td><td style="{_TH}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
         '<p><b>12개월 범위 상단 근접</b>(52주 위치 99% 이상)</p>',
         table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], hi_rows) if hi_rows else none_p,
         '<p><b>12개월 범위 하단 근접</b>(52주 위치 6% 이하)</p>',
@@ -180,7 +200,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads) -> str:
     return "".join(parts)
 
 
-def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
+def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None, macro_html="") -> str:
     def name_cell(r):
         href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
@@ -203,6 +223,10 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
                     f'<span class=down>▼{g["down"]}</span></td></tr>' for g in gu_rows)
 
     none_p = '<p class=mut>기준 충족 단지 없음</p>'
+    band_tr = "".join(f'<tr><td>{b["band"]}</td><td>{b["n"]}</td><td>{_eok(b["median"])}</td>'
+                      f'<td><span class=up>▲{b["hi"]}</span>·<span class=down>▼{b["lo"]}</span></td></tr>' for b in (band_rows or []))
+    band_sec = (f'<h2>가격대별 요약 <span class=mut>(12개월 중위 구간·사실)</span></h2>'
+                f'<div class=tblwrap><table><tr><th>가격대</th><th>단지 수</th><th>중위(억)</th><th>52주 상단·하단</th></tr>{band_tr}</table></div>') if band_rows else ''
     jsonld_bc = {
         "@context": "https://schema.org", "@type": "BreadcrumbList",
         "itemListElement": [
@@ -228,11 +252,12 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
 </head><body>
 <div class=wrap>
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
-<a href="../daily/latest.html">오늘의 변화</a><a href="../methodology.html">방법론</a></nav>
+<a href="../daily/latest.html">오늘의 변화</a><a href="../macro.html">거시 지표</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › 오늘의 변화</div>
 <h1>서울 아파트 오늘의 변화</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
 {render_lead_block(leads)}
+{macro_html}
 <h2>오늘의 숫자</h2>
 <div class=tiles>
 <div class=tile><span class=k>발행 단지</span><span class=v>{counts['n_total']}</span></div>
@@ -241,7 +266,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
 <div class=tile><span class=k>하락</span><span class="v down">▼{counts['down']}</span></div>
 <div class=tile><span class=k>보합</span><span class=v>—{counts['flat']}</span></div>
 </div>
-
+{band_sec}
 <h2>12개월 범위 상단 근접 <span class=mut>(52주 위치 99% 이상)</span></h2>
 <div class=tblwrap>{table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], hi_rows) if hi_rows else none_p}</div>
 
@@ -271,10 +296,11 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads) -> str:
 </body></html>"""
 
 
-def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = None) -> dict:
+def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = None, macro: dict | None = None) -> dict:
     """다이제스트 산출 — {"title","tags","tistory_html","site_html","summary"}.
     tistory_html 은 30,000바이트 예산을 넘거나 금칙어가 섞이면 ValueError 로 발행을 막는다.
-    prev_ds(선택, 2026-09-06) = 직전 스냅샷 — 사실 리드(FactLead)의 패턴 재현 판정(§7 D)에만 쓰인다."""
+    prev_ds(선택, 2026-09-06) = 직전 스냅샷 — 사실 리드(FactLead)의 패턴 재현 판정(§7 D)에만 쓰인다.
+    macro(선택, 2026-09-07) = blog.macro_context.build_macro_context 결과 — 리드 다음에 거시 지표 스트립을 넣는다. None 이면 생략."""
     sel = _select_ranked(ds)
     gu_rows = _gu_summary_rows(ds)
     counts = _today_counts(ds)
@@ -287,13 +313,17 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
                f"상승 {counts['up']}·하락 {counts['down']}·보합 {counts['flat']} · "
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")
 
-    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads)
-    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads)
+    band_rows = _band_summary_rows(ds)   # 가격대 4밴드 요약(2026-09-07)
+    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows, macro_html=(macro or {}).get("tistory_html", ""))
+    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=band_rows, macro_html=(macro or {}).get("site_html", ""))
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")
     assert_wording_ok(site_html, "daily_digest:site_html")
 
     tb = len(tistory_html.encode("utf-8"))
+    if tb > 30000 and macro:                                   # 거시 스트립은 선택 섹션(2026-09-07) — 예산 초과면 먼저 뺀다(사이트는 유지)
+        tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows)
+        tb = len(tistory_html.encode("utf-8"))
     if tb > 30000:
         raise ValueError(f"[daily_digest] tistory_html {tb}B > 30000B 예산 초과 — 섹션을 줄이세요")
 

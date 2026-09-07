@@ -117,7 +117,7 @@ def _collapse_numbered_block(canon: str) -> str:
     return re.sub(r"(\d+)(단지|차)$", r"\1", canon)
 
 
-def match_molit_names(disp: str, names_in_lawd) -> set[str]:
+def match_molit_names(disp: str, names_in_lawd, index: dict | None = None) -> set[str]:
     """표시명 disp 를 같은 lawd(구) 안 원본 명칭 집합(names_in_lawd — MOLIT apt 명 또는 비교대상
     단지명)과 canonical 등가로 매칭한다 — 부분일치·4자 prefix 폐지(2026-09-05 P0 매칭결함 수정).
     1순위: canonical 완전일치. 2순위(1순위 0건일 때만): 양쪽에 _collapse_numbered_block 적용 후
@@ -128,22 +128,28 @@ def match_molit_names(disp: str, names_in_lawd) -> set[str]:
     cd = canonical_complex_name(disp)
     if cd is None:
         return set()
+    idx = index if index is not None else build_name_index(names_in_lawd)
+    exact = idx["by_canon"].get(cd)
+    if exact:
+        return set(exact)
+    group = idx["collapsed"].get(_collapse_numbered_block(cd))
+    if group and len(group) == 1:
+        return set(idx["by_canon"][next(iter(group))])
+    return set()
+
+
+def build_name_index(names_in_lawd) -> dict:
+    """match_molit_names 의 색인 — canonical → 원본명 집합, 접은 키 → canonical 집합. 한 lawd 안에서 한 번 만들어 재사용
+    (동명 가드가 프레임 2천 단지를 같은 규칙으로 대조할 때 매 호출 재구축을 피함, S6 Codex F1)."""
     by_canon: dict[str, set[str]] = {}
     for raw in names_in_lawd:
         c = canonical_complex_name(raw)
         if c is not None:
             by_canon.setdefault(c, set()).add(raw)
-    exact = by_canon.get(cd)
-    if exact:
-        return set(exact)
-    cd_collapsed = _collapse_numbered_block(cd)
-    collapsed_map: dict[str, set[str]] = {}
+    collapsed: dict[str, set[str]] = {}
     for c in by_canon:
-        collapsed_map.setdefault(_collapse_numbered_block(c), set()).add(c)
-    group = collapsed_map.get(cd_collapsed)
-    if group and len(group) == 1:
-        return set(by_canon[next(iter(group))])
-    return set()
+        collapsed.setdefault(_collapse_numbered_block(c), set()).add(c)
+    return {"by_canon": by_canon, "collapsed": collapsed}
 
 
 def _match_records(c, lawd, molit) -> list[dict]:
@@ -316,6 +322,7 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
                 "builder": c.builder or "",
                 "nearest_elem_school": c.nearest_elem_school,                                 # 인근 초등학교명(학군 팩트·근접성)
                 "gongsi_man": c.gongsi_man,                                                    # 공동주택 공시가격(만원)
+                "gongsi_area_m2": round(c.listing.area_exclusive_m2, 1) if c.gongsi_man else None, "kapt_area_units": None,  # collect_gongsi 가 area_exclusive_m2 로 찾은 값(면적 일치 게이트, S4)
                 "maint_fee_won": c.maint_fee_won,                                              # K-apt 세대당 월 관리비(원)
             })
     rows.sort(key=lambda x: (x["gu"], x["name"], x["area_m2"]))
@@ -328,6 +335,21 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
 
 # ── public-only 발행 경로(WS-0, 2026-07-10) — 호가 Listing 없이 frame(공공 enumeration 데이터)+MOLIT
 # 만으로 build_dataset 과 동일한 dataset 스키마를 만든다. build_dataset·_match_records 등은 무변경.
+
+
+def _rank_candidate_gu(disp: str, gu: str, molit: dict) -> dict | None:
+    """스캔구 후보 하나의 발행 순위 = (앵커 평형 매칭 n, 중위 유무, 낮은 중위) — build_dataset_public 의 후보 선택 규칙.
+    (S6b Codex R1 때 동명 가드도 이 순위를 흉내냈으나, S6d C1 뒤 가드는 dataset 이 정한 발행 구를 그대로 읽는다 — build_name_owners.)"""
+    lawd = GU_LAWD[gu]
+    named = _name_matched(disp, lawd, molit)
+    if not named:
+        return None
+    anchor = _anchor_area_mode(named)                          # 신규 단지 결정론 앵커(최다 거래 평형)
+    recs = _match_records_public(disp, anchor, lawd, molit)
+    if not recs:
+        return None
+    md, n = _median_of(recs)
+    return {"recs": recs, "md": md, "n": n, "anchor": anchor, "rank": (n, md is not None, -(md or 0))}
 
 
 def _name_matched(disp: str, lawd: str, molit: dict) -> list[dict]:
@@ -537,21 +559,13 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
                 excluded["corridor"] += 1
             continue
 
-        best = None   # 매칭표본 n 많은 쪽 우선, 동률이면 median 낮은 쪽(screen_11gu dedup 관례)
+        best = None   # 매칭표본 n 많은 쪽 우선, 동률이면 median 낮은 쪽(screen_11gu dedup 관례) — 순위 코드는 _rank_candidate_gu 하나(동명 가드와 공유)
         for gu, c, disp in candidates:
-            lawd = GU_LAWD[gu]
-            named = _name_matched(disp, lawd, molit)
-            if not named:
+            got = _rank_candidate_gu(disp, gu, molit)
+            if got is None:
                 continue
-            anchor = _anchor_area_mode(named)                  # 신규 단지 결정론 앵커(최다 거래 평형)
-            recs = _match_records_public(disp, anchor, lawd, molit)
-            if not recs:
-                continue
-            md, n = _median_of(recs)
-            rank = (n, md is not None, -(md or 0))
-            if best is None or rank > best["rank"]:
-                best = {"gu": gu, "c": c, "disp": disp, "recs": recs, "md": md, "n": n,
-                        "anchor": anchor, "rank": rank}
+            if best is None or got["rank"] > best["rank"]:
+                best = {"gu": gu, "c": c, "disp": disp, **got}
         if best is None:
             excluded["no_molit_match"] += 1        # ghost — 실거래 매칭 0 → area_m2 도출 불가
             continue
@@ -596,7 +610,7 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
             "gu_jeonse_ratio_pct": None, "trade_annual": None, "transit": "",
             "mart_800": None, "hosp_800": None, "park_1k": None, "dept_1500": None,
             "heating": "", "corridor_type": "", "parking_per_unit": None, "builder": "",
-            "nearest_elem_school": None, "gongsi_man": None, "maint_fee_won": None,
+            "nearest_elem_school": None, "gongsi_man": None, "gongsi_area_m2": None, "kapt_area_units": None, "maint_fee_won": None,
         })
     # (B) 내부 수렴 중복 제거 — frame 이 고층/저층·도시형/주상복합 등 분할 cno 로 열거한 동일
     # canonical 단지는 1행만(표본 n 최대, 동률이면 complex_no 사전순 — 결정론). canonical 판정은
@@ -626,14 +640,18 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
 # 가격대는 정책 대출한도(15억 이하 6억/초과 4억, 10.15 대책)와 무관하게 매매 중위의 단순
 # 사실 구간화다 — "이 가격대는 이 대출을 받을 수 있다"를 암시하지 않는다(개별 소득·상품 요건은
 # build_finance_plan_actual/§4 정밀모드가 담당, FINANCE_CONFIRM_NOTICE 로 은행 확인 의무 고지).
-PRICE_SEGMENTS = [(6.0, "6억 이하"), (10.0, "6~10억"), (15.0, "10~15억"), (float("inf"), "15억 초과")]
+# 2026-09-07 가격대(PriceBand) 4밴드로 개편(사용자 지정, 이전 6/10/15 컷 대체) — 반개구간 [lo, hi):
+#   10억 미만 / 10~15억 / 15~20억 / 20억 이상. 수집 캡(screen_25gu RE_CAP)도 같은 날 제거돼 상위 두 밴드가 실제로 채워진다.
+#   필드명 price_segment 는 유지(탐색기 seg 프리셋·fact_lead._ATTR_FIELDS·GA4 이벤트 호환). 라벨 순서 = 탐색기 SEG_ORDER 와 동일해야 한다.
+PRICE_SEGMENTS = [(10.0, "10억 미만"), (15.0, "10~15억"), (20.0, "15~20억"), (float("inf"), "20억 이상")]
 
 
 def price_segment(molit_recent_eok: float | None) -> str | None:
+    """12개월 동일평형 중위(억) → 가격대 라벨. 상한 미포함(반개구간): 10.0 → "10~15억"."""
     if molit_recent_eok is None:
         return None
     for hi, label in PRICE_SEGMENTS:
-        if molit_recent_eok <= hi:
+        if molit_recent_eok < hi:
             return label
     return PRICE_SEGMENTS[-1][1]
 
@@ -742,6 +760,174 @@ def compute_gu_jeonse_ratio_median(rows: list[dict]) -> float | None:
     return round(st.median(vals), 1) if vals else None
 
 
+GONGSI_AREA_TOL_M2 = 0.5      # 공시가를 찾은 면적과 발행 면적의 허용 차(㎡) — 앵커가 옮겨간 단지는 배율 미발행(S4 면적 게이트)
+SPREAD_ANCHORS_M2 = (59.0, 84.0)
+SPREAD_MIN_N = 5
+KAPT_BAND_EDGES = (60.0, 85.0, 135.0)   # K-apt 면적대 경계(전용) — 순서대로 le60 / 60_85 / 85_135 / gt135
+KAPT_BAND_KEYS = ("le60", "60_85", "85_135", "gt135")
+KAPT_EDGE_TOL_M2 = 0.5                  # 경계 ±0.5㎡ 는 양쪽 면적대 모두 허용(60.0㎡ 표기 오차)
+
+
+def _kapt_bands_for(area: float) -> set[str]:
+    """전용면적이 속할 수 있는 K-apt 면적대(경계 근처는 둘 다)."""
+    out = set()
+    for i, key in enumerate(KAPT_BAND_KEYS):
+        lo = KAPT_BAND_EDGES[i - 1] if i else None
+        hi = KAPT_BAND_EDGES[i] if i < len(KAPT_BAND_EDGES) else None
+        if (lo is None or area >= lo - KAPT_EDGE_TOL_M2) and (hi is None or area <= hi + KAPT_EDGE_TOL_M2):   # 경계 ±0.5 양쪽 포함(S5 Codex)
+            out.add(key)
+    return out
+
+
+def verify_kapt_area_units(records: list[dict], own_area: float | None, units: dict | None,
+                           anchors: tuple = SPREAD_ANCHORS_M2) -> str:
+    """평형 격차의 물리적 신원 대조(S4 Codex P1) — 발행 면적과 앵커 레코드 면적이 속한 K-apt 면적대의 세대수가 0 이면
+    다른 단지의 거래가 섞인 것(구 안 동명 단지). 반환 "" = 통과, "identity_unverified" = 대조 자료 없음(미발행),
+    "kapt_area_mismatch" = 세대수 0 인 면적대의 거래가 있음(미발행)."""
+    if not units or sum(units.values()) <= 0:
+        return "identity_unverified"
+    areas = [own_area] if own_area else []
+    areas += [r["area"] for r in records if r.get("area") and any(abs(r["area"] - a) <= 3.5 for a in anchors)]
+    for a in areas:
+        if all(units.get(k, 0) == 0 for k in _kapt_bands_for(float(a))):
+            return "kapt_area_mismatch"
+    return ""
+
+
+def compute_gongsi_multiple(row: dict) -> float | None:
+    """공시가배율(OfficialPriceMultiple) = 실거래 12개월 동일평형 중위(억) ÷ 같은 평형 공시가격(억).
+    공시가를 찾은 면적(gongsi_area_m2)이 발행 면적과 GONGSI_AREA_TOL_M2 안일 때만 — 사실 비율, 가치 판단 없음(글로서리 공시가배율)."""
+    md, gm, ga, area = row.get("molit_recent_eok"), row.get("gongsi_man"), row.get("gongsi_area_m2"), row.get("area_m2")
+    if not md or not gm or ga is None or area is None or abs(float(ga) - float(area)) > GONGSI_AREA_TOL_M2:
+        return None
+    return round(md / (gm / 10000), 2)
+
+
+def add_gongsi_multiple(ds: dict) -> dict:
+    """add_enrich_overlay 뒤에 호출(overlay 의 gongsi_man·gongsi_area_m2 가 채워진 뒤)."""
+    for r in ds["complexes"]:
+        r["gongsi_multiple"] = compute_gongsi_multiple(r)
+    return ds
+
+
+def compute_area_spread(records: list[dict], anchors: tuple = SPREAD_ANCHORS_M2, min_n: int = SPREAD_MIN_N) -> dict:
+    """평형격차(AreaSpread) — 같은 단지(발행 신원의 이름매칭 레코드) 안 작은 평형 ㎡당 중위 ÷ 큰 평형 ㎡당 중위 − 1 (%).
+    앵커 ±3.5㎡(게시 방법론과 동일), 양쪽 n ≥ min_n 일 때만 값. 원인 서술 없음 — 격차·n·양쪽 중위(억)만.
+    총액 역전 가드: 84㎡대 총액 중위 < 59㎡대 총액 중위면 같은 단지가 아닐 가능성(구 안 동명 병합 — MOLIT 레코드에 동 정보 없음,
+    2026-09-07 서대문 '두산' 실측 +118.8%)이라 격차를 내지 않는다(spread_flag="total_inversion")."""
+    lo, hi = anchors
+    a = [r for r in records if r.get("price") and r.get("area") and abs(r["area"] - lo) <= 3.5]
+    b = [r for r in records if r.get("price") and r.get("area") and abs(r["area"] - hi) <= 3.5]
+    out = {"area_spread_59_84_pct": None, "n59": len(a), "n84": len(b), "med59_eok": None, "med84_eok": None, "spread_flag": ""}
+    if len(a) < min_n or len(b) < min_n:
+        return out
+    m59, m84 = st.median(r["price"] for r in a), st.median(r["price"] for r in b)
+    out.update({"med59_eok": round(m59 / 1e8, 2), "med84_eok": round(m84 / 1e8, 2)})
+    if m84 < m59:
+        out["spread_flag"] = "total_inversion"
+        return out
+    pa, pb = st.median(r["price"] / r["area"] for r in a), st.median(r["price"] / r["area"] for r in b)
+    out["area_spread_59_84_pct"] = round((pa / pb - 1) * 100, 1)
+    return out
+
+
+def _named_records_public(name: str, gu: str, molit: dict) -> list[dict]:
+    """발행 신원(표시명·구)의 전 평형 레코드 — canonical 완전일치(동명 단지 병합 함정 차단)."""
+    lawd = GU_LAWD.get(gu)
+    if not lawd:
+        return []
+    recs = molit.get(lawd, [])
+    matched = match_molit_names(name, (r.get("apt", "") for r in recs))
+    return [r for r in recs if r.get("apt", "") in matched]
+
+
+def _molit_name_index(molit: dict, gu: str, cache: dict) -> dict:
+    if gu not in cache:
+        cache[gu] = build_name_index({r.get("apt", "") for r in molit.get(GU_LAWD.get(gu, ""), [])})
+    return cache[gu]
+
+
+def _owner_id(r: dict) -> str:
+    """소유자 집계·동명 판정에 쓰는 발행 행 식별자 — complex_no 가 있으면 그것, 없으면(기존 A 경로는 '' 를 내놓을 수 있다) 구·표시명 합성
+    (S6e Codex E3: ID 없는 발행 행이 소유자에서 빠지면 같은 원본명의 다른 행이 차단을 피한다)."""
+    cno = str(r.get("complex_no") or "").strip()
+    return cno or f"noid:{r.get('gu')}:{r.get('name')}"
+
+
+def build_name_owners(frame_path: str | None, district_map_path: str | None, molit: dict, cache: dict | None = None,
+                      published: list[dict] | None = None) -> dict:
+    """(소재구, MOLIT 원본명) → 그 원본명에 이름매칭이 닿는 프레임 단지 번호 집합. 가드 키 = 발행 매칭 키(match_molit_names 그대로:
+    canonical 완전일치 + 번호블록 접기 2순위)라서 '샘플1단지'·'샘플1차' 가 같은 원본 '샘플1' 로 접히는 경우도 잡는다(S6 Codex F1).
+    구 배정 — ① 발행 dataset 행(published)은 발행 구 그대로: A(연속성)·B(신규)·허용목록·후보 순위를 다시 흉내내지 않고 dataset 의 결정 자체를
+    쓴다(S6b R1·S6c/S6d Codex C1: 흉내내는 규칙은 발행 경로가 늘 때마다 갈렸다 — 허용목록 밖 기존 A 행이 가드에서 빠지는 식).
+    ② 프레임의 미발행 단지는 좌표 소재구 맵의 구(서울 밖이면 dataset 의 outside_scope 처럼 제외, S6b N1), 맵에 없으면 스캔구 후보 전부에
+    등록 — 어느 구인지 모르는 미발행 단지는 보수적으로 어느 후보 구의 동명 발행도 막는다(맞출 dataset 결정이 없다).
+    프레임은 같은 단지가 스캔구마다 중복 등재되므로 complexNo 로 합친다(09-07 실측 5,384행 = 2,176단지)."""
+    cache = {} if cache is None else cache
+    owners: dict[tuple, set] = {}
+
+    def _own(gu: str, disp: str, cno: str) -> None:
+        for raw in match_molit_names(disp, (), _molit_name_index(molit, gu, cache)):
+            owners.setdefault((gu, raw), set()).add(cno)
+
+    done: set[str] = set()
+    for r in published or []:
+        cno, gu = _owner_id(r), r.get("gu")
+        if gu in GU_LAWD:
+            _own(gu, re.sub(r"\[.*?\]", "", r.get("name") or "").strip(), cno)
+            done.add(cno)
+    if not frame_path or not os.path.exists(frame_path):
+        return owners
+    frame = json.load(open(frame_path, encoding="utf-8"))
+    dmap = json.load(open(district_map_path, encoding="utf-8")) if district_map_path and os.path.exists(district_map_path) else {}
+    entries: dict[str, dict] = {}
+    for e in frame:
+        ent = entries.setdefault(str(e.get("complexNo")), {"name": e.get("name") or "", "gus": []})
+        if e.get("gu") in GU_LAWD and e["gu"] not in ent["gus"]:
+            ent["gus"].append(e["gu"])                              # 등재 순서 유지 — dataset 후보 순회·동률 처리와 동일
+    for cno, ent in entries.items():
+        if cno in done:                                             # 발행 행은 위에서 발행 구로 등록됨
+            continue
+        true = dmap.get(cno)
+        if true:
+            if not str(true.get("sido", "")).startswith("서울") or true.get("gu") not in GU_LAWD:
+                continue                                            # 서울 밖(하남·의정부 등) = dataset 의 outside_scope 와 동일하게 제외
+            gus = [true["gu"]]
+        else:
+            gus = ent["gus"]                                        # 소재구 미확정·미발행 → 후보 구 전부(보수적)
+        disp = re.sub(r"\[.*?\]", "", ent["name"]).strip()
+        for gu in gus:
+            _own(gu, disp, cno)
+    return owners
+
+
+def is_ambiguous_name(owners: dict, gu: str, name: str, cno: str | None, molit: dict, cache: dict) -> bool:
+    """발행 신원(구·표시명)이 닿는 MOLIT 원본명 중 하나라도 다른 프레임 단지(cno 상이)에도 닿으면 참 — 그 거래는 이름으로 가를 수 없다."""
+    if not owners:
+        return False
+    matched = match_molit_names(name, (), _molit_name_index(molit, gu, cache))
+    return any(owners.get((gu, raw), set()) - {str(cno)} for raw in matched)
+
+
+def add_area_spread(ds: dict, molit_path: str, frame_path: str | None = None, district_map_path: str | None = None) -> dict:
+    """평형 격차 59↔84(S4) — molit_path 는 dataset 빌드에 쓴 파일과 동일해야 한다(add_liquidity_facts 와 같은 호출측 contract).
+    신원 가드(미발행 = 격차·n·중위 전부 None + spread_flag, 어느 플래그든 동일 — S6 Codex F4): 프레임에서 이름매칭이 겹치는 다른 단지
+    → ambiguous_name · K-apt 면적대 세대수 대조 → identity_unverified / kapt_area_mismatch · 총액 역전 → total_inversion."""
+    molit = json.load(open(molit_path))
+    cache: dict = {}
+    owners = build_name_owners(frame_path, district_map_path, molit, cache, published=ds["complexes"])   # 발행 행은 발행 구 그대로(S6d Codex C1)
+    for r in ds["complexes"]:
+        recs = _named_records_public(r["name"], r["gu"], molit)
+        res = compute_area_spread(recs)
+        flag = "ambiguous_name" if is_ambiguous_name(owners, r["gu"], r["name"] or "", _owner_id(r), molit, cache) else ""
+        flag = flag or verify_kapt_area_units(recs, r.get("area_m2"), r.get("kapt_area_units")) or res.get("spread_flag") or ""
+        if flag:                                                    # 신원 미확인·불일치·동명·총액 역전 → 전부 미발행(S4/S5/S6 Codex)
+            res = {k: None for k in res}
+            res["spread_flag"] = flag
+        r.update(res)
+    return ds
+
+
 def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
     """public 경로 신규단지 enrichment overlay(K-apt·공시가·관리비·카카오, 2026-07-10 collect_public_enrich.py)
     병합 — complex_no 매칭 행만, 기존 값(None/빈문자열)일 때만 채움(기존 발행 단지 값은 건드리지 않음).
@@ -751,7 +937,7 @@ def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
         return ds
     overlay = json.load(open(overlay_path, encoding="utf-8"))
     fields = ("heating", "corridor_type", "parking_per_unit", "builder",
-              "nearest_elem_school", "academy_exam", "gongsi_man", "maint_fee_won")
+              "nearest_elem_school", "academy_exam", "gongsi_man", "gongsi_area_m2", "kapt_area_units", "maint_fee_won")
     for r in ds["complexes"]:
         ov = overlay.get(str(r.get("complex_no") or ""))
         if not ov:
@@ -864,7 +1050,7 @@ tbody tr:hover{background:#f6faff}
 </div>
 <script>
 const S={q:"",gu:new Set(),area:new Set(),decade:new Set(),ptype:new Set(),seg:new Set(),emin:null,emax:null,units_min:null,ppmin:null,ppmax:null,sort:"molit_recent_eok",dir:-1};
-const SEG_ORDER=["6억 이하","6~10억","10~15억","15억 초과"];
+const SEG_ORDER=["10억 미만","10~15억","15~20억","20억 이상"];   // = PRICE_SEGMENTS 라벨 순서(2026-09-07 4밴드)
 let DB=null;
 const COLS=[
   {k:"name",t:"단지명",num:false},
@@ -884,6 +1070,10 @@ const COLS=[
   {k:"molit_pos_52w",t:"52주위치<span class=muted style=font-weight:400> 최근3개월</span>",num:true,
      fmt:r=>r.molit_pos_52w!=null?`${r.molit_pos_52w}%`:`<span class=muted>—</span>`},
   {k:"pyeong_price_man",t:"평단가",num:true,fmt:r=>r.pyeong_price_man!=null?`${r.pyeong_price_man.toLocaleString()}만`:`<span class=muted>—</span>`},
+  {k:"gongsi_multiple",t:"공시가 배율<span class=muted style=font-weight:400> 중위÷공시가</span>",num:true,
+     fmt:r=>r.gongsi_multiple!=null?`×${r.gongsi_multiple.toFixed(2)} <span class=muted>공시 ${(r.gongsi_man/10000).toFixed(2)}억</span>`:`<span class=muted>—</span>`},
+  {k:"area_spread_59_84_pct",t:"평형 격차<span class=muted style=font-weight:400> 59↔84 ㎡당</span>",num:true,
+     fmt:r=>r.area_spread_59_84_pct!=null?`${r.area_spread_59_84_pct>0?"+":""}${r.area_spread_59_84_pct}% <span class=muted>n${r.n59}·n${r.n84}</span>`:`<span class=muted>—</span>`},
   // ── 입지·인프라 추가 열(기본 숨김, '인프라 보기' 토글로 표시) ──
   {k:"subway_m",t:"지하철(m)",num:true,extra:true,
    fmt:r=>r.subway_m!=null?`${r.subway_m.toLocaleString()}m`:`<span class=muted>—</span>`},
@@ -1043,6 +1233,8 @@ function init(){
     +`<br>• <b>가격대</b> = 매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천을 의미하지 않습니다 — 대출 가능 여부·금리·한도는 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오.`
     +`<br>• <b>전세가율(단지)</b>·<b>매매-전세 갭</b> = 동일평형 전세 실거래(공공 RTMS) 매칭 사실. <b>전세가율(서울전체)</b>은 개별 단지가 아닌 한국부동산원 R-ONE 서울 전체 월간 평균(참고용 거시지표)입니다.`
     +`<br>• <b>거래회전율</b> = 그 단지 12개월 전체 실거래 건수÷세대수×100(%) — 거주만족·매물희소 등 다양한 이유로 낮을 수 있어 '환금성 나쁨'의 단정적 지표가 아닙니다.`
+    +`<br>• <b>공시가 배율</b> = 국토부 실거래 12개월 동일평형 중위÷같은 평형 공시가격(공시가를 찾은 면적과 발행 면적이 일치하는 단지만) — 보유세 산정 기준 대비 시세 배율의 사실이며 가치 판단이 아닙니다.`
+    +`<br>• <b>평형 격차</b> = 같은 단지 59㎡대와 84㎡대(각 ±3.5㎡, 양쪽 n≥5)의 ㎡당 실거래 중위 비(59÷84−1, %). 같은 구에서 이름매칭이 겹치는 단지가 있거나(공공 프레임 대조) K-apt 면적대 세대수와 맞지 않거나 대조 자료가 없거나 84 총액 중위가 59 보다 낮으면 빈칸 — 국토부 실거래 원본에 동 정보가 없어 이름이 같은 단지의 거래는 가를 수 없습니다. 격차의 사실만 적고 원인은 적지 않습니다.`
     +`<br>• ${esc(DB.takedown)}`;
 }
 function passFilter(x){

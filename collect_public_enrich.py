@@ -44,9 +44,9 @@ from agent_realestate.collectors.kakao import nearest_schools, academy_exam_coun
 EX        = Path("examples")
 FRAME     = EX / "frame_25gu_20260710.json"
 MOLIT     = EX / "molit_recent_25gu_20260710.json"
-SURVIVORS = EX / "screen_25gu_survivors_20260710.json"
+SURVIVORS = Path(os.environ.get("RE_SURVIVORS") or EX / "screen_25gu_survivors_20260710.json")   # 2026-09-07 풀 컷오버 스위치(scope_inputs 와 동일 env)
 ANCHOR    = EX / "candidates_universe159_20260707.json"
-OUT       = EX / "enrich_overlay_25gu_20260710.json"
+OUT       = Path(os.environ.get("RE_ENRICH_OVERLAY_OUT") or EX / "enrich_overlay_25gu_20260710.json")   # 신규 풀 백필 시 새 날짜 파일로(기존 overlay 를 복사해 두면 resume 가 기존 cno 를 스킵)
 ASOF, TODAY = "2026-07-09", "2026-07-10"
 SLEEP      = 0.18          # 자체 top-level 호출(카카오·raw basis) 간격
 SAVE_EVERY = 20            # 중간저장 주기(장시간 실행 중단 대비)
@@ -133,6 +133,21 @@ def build_gu_ipsi_map() -> dict[str, int]:
             gu = gu[:-1]
         m.setdefault(gu, int(v))
     return m
+
+
+KAPT_AREA_BANDS = (("le60", "kaptMparea60"), ("60_85", "kaptMparea85"), ("85_135", "kaptMparea135"), ("gt135", "kaptMparea136"))
+
+
+def kapt_area_units(basis: dict | None) -> dict | None:
+    """K-apt 기본정보의 전용면적대 세대수(60㎡ 이하 / 60~85 / 85~135 / 135 초과) — 평형 격차의 물리적 신원 대조용
+    (2026-09-07 S4 Codex P1: MOLIT 레코드엔 동 정보가 없어 구 안 동명 단지가 합쳐진다). 기본정보 없거나 합 0 이면 None."""
+    if not basis:
+        return None
+    try:
+        out = {k: int(basis.get(f) or 0) for k, f in KAPT_AREA_BANDS}
+    except (TypeError, ValueError):
+        return None
+    return out if sum(out.values()) > 0 else None
 
 
 def _gongsi_man(kapt_code: str, name: str, district: str, area: float, units: int, molit: dict,
@@ -222,6 +237,8 @@ def enrich_complex(t: dict, molit: dict, gu_ipsi_map: dict[str, int],
                          vworld_key, molit_key, raw_cache, vworld_cache)
         if gm is not None:
             entry["gongsi_man"] = gm
+            entry["gongsi_area_m2"] = round(float(area), 1)   # 공시가를 찾은 전용면적 — 발행 시 면적 일치 게이트(be.compute_gongsi_multiple, 2026-09-07 S4)
+        entry["kapt_area_units"] = kapt_area_units(raw_cache.get(kapt_code))   # 면적대 세대수 — 평형 격차 신원 대조(be.verify_kapt_area_units)
 
     # ── (c) 관리비 — kapt_code 확정 + 세대수 보유 시만 ──
     if kapt_code and units > 0:

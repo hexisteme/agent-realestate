@@ -183,7 +183,7 @@ details{{border:1px solid #ddd;border-radius:8px;padding:10px 16px;margin-top:14
     return path
 
 
-def write_digest_draft(digest: dict, today: str, outdir: str = "report/blog") -> str:
+def write_digest_draft(digest: dict, today: str, outdir: str = "report/blog", kind: str | None = None) -> str:
     """일간 다이제스트(daily_digest.build_daily_digest 산출)용 복사버튼 헬퍼 페이지(2026-09-05 P1).
     write_daily_draft 와 동일 포맷(textarea id=t/g/b + 복사버튼) — tistory_publish._parse_helper 가
     그대로 파싱한다. 25구 통합 덤프(write_daily_draft) 대신 run_daily.py 가 이 함수를 호출한다."""
@@ -214,6 +214,7 @@ details{{border:1px solid #ddd;border-radius:8px;padding:10px 16px;margin-top:14
 .then(()=>{{btn.textContent='복사됨 ✓';btn.className='ok';}});}}</script>
 </body></html>"""
     os.makedirs(f"{outdir}/tistory", exist_ok=True)
-    path = f"{outdir}/tistory/{today}-tistory-draft.html"
+    # kind(2026-09-07): 하루 2편째(periodic=주간결산/월간결산)는 {today}-{kind}-tistory-draft.html — daily 원고·마커와 분리.
+    path = f"{outdir}/tistory/{today}-{kind}-tistory-draft.html" if kind else f"{outdir}/tistory/{today}-tistory-draft.html"
     open(path, "w").write(helper)
     return path

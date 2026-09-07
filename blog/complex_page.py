@@ -379,6 +379,8 @@ _FACT_SPECS = [
     ("heating", "난방", lambda v, r: v),
     ("far_pct", "용적률", lambda v, r: f"{v:g}%" + (f" / 건폐 {r['bcr_pct']:g}%" if r.get("bcr_pct") is not None else "")),
     ("gongsi_man", "공시가격", lambda v, r: f"{v / 10000:.2f}억"),
+    ("gongsi_multiple", "공시가 배율", lambda v, r: f"×{v:.2f} (실거래 12개월 중위 ÷ 같은 평형 공시가격)"),
+    ("area_spread_59_84_pct", "평형 격차 59↔84㎡", lambda v, r: f"{v:+.1f}% ㎡당 (59㎡대 {r['med59_eok']}억 n{r['n59']} · 84㎡대 {r['med84_eok']}억 n{r['n84']})"),
     ("builder", "시공사", lambda v, r: v),
 ]
 

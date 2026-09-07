@@ -46,7 +46,11 @@ fi
 TODAY="$(date +%F)"
 STAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-published"
 TISTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published"
-if [ "$(cat "$STAMP" 2>/dev/null)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null)" = "$TODAY" ]; then
+# 기간 결산(주간결산/월간결산, 2026-09-07): run_daily 가 일요일에 periodic 원고를 쓰면 2편째 발행 대상 — kind 별 마커.
+PERSTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published-periodic"
+PERDRAFT="/Volumes/EXT_SSD/bot/agent_realestate/report/blog/tistory/${TODAY}-periodic-tistory-draft.html"
+periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null)" != "$TODAY" ]; }
+if [ "$(cat "$STAMP" 2>/dev/null)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null)" = "$TODAY" ] && ! periodic_pending; then
   echo "[$(date)] 오늘($TODAY) 사이트+티스토리 모두 발행 완료 — skip (멱등 가드)"
   exit 0
 fi
@@ -73,4 +77,9 @@ fi
 # --login-wait 120: 무인 재로그인 실패 시 사람이 창을 볼 기회 — 재시도마다 2분.
 caffeinate -d -i python3 blog/tistory_publish_pw.py --mode publish --login-wait 120 \
   || echo "[$(date)] tistory_publish_pw skipped (로그인 만료? 재로그인: python3 blog/tistory_publish_pw.py --mode publish --login-wait 600)"
+# 2편째: 주간결산/월간결산(일요일에만 원고가 생긴다). daily 마커와 독립(.last-tistory-published-periodic).
+if periodic_pending; then
+  caffeinate -d -i python3 blog/tistory_publish_pw.py --mode publish --kind periodic --login-wait 120 \
+    || echo "[$(date)] tistory periodic publish skipped"
+fi
 echo "[$(date)] done"

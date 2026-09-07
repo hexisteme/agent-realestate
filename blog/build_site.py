@@ -55,6 +55,13 @@ def _fmt_eok(v: float | None) -> str:
     return f"{v:g}억" if v is not None else "—"
 
 
+def _latest_period_post_href(posts: list[str]) -> str | None:
+    """인덱스용 최신 결산 포스트 경로(주간결산/월간결산, 2026-09-07) — posts/{date}-{주간결산|월간결산}.html 중 최신, 없으면 None.
+    구 포스트 규약(-{gu}.html)과 접미사가 달라 _latest_gu_post_href 와 서로 오인하지 않는다."""
+    mine = sorted((p for p in posts if re.search(r"-(주간결산|월간결산)\.html$", os.path.basename(p))), reverse=True)
+    return mine[0] if mine else None
+
+
 def _latest_gu_post_href(posts: list[str], gu: str) -> str | None:
     """구허브 푸터용 최신 주간 리포트 상대경로(gu/ 기준 ../posts/…). 주간 포스트는 월요일에만 생기므로
     (2026-09-06 P0) 존재하는 파일 중 최신을 고르고, 없으면 None → 허브가 링크를 생략(비월요일 404 차단)."""
@@ -115,6 +122,11 @@ def build(today=None, molit_path=None):
     if os.path.exists(f"{SRC}/dataset.json"):
         from blog.snapshots import save_snapshot
         save_snapshot(f"{SRC}/dataset.json", today, dir=f"{SRC}/snapshots")
+    # 1d) MOLIT 원본 아카이브(2026-09-07) — 매일 in-place 갱신되는 원본을 gz 로 보관(14일·일요일 400일·월말 일요일 영구)해
+    #   period_delta.diff_filings(주간결산 신고 델타)의 base 를 만든다. 원본이 없으면(테스트·11gu) 조용히 생략.
+    if mp and os.path.exists(mp):
+        from blog.snapshots import save_molit_archive
+        save_molit_archive(mp, today, dir=f"{SRC}/snapshots/molit")
     from blog.snapshots import load_snapshot_days_ago
     prev_ds=load_snapshot_days_ago(7, dir=f"{SRC}/snapshots")   # 7일 전(±1일) 스냅샷 — 사실 리드 '패턴' 재현 판정용, 없으면 None('이번 주 관측' 표기)
     posts=sorted(glob.glob(f"{SITE}/posts/*.html"),reverse=True)
@@ -172,6 +184,7 @@ def build(today=None, molit_path=None):
     asof_idx = ds_all.get("data_asof", today) if ds_all is not None else today
     lead_html = _index_leads(ds_all) if ds_all is not None else ""
     gu_summary = dd._gu_summary_rows(ds_all) if ds_all is not None else []
+    band_summary = dd._band_summary_rows(ds_all) if ds_all is not None else []   # 가격대 4밴드 칩(2026-09-07)
     chips = ('<span class=chip>기준 ' + asof_idx + '</span>'
              '<span class=chip>국토부 실거래 · 신고 지연 최대 30일</span>'
              '<span class=chip>매일 07:05 자동 갱신</span>')
@@ -188,10 +201,15 @@ def build(today=None, molit_path=None):
         f'<a class=card href="daily/latest.html"><h3>📰 오늘의 변화</h3><p>{digest_desc}</p></a>'
         '<a class=card href="methodology.html"><h3>📖 방법론</h3>'
         '<p>왜 이 숫자를 믿을 수 있나 — 측정·출처·한계</p></a>'
+        '<a class=card href="macro.html"><h3>📈 거시 지표</h3>'
+        '<p>기준금리·코픽스·국고채·환율·금의 관측값, 발표 캘린더, 시차 · 상환·한도·보유세 계산기</p></a>'
         '</div>')
     recent_items = "".join(
         f'<li><a href="posts/{os.path.basename(p)}">{html.escape(_post_meta(p)[1])}</a></li>'
         for p in posts[:5])
+    period_post = _latest_period_post_href(posts)
+    if period_post and period_post not in posts[:5]:   # 최신 주간결산/월간결산은 항상 노출(월요일엔 구 포스트 25편에 밀린다)
+        recent_items = f'<li><a href="posts/{os.path.basename(period_post)}">{html.escape(_post_meta(period_post)[1])}</a></li>' + recent_items
     if digest_meta:
         recent_items += f'<li><a href="daily/latest.html">{digest_desc} (최신 일간)</a></li>'
     idx=f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
@@ -226,6 +244,7 @@ h2{{font-size:18px;margin:28px 0 12px}}
 <h1>서울 부동산 데이터 스냅샷</h1>
 <p class=lead>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재). 자체 평가·점수·순위 없는 사실 스냅샷.</p>
 <div class=chips>{chips}</div>
+{('<div class=chips>' + ''.join(f'<span class=chip>{b["band"]} {b["n"]}단지 · 중위 {_fmt_eok(b["median"])}</span>' for b in band_summary if b['n']) + '</div>') if band_summary else ''}
 {lead_html}
 {entry_cards}
 <h2>자치구 (25개)</h2>
@@ -292,6 +311,29 @@ h2{{font-size:18px;margin:28px 0 12px}}
 <p class=d>생성: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a> (결정론 파이프라인, MIT) ·
 콘텐츠 라이선스 CC-BY-NC-4.0 · AI 인덱스 <a href="llms.txt">/llms.txt</a></p>
 </body></html>""")
+    # 2e) 거시 지표 페이지(2026-09-07 MacroContext S2) — 최신 macro 스냅샷(SRC 기준 dir)으로 macro.html. 없거나 3일 초과면 '미수집' 페이지.
+    from blog.snapshots import load_macro_snapshot_latest
+    from blog.macro_context import build_macro_context, render_macro_page
+    try:
+        macro_snap=load_macro_snapshot_latest(dir=f"{SRC}/snapshots/macro")
+    except Exception as e:                                                 # noqa: BLE001 — 잘린 JSON 등 로더 실패도 '미수집' 경로(S6 Codex F6)
+        print(f"[build_site] 거시 스냅샷 로드 실패 → 미수집: {type(e).__name__}: {str(e)[:120]}")
+        macro_snap=None
+    try:
+        macro_ctx=build_macro_context(macro_snap, today)
+    except Exception as e:                                                 # noqa: BLE001 — 컨텍스트 실패는 '미수집' 페이지(사이트 조립 중단 금지, S2 Codex)
+        print(f"[build_site] 거시 컨텍스트 실패 → 미수집 페이지: {type(e).__name__}: {str(e)[:120]}")
+        macro_ctx=None
+    open(f"{SITE}/macro.html","w").write(render_macro_page(macro_ctx, today))
+    from blog.macro_scenario import render_calc_page                      # L2 전달 계산기(S3) — 관측값은 macro_ctx, 나머지는 입력 가정
+    open(f"{SITE}/calc.html","w").write(render_calc_page(macro_ctx, today))
+    from blog.macro_cycles import build_cycle_report, render_cycles_page   # L3 사이클 리포트(S5) — bok_base 변경 시계열, 없으면 '미수집' 페이지
+    try:
+        cycles_html=render_cycles_page(build_cycle_report(macro_snap, today), today)
+    except Exception as e:                                                 # noqa: BLE001 — L3 실패(손상 스냅샷 등)는 '미수집' 페이지로 두고 조립 계속(S5 Codex)
+        print(f"[build_site] 사이클 리포트 실패 → 미수집 페이지: {type(e).__name__}: {str(e)[:120]}")
+        cycles_html=render_cycles_page(None, today)
+    open(f"{SITE}/cycles.html","w").write(cycles_html)
     # 3) sitemap.xml (절대 URL — 서치어드바이저 제출용. lastmod=포스트 자체 날짜)
     #    ★한글 파일명 percent-encode 의무(sitemap 프로토콜 RFC-3986) — 미인코딩 시 구글 '가져올 수 없음'(2026-06-11 실측).
     urls="".join(f"<url><loc>{BASE_URL}/posts/{quote(os.path.basename(p))}</loc><lastmod>{_post_meta(p)[0]}</lastmod></url>" for p in posts)
@@ -306,6 +348,9 @@ h2{{font-size:18px;margin:28px 0 12px}}
     # sitemap.xml 은 sitemapindex 로 분할(2026-09-05 P2, urlset 항목 급증 대비) — 자식 3개: core(랜딩·방법론·구허브·다이제스트)·complex(단지)·posts(전체 포스트).
     core_body=(f"<url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/methodology.html</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/macro.html</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/cycles.html</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/calc.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/archive.html</loc><lastmod>{today}</lastmod></url>"
                f"{gu_urls}{digest_urls}")
     open(f"{SITE}/sitemap-core.xml","w").write(_urlset(core_body))
