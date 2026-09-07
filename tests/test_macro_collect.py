@@ -1,4 +1,5 @@
 """거시 지표 수집기(agent_realestate/collectors/macro.py) + macro 스냅샷 — 픽스처 기반, 네트워크 없음."""
+import json
 import os
 from datetime import date
 
@@ -16,6 +17,8 @@ def _read(name):
 
 
 def _fixture_fetch(url, encoding="utf-8"):
+    if "ecos.bok.or.kr" in url:                                   # bok.or.kr 분기보다 먼저(부분 문자열)
+        return _read("ecos_m2.json") if "161Y005" in url else _read("ecos_base_rate.json")
     if "bok.or.kr" in url:
         return _read("bok_base_rate.html")
     if "fredgraph.csv?id=" in url:
@@ -33,6 +36,13 @@ def _fixture_fetch(url, encoding="utf-8"):
 @pytest.fixture(autouse=True)
 def _no_delay(monkeypatch):
     monkeypatch.setattr(m, "PAGE_DELAY_S", 0)
+
+
+@pytest.fixture(autouse=True)
+def _no_ecos_key(monkeypatch):
+    """개발 머신의 .env 에 든 ECOS 키가 픽스처 테스트를 라이브 경로로 보내지 않게 — 키는 테스트가 명시로 넣는다."""
+    monkeypatch.setattr(m, "_load_env_file", lambda: None)
+    monkeypatch.delenv("ECOS_API_KEY", raising=False)
 
 
 def test_parse_bok_base_rate_is_ascending_change_points():
@@ -71,8 +81,17 @@ def test_parse_naver_gold_and_fx_columns():
 
 def test_parse_ecos_json_and_error():
     assert m.parse_ecos_json(_read("ecos_base_rate.json")) == [("2026-07-16", 2.75), ("2026-08-27", 3.0)]
+    assert m.parse_ecos_json(_read("ecos_m2.json")) == [("2026-04-01", 4152205.0), ("2026-05-01", 4183579.2), ("2026-06-01", 4212955.4)]   # 월별 TIME → 월초
     with pytest.raises(ValueError, match="INFO-100"):
         m.parse_ecos_json(_read("ecos_error.json"))
+    leak = '{"RESULT":{"CODE":"dummy-key-XYZ","MESSAGE":"dummy-key-XYZ"}}'                     # 응답 원문이 키를 되풀이해도 예외엔 없다(S9 Codex P1)
+    with pytest.raises(m.EcosResponseError) as ei:
+        m.parse_ecos_json(leak)
+    assert str(ei.value) == "ECOS 응답 오류 코드 ?"
+    bad = '{"StatisticSearch":{"row":[{"TIME":"202606","DATA_VALUE":"dummy-key-XYZ"}]}}'
+    with pytest.raises(m.EcosResponseError) as ei:
+        m.parse_ecos_json(bad)
+    assert str(ei.value) == "ECOS DATA_VALUE 가 숫자가 아님"
 
 
 def test_merge_series_dedupes_orders_and_caps():
@@ -132,6 +151,39 @@ def test_ecos_requires_key_and_never_leaks_it(monkeypatch):
     assert "dummy-key-XYZ" not in str(ei.value) and ei.value.__cause__ is None
     ok = lambda url, encoding="utf-8": _read("ecos_base_rate.json")  # noqa: E731
     assert m.fetch_ecos_series("722Y001", "0101000", "D", "20260101", "20261231", fetch=ok)[-1] == ("2026-08-27", 3.0)
+
+
+def test_collect_macro_kr_m2_only_with_key_and_never_leaks(monkeypatch):
+    out = m.collect_macro("2026-09-07", fetch=_fixture_fetch)                          # 키 없음 → 실패가 아니라 생략
+    assert "kr_m2" not in out["indicators"] and "kr_m2" not in out["errors"]
+    monkeypatch.setenv("ECOS_API_KEY", "dummy-key-XYZ")
+    seen = []
+    def spy(url, encoding="utf-8"):
+        seen.append(url)
+        return _fixture_fetch(url, encoding)
+    out = m.collect_macro("2026-09-07", fetch=spy)
+    k = out["indicators"]["kr_m2"]
+    assert (k["value"], k["date"], k["unit"], k["freq"], k["prev_value"]) == (4212955.4, "2026-06-01", "십억원", "monthly", 4183579.2)
+    assert k["source"] == "한국은행 ECOS 161Y005/BBHS00" and k["url"] == m.ECOS_PAGE and out["errors"] == {}
+    assert any(u.endswith("/1000/161Y005/M/200001/202609/BBHS00") for u in seen)   # 월별 창 = 통계 시작 이전 ~ 이번 달
+    assert "dummy-key-XYZ" not in json.dumps(out, ensure_ascii=False)                 # 스냅샷 어디에도 키가 없다
+    def ecos_down(url, encoding="utf-8"):
+        if "ecos.bok.or.kr" in url:
+            raise OSError(f"bad {url}")
+        return _fixture_fetch(url, encoding)
+    out = m.collect_macro("2026-09-07", prev=out, fetch=ecos_down)
+    assert "kr_m2" not in out["indicators"] and out["errors"]["kr_m2"] == "RuntimeError: ECOS 요청 실패(OSError)"
+    assert "dummy-key-XYZ" not in json.dumps(out, ensure_ascii=False) and "bok_base" in out["indicators"]
+    assert out["carried"]["kr_m2"]["value"] == 4212955.4                             # 이력은 carried 로, 카드 재료 아님
+    for body, want in (('{"RESULT":{"CODE":"INFO-100","MESSAGE":"dummy-key-XYZ 인증 실패"}}', "ECOS 응답 오류 코드 INFO-100"),
+                       ('{"RESULT":{"CODE":"dummy-key-XYZ"}}', "ECOS 응답 오류 코드 ?"),
+                       ('<html>dummy-key-XYZ</html>', "JSONDecodeError"),
+                       ('{"StatisticSearch":{"row":[{"TIME":"202606","DATA_VALUE":"dummy-key-XYZ"}]}}', "ECOS DATA_VALUE 가 숫자가 아님")):
+        def ecos_body(url, encoding="utf-8", body=body):
+            return body if "ecos.bok.or.kr" in url else _fixture_fetch(url, encoding)
+        out = m.collect_macro("2026-09-07", fetch=ecos_body)
+        assert out["errors"]["kr_m2"] == f"RuntimeError: ECOS 응답 해석 실패({want})" and "kr_m2" not in out["indicators"]
+        assert "dummy-key-XYZ" not in json.dumps(out, ensure_ascii=False) and out["n_ok"] == 15   # 비정상 응답도 스냅샷에 원문이 남지 않는다
 
 
 def test_calendar_next_upcoming_recent():

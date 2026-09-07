@@ -21,10 +21,11 @@ from blog.wording_guard import assert_lead_wording_ok
 
 MAX_SNAPSHOT_AGE_DAYS = 3
 STALE_DAYS = {"daily": 7, "weekly": 14, "monthly": 100}     # event(기준금리 변경일)는 계단 시계열 — 오래됨 판정 없음
+STALE_DAYS_BY_CODE = {"kr_m2": 120}                         # 한은 M2 는 M+2 중순 공표(2026-09-07 실측 최신 2026-06 = 98일) — 월별 기본 100이면 공표 전 며칠씩 카드가 빠진다
 STRIP_CODES = ("bok_base", "cofix_new", "kr_govt3y", "fed_target_hi", "us10y", "usdkrw", "gold_krw_g")
 TISTORY_STRIP_CODES = STRIP_CODES[:5]          # 티스토리는 인라인 스타일 비용이 커서 5카드(예산 30,000B 안 ≤3KB)
 RELEASE_SHORT = {"bok": "금통위", "fomc": "FOMC", "cofix": "코픽스 공시"}
-PAGE_CODES = STRIP_CODES + ("cofix_bal", "cd91", "us2y", "us_mortgage30", "kr_govt10y_m", "us_m2", "gold_usd_oz")
+PAGE_CODES = STRIP_CODES + ("cofix_bal", "cd91", "us2y", "us_mortgage30", "kr_govt10y_m", "kr_m2", "us_m2", "gold_usd_oz")
 RELEASE_KIND_OF = {"bok_base": "bok", "fed_target_hi": "fomc", "cofix_new": "cofix", "cofix_bal": "cofix"}
 RELEASE_CODE_OF = {"bok": "bok_base", "fomc": "fed_target_hi", "cofix": "cofix_new"}
 MONTHS_12 = 365
@@ -67,6 +68,8 @@ def _fmt_value(v: float, unit: str) -> str:
         return f"${v:,.0f}/oz"
     if unit == "십억달러":
         return f"{v / 1000:,.2f}조달러"
+    if unit == "십억원":
+        return f"{v / 1000:,.1f}조원"
     if unit == "원":
         return f"{v:,.1f}원"
     return f"{v:g}{unit}"
@@ -115,7 +118,7 @@ def _streak_txt(ind: dict) -> str:
 
 
 def _is_stale(ind: dict, today: date) -> bool:
-    limit = STALE_DAYS.get(ind.get("freq"))
+    limit = STALE_DAYS_BY_CODE.get(ind.get("code"), STALE_DAYS.get(ind.get("freq")))
     d = validate_iso_date(ind.get("date"))                        # 거부된 날짜를 다시 파싱하지 않는다(S6e Codex E1)
     return limit is not None and d is not None and (today - date.fromisoformat(d)).days > limit
 

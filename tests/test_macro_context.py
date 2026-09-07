@@ -127,6 +127,16 @@ def test_release_block_handles_missing_prev_stale_pair_and_window_start():
     assert cards[0].label != "미 연방기금 목표범위" and cards[0].value_txt == "3.75%"
 
 
+def test_kr_m2_card_formats_trillion_won_and_uses_longer_stale_window():
+    s = [["2026-04-01", 4152205.0], ["2026-05-01", 4183579.2], ["2026-06-01", 4212955.4]]
+    ind = _ind("kr_m2", "십억원", "monthly", s, prev_value=4183579.2)
+    c = mc._card(ind, {}, date(2026, 9, 7))
+    assert c.value_txt == "4,213.0조원" and c.delta_prev_txt == "+0.7%(직전 4,183.6조원)" and c.next_release_txt == ""
+    assert mc._usable(ind, date(2026, 9, 27)) and not mc._usable(ind, date(2026, 10, 1))          # 118일 사용 · 122일 오래됨(kr_m2 120)
+    assert not mc._usable(_ind("us_m2", "십억달러", "monthly", s), date(2026, 9, 27))             # 다른 월별 지표는 기본 100일 그대로
+    assert mc.PAGE_CODES.index("kr_m2") + 1 == mc.PAGE_CODES.index("us_m2") and "kr_m2" not in mc.STRIP_CODES
+
+
 def test_delta_12m_uses_observation_date_for_delayed_monthly():
     s = [["2025-07-01", 21000.0], ["2025-09-01", 21500.0], ["2026-06-01", 21900.0], ["2026-07-01", 22000.0]]
     c = mc._card(_ind("us_m2", "십억달러", "monthly", s, prev_value=21900.0), {}, date(2026, 9, 7))

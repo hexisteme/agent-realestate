@@ -1,11 +1,12 @@
 """거시 지표 수집 — MacroContext 의 배관(2026-09-07, `report/2026-09-07-macro-context-briefing.md` §3.3).
-무키 경로 우선(FRED CSV·bok.or.kr 기준금리 표·네이버금융 시장지표). ECOS 는 `ECOS_API_KEY` 가 있을 때만(백필용).
+무키 경로 우선(FRED CSV·bok.or.kr 기준금리 표·네이버금융 시장지표). ECOS 는 `ECOS_API_KEY` 가 있을 때만(한국 M2 일간 수집·백필용).
 
 지표 코드 · 출처 · 빈도
   bok_base         한국은행 기준금리(변경일 시계열)        bok.or.kr 기준금리 추이 표            event(changes)
   fed_target_hi/lo 연방기금 목표범위 상단/하단             FRED DFEDTARU/DFEDTARL(무키 CSV)     daily(step)
   us10y · us2y     미 국채 10년·2년                        FRED DGS10/DGS2                        daily
   us_m2            미 M2(계절조정, 십억달러)               FRED M2SL                              monthly
+  kr_m2            한국 M2(평잔·계절조정, 십억원)          ECOS 161Y005/BBHS00(키 있을 때만)      monthly
   us_mortgage30    미 30년 고정 모기지                     FRED MORTGAGE30US(프레디맥)            weekly
   kr_govt10y_m     국고채 10년(월평균, OECD 경유 1~2개월 지연) FRED IRLTLT01KRM156N              monthly
   kr_govt3y · cd91 국고채 3년 · CD 91일                    금융투자협회 고시(네이버금융 일별 표)   daily
@@ -19,8 +20,9 @@
   빠진 지표의 마지막 성공 이력은 `carried[code]` 로 넘겨 다음 수집이 이어받는다(카드 생성엔 쓰지 않는다).
 - 시계열은 이전 스냅샷과 병합해 누적(`merge_series`). 네이버 일별 표는 페이지당 10행·최대 6페이지뿐이라
   첫 수집 뒤엔 2페이지만 읽고 나머지는 누적분으로 채운다. 지표당 보존 관측 수 = SERIES_KEEP.
-- 시크릿: ECOS 키는 os.environ(`.env` 경유)에서만 읽고, 키가 든 URL·예외 원문은 밖으로 내지 않는다.
-- 한국 M2 는 무키 출처가 없다(FRED MYAGM2KRM189N 은 2017 종료) → ECOS 키 확보 후 시리즈 확정([사용자]).
+- 시크릿: ECOS 키는 os.environ(`.env` 경유)에서만 읽고, 키가 든 URL·예외 원문·응답 원문은 밖으로 내지 않는다(errors 는 스냅샷 JSON 에 저장된다).
+- 한국 M2 는 무키 출처가 없다(FRED MYAGM2KRM189N 은 2017 종료) → ECOS 161Y005/BBHS00(M2 평잔·계절조정, 2003-10~, 2026-09-07 키 등록 후
+  통계코드검색으로 확정). 키가 없으면 실패가 아니라 생략(MacroSourceMissing — errors 에도 남기지 않음, 카드 없음).
 """
 from __future__ import annotations
 
@@ -86,6 +88,10 @@ class MacroSourceMissing(RuntimeError):
     """출처 자체가 없음(키 미설정 등) — 실패가 아니라 생략."""
 
 
+class EcosResponseError(ValueError):
+    """ECOS 응답 형식 오류 — 메시지는 고정 문구 + 형식 검증된 오류 코드만(응답 원문·키를 싣지 않는다, S9 Codex P1)."""
+
+
 # ── 전송 ─────────────────────────────────────────────────────────────────────
 def fetch_text(url: str, encoding: str = "utf-8") -> str:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -99,6 +105,7 @@ _TR = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S)
 _TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
 _TAG = re.compile(r"<[^>]+>")
 _NAVER_DATE = re.compile(r"^\d{4}\.\d{2}\.\d{2}$")
+_ECOS_CODE = re.compile(r"[A-Z]+-\d{3}")                    # INFO-100 · ERROR-300 꼴만 예외 메시지에 통과
 
 
 def parse_bok_base_rate(html: str) -> list[tuple[str, float]]:
@@ -171,15 +178,18 @@ def parse_ecos_json(text: str) -> list[tuple[str, float]]:
     """ECOS StatisticSearch JSON → [(날짜, 값)]. TIME 이 YYYYMMDD/YYYYMM/YYYY 면 각각 일/월초/연초로."""
     obj = json.loads(text)
     if "StatisticSearch" not in obj:
-        code = (obj.get("RESULT") or {}).get("CODE", "?")
-        raise ValueError(f"ECOS 응답 오류 코드 {code}")
+        code = str((obj.get("RESULT") or {}).get("CODE", ""))
+        raise EcosResponseError(f"ECOS 응답 오류 코드 {code if _ECOS_CODE.fullmatch(code) else '?'}")   # 형식 밖 문자열은 응답 원문 → 싣지 않는다
     out = []
     for r in obj["StatisticSearch"].get("row", []):
         t, v = str(r.get("TIME", "")), r.get("DATA_VALUE")
         if v in (None, "") or len(t) not in (4, 6, 8):
             continue
         d = t[:4] + "-" + (t[4:6] if len(t) >= 6 else "01") + "-" + (t[6:8] if len(t) == 8 else "01")
-        out.append((d, float(v)))
+        try:
+            out.append((d, float(v)))
+        except (TypeError, ValueError):
+            raise EcosResponseError("ECOS DATA_VALUE 가 숫자가 아님") from None                 # float() 메시지는 원문을 되풀이한다
     return sorted(out)
 
 
@@ -276,9 +286,15 @@ def recent_releases(today: date, window_days: int = 2) -> list[dict]:
 
 # ── ECOS(선택, 키 필요) ──────────────────────────────────────────────────────────
 ECOS_URL = "https://ecos.bok.or.kr/api/StatisticSearch/{key}/json/kr/1/{n}/{stat}/{cycle}/{start}/{end}/{item}"
-ECOS_SERIES = {  # code: (stat, item, cycle) — 첫 행만 브리핑에서 검증. 국고채 10년·M2 는 키 확보 후 통계코드검색으로 확정([사용자]).
+ECOS_PAGE = "https://ecos.bok.or.kr/"                          # 카드 출처 링크 — 키가 든 API URL 은 어디에도 싣지 않는다
+ECOS_SERIES = {  # code: (stat, item, cycle) — 2026-09-07 통계코드검색: 기준금리 722Y001(D) · M2 평잔·계절조정 161Y005/BBHS00(M, 2003-10~, 십억원)
     "bok_base_ecos": ("722Y001", "0101000", "D"),
+    "kr_m2": ("161Y005", "BBHS00", "M"),
 }
+ECOS_INDICATORS = {  # 일간 수집(키 있을 때만, 월별 주기만): code → (label, unit, freq)
+    "kr_m2": ("한국 M2(평잔·계절조정)", "십억원", "monthly"),
+}
+ECOS_MONTHLY_START = "200001"                                 # 통계 시작 이전이면 ECOS 가 시작 시점부터 돌려준다(161Y005: 273행·82KB, 2026-09-07 실측)
 _load_env_file = config.load_env_file
 
 
@@ -294,7 +310,12 @@ def fetch_ecos_series(stat: str, item: str, cycle: str, start: str, end: str,
         text = fetch(url, "utf-8")
     except Exception as e:                                    # noqa: BLE001
         raise RuntimeError(f"ECOS 요청 실패({type(e).__name__})") from None
-    return parse_ecos_json(text)
+    try:
+        return parse_ecos_json(text)
+    except EcosResponseError as e:                            # 고정 문구·화이트리스트 코드만 담긴 메시지
+        raise RuntimeError(f"ECOS 응답 해석 실패({e})") from None
+    except Exception as e:                                    # noqa: BLE001  JSONDecodeError 등 — 종류만(S9 Codex P1)
+        raise RuntimeError(f"ECOS 응답 해석 실패({type(e).__name__})") from None
 
 
 # ── 수집 오케스트레이션 ─────────────────────────────────────────────────────────
@@ -337,6 +358,15 @@ def collect_macro(today: str, prev: dict | None = None, fetch=fetch_text, naver_
     for code, (fid, label, unit, freq) in FRED_SERIES.items():
         try:
             _put(code, label, unit, freq, f"FRED {fid}", FRED_PAGE.format(id=fid), parse_fred_csv(fetch(FRED_CSV.format(id=fid))))
+        except Exception as e:                                # noqa: BLE001
+            errors[code] = _reason(e)
+    for code, (label, unit, freq) in ECOS_INDICATORS.items():
+        stat, item, cycle = ECOS_SERIES[code]
+        try:
+            _put(code, label, unit, freq, f"한국은행 ECOS {stat}/{item}", ECOS_PAGE,
+                 fetch_ecos_series(stat, item, cycle, ECOS_MONTHLY_START, today.replace("-", "")[:6], fetch=fetch))
+        except MacroSourceMissing:
+            continue                                          # 키 없음 = 출처 없음 → errors 에도 남기지 않고 생략
         except Exception as e:                                # noqa: BLE001
             errors[code] = _reason(e)
     for code, (cd, label, freq, source) in NAVER_INTEREST_SERIES.items():
