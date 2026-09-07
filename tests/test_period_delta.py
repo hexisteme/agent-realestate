@@ -143,3 +143,75 @@ def test_render_worst_case_fits_tistory_budget_by_trimming():
     assert "지면 한도로" in post["tistory_html"] and "지면 한도로" not in post["html"]
     assert post["html"].count("52주 상단(기준→이번)") == 1 and "경신0(" in post["html"]      # 사이트는 전체 표
     assert len(post["claims"]) == 4 + 25 + len(d["migrations"])
+
+
+def test_pool_change_keeps_medians_on_paired_complexes(tmp_path, monkeypatch):
+    """발행 풀이 640→927 처럼 커져도 '기준→이번' 중위는 짝 단지만으로 — 새 단지 유입이 +22.8% 로 찍히던 경로(게이트 ② Codex 판정)."""
+    base = _ds([_row("강남", "A", 10.0), _row("강남", "B", 12.0), _row("노원", "C", 5.0)], asof="2026-08-30", gen="2026-09-06")
+    cur = _ds(base["complexes"] + [_row("강남", f"N{i}", 30.0) for i in range(5)], gen="2026-09-13")
+    d = pd.build_period_delta(cur, base, "weekly", "2026-09-13", date(2026, 9, 6))
+    assert d["n_pairs"] == 3 and d["seoul_median_base"] == d["seoul_median_cur"] == 10.0 and d["seoul_median_pool_cur"] == 30.0
+    gus = {g["gu"]: g for g in d["gus"]}
+    assert gus["강남"]["n_cur"] == 7 and gus["강남"]["gu_median_delta_pct"] == 0.0 and gus["강남"]["median_cur"] == gus["강남"]["median_base"] == 11.0
+    bands = {b["band"]: b for b in d["bands"]}
+    assert bands["20억 이상"]["n_cur"] == 5 and bands["20억 이상"]["median_cur"] is None      # 짝 없는 밴드는 수준도 —
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "weekly")
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "dataset-2026-09-06.json").write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+    pd.write_period_post(cur, "2026-09-13", str(tmp_path))
+    html_txt = (tmp_path / "posts" / "2026-09-13-주간결산.html").read_text(encoding="utf-8")
+    assert "짝지은 3단지 중 양쪽 집계 게이트 통과 3단지만으로 계산" in html_txt and "(+0.0%)" in html_txt and "+200.0%" not in html_txt
+    assert "짝 기준→이번" in html_txt and "시점별 소속" in html_txt
+
+
+def test_monthly_weekly_rows_delta_uses_paired_complexes(tmp_path, monkeypatch):
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "monthly")
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "dataset-2026-09-06.json").write_text(json.dumps(_ds([_row("강남", "A", 9.9)], gen="2026-09-06"), ensure_ascii=False), encoding="utf-8")
+    (snap / "dataset-2026-09-13.json").write_text(json.dumps(_ds([_row("강남", "A", 9.9), _row("서초", "B", 30.0)], gen="2026-09-13"), ensure_ascii=False), encoding="utf-8")
+    pd.write_period_post(_ds([_row("강남", "A", 9.9), _row("서초", "B", 30.0)], gen="2026-09-27"), "2026-09-27", str(tmp_path))
+    html_txt = (tmp_path / "posts" / "2026-09-27-월간결산.html").read_text(encoding="utf-8")
+    assert "직전 주 대비(짝 n)" in html_txt and "+101.5%" not in html_txt              # 풀 [9.9]→[9.9, 30] 의 수준 차이가 Δ 로 찍히지 않는다
+    assert "+0.0% n1" in html_txt and "서울 중위(억, 풀 전체)" in html_txt                  # Δ 의 표본 수와 '풀 전체' 수준을 구분(S7 Codex)
+
+
+def test_gate_crossing_pairs_do_not_create_delta(tmp_path, monkeypatch):
+    """S7 Codex P1: 가격 고정·거래표본만 9→10건이면 한쪽만 집계 게이트를 넘어 서울·구·주차별 Δ 가 +100% 로 찍히던 경로 —
+    양쪽 게이트 통과 짝(n_valid)만으로 비교하고 표시한 표본 수 = 계산에 쓴 수."""
+    base = _ds([_row("강남", f"L{i}", 10.0, n=15) for i in range(5)] + [_row("강남", f"H{i}", 30.0, n=9) for i in range(5)], gen="2026-09-06")
+    cur = _ds([_row("강남", f"L{i}", 10.0, n=15) for i in range(5)] + [_row("강남", f"H{i}", 30.0, n=10) for i in range(5)], gen="2026-09-13")
+    d = pd.build_period_delta(cur, base, "weekly", "2026-09-13", date(2026, 9, 6))
+    assert d["n_pairs"] == 10 and d["n_valid"] == 5 and d["seoul_median_base"] == d["seoul_median_cur"] == 10.0
+    g = {x["gu"]: x for x in d["gus"]}["강남"]
+    assert g["gu_median_delta_pct"] == 0.0 and g["n_valid"] == 5 and g["n_pairs"] == 10
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "monthly")
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "dataset-2026-09-06.json").write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+    (snap / "dataset-2026-09-13.json").write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+    pd.write_period_post(cur, "2026-09-27", str(tmp_path))
+    html_txt = (tmp_path / "posts" / "2026-09-27-월간결산.html").read_text(encoding="utf-8")
+    assert "+100.0%" not in html_txt and "+0.0% n5" in html_txt and "양쪽 집계 게이트 통과 5단지" in html_txt
+    claims = [json.loads(x) for x in (tmp_path / "posts" / "2026-09-27-월간결산.claims.jsonl").read_text(encoding="utf-8").splitlines()]
+    c = [x for x in claims if x["claim"] == "monthly_gu_change"][0]
+    assert c["n_valid"] == 5 and c["n_pairs"] == 10 and c["median_basis"] == "valid_pairs" and c["delta_pct"] == 0.0
+
+
+def test_band_cell_shows_per_period_membership_and_counts(tmp_path, monkeypatch):
+    """S7 Codex P2: 밴드 중위는 시점별 소속 분포 — 14.9→15.0 이동만으로 '10~15억' 중위가 13.45→12 로 바뀌므로 양쪽 표본 수·설명을 함께 적는다."""
+    base = _ds([_row("강남", f"S{i}", 12.0) for i in range(5)] + [_row("강남", f"M{i}", 14.9) for i in range(5)], gen="2026-09-06")
+    cur = _ds([_row("강남", f"S{i}", 12.0) for i in range(5)] + [_row("강남", f"M{i}", 15.0) for i in range(5)], gen="2026-09-13")
+    b = {x["band"]: x for x in pd.compute_band_deltas(cur, base)}["10~15억"]
+    assert (b["median_base"], b["n_med_base"], b["median_cur"], b["n_med_cur"]) == (13.45, 10, 12.0, 5) and b["delta_median_pct"] == 0.0
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "weekly")
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "dataset-2026-09-06.json").write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+    pd.write_period_post(cur, "2026-09-13", str(tmp_path))
+    html_txt = (tmp_path / "posts" / "2026-09-13-주간결산.html").read_text(encoding="utf-8")
+    assert "13.45억(n10) → 12억(n5)" in html_txt and "시점별 소속" in html_txt and "밴드 이동으로 구성이 달라짐" in html_txt
+    claims = [json.loads(x) for x in (tmp_path / "posts" / "2026-09-13-주간결산.claims.jsonl").read_text(encoding="utf-8").splitlines()]
+    c = [x for x in claims if x["claim"] == "weekly_band_change" and x["band"] == "10~15억"][0]
+    assert c["n_med_base"] == 10 and c["n_med_cur"] == 5 and c["median_basis"] == "valid_pairs_by_period_band"

@@ -130,8 +130,15 @@ def pair_complexes(cur_ds: dict, base_ds: dict) -> tuple[list[tuple[dict, dict]]
     return pairs, added, removed
 
 
+def valid_pairs(pairs: list[tuple[dict, dict]]) -> list[tuple[dict, dict]]:
+    """양쪽 모두 집계 게이트(passes_rank_gate)와 가격을 갖춘 짝 — '기준→이번' 중위 비교의 표본(S7 Codex P1: 한쪽만 게이트를
+    넘는 단지(표본 9→10건)가 중위에 들어와 가격 고정에도 Δ 가 생기던 경로). 신원 짝(n_pairs)과 구분해 n_valid 로 센다."""
+    return [(c, b) for c, b in pairs if be.select_gated_medians([c]) and be.select_gated_medians([b])]
+
+
 def compute_band_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
     pairs, _, _ = pair_complexes(cur_ds, base_ds)
+    vp = valid_pairs(pairs)
     rows = []
     for band in BANDS:
         cur_rows = [r for r in cur_ds["complexes"] if _band(r) == band]
@@ -139,8 +146,11 @@ def compute_band_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
         deltas = [v for v in (_pct(c.get("molit_recent_eok"), b.get("molit_recent_eok"))
                               for c, b in pairs if _band(c) == band) if v is not None]
         med, iqr = _median_iqr(deltas)
+        vc = [c for c, _ in vp if _band(c) == band]                              # 시점별 밴드 소속(분포) — 같은 단지의 변화는 deltas(S7 Codex P2)
+        vb = [b for _, b in vp if _band(b) == band]
         rows.append({"band": band, "n_cur": len(cur_rows), "n_base": len(base_rows),
-                     "median_cur": be.compute_gu_median(cur_rows), "median_base": be.compute_gu_median(base_rows),
+                     "median_cur": be.compute_gu_median(vc), "median_base": be.compute_gu_median(vb),
+                     "n_med_cur": len(vc), "n_med_base": len(vb),
                      "delta_median_pct": med, "delta_iqr_pct": iqr, "n_pairs": len(deltas),
                      "moved_in": sum(1 for c, b in pairs if _band(c) == band and _band(b) not in (None, band)),
                      "moved_out": sum(1 for c, b in pairs if _band(b) == band and _band(c) not in (None, band))})
@@ -170,17 +180,21 @@ def compute_gu_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
         by_c[r["gu"]].append(r)
     for r in base_ds["complexes"]:
         by_b[r["gu"]].append(r)
-    dl = defaultdict(list)
-    for c, b in pair_complexes(cur_ds, base_ds)[0]:
+    dl, pc, pb = defaultdict(list), defaultdict(list), defaultdict(list)
+    pairs = pair_complexes(cur_ds, base_ds)[0]
+    for c, b in pairs:
         v = _pct(c.get("molit_recent_eok"), b.get("molit_recent_eok"))
         if v is not None:
             dl[c["gu"]].append(v)
+    for c, b in valid_pairs(pairs):                                             # 양쪽 게이트 통과 짝만 — 풀·게이트 변화가 Δ 에 섞이지 않는다(S7 Codex P1)
+        pc[c["gu"]].append(c)
+        pb[c["gu"]].append(b)
     rows = []
     for gu in sorted(set(by_c) | set(by_b)):
-        mc, mb = be.compute_gu_median(by_c[gu]), be.compute_gu_median(by_b[gu])
+        mc, mb = be.compute_gu_median(pc[gu]), be.compute_gu_median(pb[gu])
         med, _ = _median_iqr(dl[gu])
         rows.append({"gu": gu, "n_cur": len(by_c[gu]), "n_base": len(by_b[gu]), "median_cur": mc, "median_base": mb,
-                     "gu_median_delta_pct": _pct(mc, mb), "delta_median_pct": med, "n_pairs": len(dl[gu]),
+                     "gu_median_delta_pct": _pct(mc, mb), "delta_median_pct": med, "n_pairs": len(dl[gu]), "n_valid": len(pc[gu]),
                      "hi_cur": _count_pos(by_c[gu]), "hi_base": _count_pos(by_b[gu]),
                      "lo_cur": _count_pos(by_c[gu], hi=False), "lo_base": _count_pos(by_b[gu], hi=False)})
     return rows
@@ -235,19 +249,18 @@ def summarize_filings(f: dict) -> dict:
 def weekly_rows_between(base_date: date, today: str, dir: str) -> list[dict]:
     """월간용 주차별 행 — base 이후 오늘까지의 일요일 스냅샷마다 단지 수·서울 중위·직전 주 대비 Δ·밴드별 단지 수."""
     d = date.fromisoformat(today)
-    rows, prev_med = [], None
-    prev = load_snapshot_on(base_date, 0, dir)
-    if prev:
-        prev_med = be.compute_gu_median(prev["complexes"])
+    rows, prev = [], load_snapshot_on(base_date, 0, dir)
     for x in [x for x in list_snapshot_dates(dir) if x.weekday() == 6 and base_date < x <= d]:
         ds = load_snapshot_on(x, 0, dir)
         if not ds:
             continue
-        med = be.compute_gu_median(ds["complexes"])
-        rows.append({"date": x.isoformat(), "n": len(ds["complexes"]), "seoul_median": med,
-                     "delta_pct": _pct(med, prev_med),
+        pairs = pair_complexes(ds, prev)[0] if prev else []                     # 직전 주 대비는 짝 단지만(풀 확대 주에 +22.8% 가 찍히던 경로)
+        vp = valid_pairs(pairs)                                                 # 그중 양쪽 게이트 통과(S7 Codex P1)
+        rows.append({"date": x.isoformat(), "n": len(ds["complexes"]), "seoul_median": be.compute_gu_median(ds["complexes"]),
+                     "delta_pct": _pct(be.compute_gu_median([c for c, _ in vp]), be.compute_gu_median([b for _, b in vp])),
+                     "n_pairs": len(pairs), "n_valid": len(vp),
                      "bands": {b: sum(1 for r in ds["complexes"] if _band(r) == b) for b in BANDS}})
-        prev_med = med
+        prev = ds
     return rows
 
 
@@ -275,13 +288,15 @@ def build_period_delta(cur_ds: dict, base_ds: dict, kind: str, today: str, base_
                        filings: dict | None = None, weekly: dict | None = None,
                        weekly_rows: list[dict] | None = None, macro_section: dict | None = None) -> dict:
     pairs, added, removed = pair_complexes(cur_ds, base_ds)
+    vp = valid_pairs(pairs)
     return {"kind": kind, "today": today, "asof": cur_ds.get("data_asof", today), "base_date": base_date.isoformat(),
             "base_asof": base_ds.get("data_asof"), "n_cur": len(cur_ds["complexes"]), "n_base": len(base_ds["complexes"]),
-            "n_pairs": len(pairs),
+            "n_pairs": len(pairs), "n_valid": len(vp),
             "added": sorted(f'{r["name"]}({r["gu"]})' for r in added),
             "removed": sorted(f'{r["name"]}({r["gu"]})' for r in removed),
-            "seoul_median_cur": be.compute_gu_median(cur_ds["complexes"]),
-            "seoul_median_base": be.compute_gu_median(base_ds["complexes"]),
+            "seoul_median_cur": be.compute_gu_median([c for c, _ in vp]),               # 양쪽 게이트 통과 짝만(풀 640→927 에서 +22.8% 로 오인되던 경로, 게이트 ② Codex)
+            "seoul_median_base": be.compute_gu_median([b for _, b in vp]),
+            "seoul_median_pool_cur": be.compute_gu_median(cur_ds["complexes"]),         # 이번 풀 전체 수준(기준과 비교하지 않음)
             "bands": compute_band_deltas(cur_ds, base_ds), "migrations": compute_band_migrations(cur_ds, base_ds),
             "gus": compute_gu_deltas(cur_ds, base_ds),
             "filings": summarize_filings(filings) if filings else None,
@@ -333,11 +348,11 @@ def _gu_link(gu: str, inline: bool) -> str:
 
 
 def _band_table(bands: list[dict], inline: bool) -> str:
-    rows = [[b["band"], f'{b["n_base"]} → {b["n_cur"]}', _arrow(b["median_base"], b["median_cur"]),
+    rows = [[b["band"], f'{b["n_base"]} → {b["n_cur"]}', f'{_eok(b["median_base"])}(n{b["n_med_base"]}) → {_eok(b["median_cur"])}(n{b["n_med_cur"]})',
              (f'{_pct_txt(b["delta_median_pct"])} (IQR {b["delta_iqr_pct"]:g}%p, n{b["n_pairs"]})'
               if b["delta_median_pct"] is not None else f'— (n{b["n_pairs"]})'),
              f'유입 {b["moved_in"]} · 유출 {b["moved_out"]}'] for b in bands]
-    return _tbl(["가격대", "단지 수(기준→이번)", "중위(억, 기준→이번)", "단지별 Δ중위", "밴드 이동"], rows, inline)
+    return _tbl(["가격대", "단지 수(기준→이번)", "밴드 중위(억, 시점별 소속 짝 n)", "단지별 Δ중위", "밴드 이동"], rows, inline)
 
 
 def _sections(d: dict, inline: bool, level: int = 0) -> str:
@@ -345,16 +360,22 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
     label = POST_LABEL[d["kind"]]
     span = (date.fromisoformat(d["today"]) - date.fromisoformat(d["base_date"])).days
     parts = [_p(f'기준 스냅샷 {d["base_date"]}(실거래 기준일 {d["base_asof"] or "—"}) → 이번 {d["today"]}(기준일 {d["asof"]}), {span}일. '
-                f'발행 {d["n_base"]} → {d["n_cur"]}단지, 같은 단지로 짝지은 {d["n_pairs"]}단지 기준. 국토부 실거래 12개월 동일평형 중위의 변화(사실), '
+                f'발행 {d["n_base"]} → {d["n_cur"]}단지, 같은 단지로 짝지은 {d["n_pairs"]}단지 기준(중위 비교는 그중 양쪽 집계 게이트 통과 {d["n_valid"]}단지). '
+                f'국토부 실거래 12개월 동일평형 중위의 변화(사실), '
                 f'자체 점수·순위 없음.', inline)]
     if d["added"] or d["removed"]:
         add_txt = (", ".join(d["added"][:10]) + (f' 외 {len(d["added"]) - 10}' if len(d["added"]) > 10 else "")) if d["added"] else "없음"
         rem_txt = (", ".join(d["removed"][:10]) + (f' 외 {len(d["removed"]) - 10}' if len(d["removed"]) > 10 else "")) if d["removed"] else "없음"
         parts.append(_p(f'이번에 새로 포함 {len(d["added"])}: {add_txt} · 기준에만 있던 단지 {len(d["removed"])}: {rem_txt}', inline, mut=True))
+        parts.append(_p(f'발행 풀이 바뀌어 아래 중위 비교는 짝지은 {d["n_pairs"]}단지 중 양쪽 집계 게이트 통과 {d["n_valid"]}단지만으로 계산. '
+                        f'이번 풀 전체 중위 {_eok(d.get("seoul_median_pool_cur"))}'
+                        f'({d["n_cur"]}단지)는 구성이 달라 기준과 비교하지 않음.', inline, mut=True))
     parts.append(_h("서울 전체 · 가격대별", inline))
-    parts.append(_p(f'서울 중위(게이트 통과 단지 중위의 중위) {_arrow(d["seoul_median_base"], d["seoul_median_cur"])} '
+    parts.append(_p(f'서울 중위(양쪽 게이트 통과 짝 {d["n_valid"]}단지 중위의 중위) {_arrow(d["seoul_median_base"], d["seoul_median_cur"])} '
                     f'({_pct_txt(_pct(d["seoul_median_cur"], d["seoul_median_base"]))})', inline))
     parts.append(_band_table(d["bands"], inline))
+    parts.append(_p('밴드 중위 = 각 시점에 그 가격대에 속한 양쪽 게이트 통과 짝 단지의 분포(밴드 이동으로 구성이 달라짐). '
+                    '같은 단지의 변화는 오른쪽 단지별 Δ중위.', inline, mut=True))                # S7 Codex P2
     mig, cap = d["migrations"], opt["mig"]
     parts.append(_h(f"가격대 이동 단지 {len(mig)}곳", inline))
     if mig:
@@ -369,21 +390,21 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
     parts.append(_h("구별 (25개 구)", inline))
     fil = d["filings"]
     if opt["gu_full"]:
-        heads = (["구", "단지 수", "구 중위(억, 기준→이번)", "Δ", "단지별 Δ중위"]
+        heads = (["구", "단지 수", "구 중위(억, 짝 기준→이번)", "Δ", "단지별 Δ중위"]
                  + (["52주 상단(기준→이번)", "52주 하단(기준→이번)"] if opt["pos_cols"] else []))
     else:
-        heads = ["구", "구 중위(억, 기준→이번)", "Δ"]
+        heads = ["구", "구 중위(억, 짝 기준→이번)", "Δ"]
     heads += ["신고"] if fil else []
     rows = []
     for g in d["gus"]:
         if opt["gu_full"]:
             row = [_gu_link(g["gu"], inline), f'{g["n_base"]} → {g["n_cur"]}', _arrow(g["median_base"], g["median_cur"]),
-                   _pct_txt(g["gu_median_delta_pct"]),
+                   f'{_pct_txt(g["gu_median_delta_pct"])} n{g["n_valid"]}',
                    f'{_pct_txt(g["delta_median_pct"])} n{g["n_pairs"]}' if g["delta_median_pct"] is not None else f'— n{g["n_pairs"]}']
             if opt["pos_cols"]:
                 row += [f'{g["hi_base"]} → {g["hi_cur"]}', f'{g["lo_base"]} → {g["lo_cur"]}']
         else:
-            row = [_gu_link(g["gu"], inline), _arrow(g["median_base"], g["median_cur"]), _pct_txt(g["gu_median_delta_pct"])]
+            row = [_gu_link(g["gu"], inline), _arrow(g["median_base"], g["median_cur"]), f'{_pct_txt(g["gu_median_delta_pct"])} n{g["n_valid"]}']   # 최대 축약에도 표본 수(게이트 ② Codex)
         if fil:
             row.append(f'{fil["by_gu"].get(g["gu"], 0)}건')
         rows.append(row)
@@ -408,8 +429,8 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
         parts.append(_h("주차별", inline))
         if d["weekly_rows"]:
             bcols = BANDS if opt["week_bands"] else []
-            parts.append(_tbl(["일요일", "단지 수", "서울 중위(억)", "직전 주 대비"] + bcols,
-                              [[w["date"], str(w["n"]), _eok(w["seoul_median"]), _pct_txt(w["delta_pct"])]
+            parts.append(_tbl(["일요일", "단지 수(풀 전체)", "서울 중위(억, 풀 전체)", "직전 주 대비(짝 n)"] + bcols,
+                              [[w["date"], str(w["n"]), _eok(w["seoul_median"]), f'{_pct_txt(w["delta_pct"])} n{w.get("n_valid", 0)}']
                                + [str(w["bands"][b]) for b in bcols] for w in d["weekly_rows"]], inline))
         else:
             parts.append(_p("이 달의 일요일 스냅샷이 없어 주차별 표 생략.", inline, mut=True))
@@ -498,10 +519,12 @@ def render_period_post(d: dict) -> dict:
     assert_wording_ok(tistory_html, f"period_delta:{label}:tistory")
     claims = [{"claim": f"{d['kind']}_band_change", "band": b["band"], "n_base": b["n_base"], "n_cur": b["n_cur"],
                "median_base_eok": b["median_base"], "median_cur_eok": b["median_cur"], "delta_median_pct": b["delta_median_pct"],
-               "n_pairs": b["n_pairs"], "grade": "fact", "source": "MOLIT_RTMS_public", "base": d["base_date"], "asof": d["asof"]}
+               "n_pairs": b["n_pairs"], "n_med_base": b["n_med_base"], "n_med_cur": b["n_med_cur"], "median_basis": "valid_pairs_by_period_band",
+               "grade": "fact", "source": "MOLIT_RTMS_public", "base": d["base_date"], "asof": d["asof"]}
               for b in d["bands"]]
     claims += [{"claim": f"{d['kind']}_gu_change", "gu": g["gu"], "median_base_eok": g["median_base"], "median_cur_eok": g["median_cur"],
-                "delta_pct": g["gu_median_delta_pct"], "n_pairs": g["n_pairs"], "grade": "fact", "source": "MOLIT_RTMS_public",
+                "delta_pct": g["gu_median_delta_pct"], "n_pairs": g["n_pairs"], "n_valid": g["n_valid"], "median_basis": "valid_pairs",
+                "grade": "fact", "source": "MOLIT_RTMS_public",
                 "base": d["base_date"], "asof": d["asof"]} for g in d["gus"]]
     claims += [{"claim": "price_band_migration", "name": m["name"], "gu": m["gu"], "area_m2": m["area_m2"], "from": m["from"],
                 "to": m["to"], "base_eok": m["base_eok"], "cur_eok": m["cur_eok"], "n": m["n"], "grade": "fact",
