@@ -14,6 +14,7 @@ base 의 밴드는 항상 12개월 중위(molit_recent_eok)에서 **재계산** 
 build_site 의 posts/* glob 으로 sitemap-posts·feed·archive 자동, cron_daily.sh 가 일요일 2편째로 티스토리 발행(kind=periodic).
 """
 from __future__ import annotations
+import html
 import json
 import os
 import statistics as st
@@ -44,7 +45,7 @@ _TRIM_LEVELS = [
     dict(pos_cols=False, week_table=False, mig=10, highs=0,  week_bands=False, gu_full=True),
     dict(pos_cols=False, week_table=False, mig=5,  highs=0,  week_bands=False, gu_full=False),
 ]
-MACRO_SECTION_TISTORY = False   # 월간 '거시 맥락' 절(S5, L3) — 첫 회차 사람 검토(계획 게이트 ④) 통과 후 True. 그 전엔 site 원문에만
+MACRO_SECTION_TISTORY = True    # 월간 '거시 맥락' 절(S5, L3) — 게이트 ④ 2026-09-07 Codex 판정(출처·해석 제한 줄 추가) 후 True. False 면 site 원문에만
 MAX_MIGRATION_ROWS = _TRIM_LEVELS[0]["mig"]
 MAX_RECORD_HIGH_ROWS = _TRIM_LEVELS[0]["highs"]
 
@@ -466,6 +467,11 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
             parts.append(_p(f'거시 지표 수집 기준일 {mc["asof"]}. 관측 사실과 과거 집계만(국면 라벨·자체 해석 없음).', inline, mut=True))
             for x in mc["lines"] + mc["stat_lines"]:
                 parts.append(_p(x, inline))
+            if mc.get("note_line"):
+                parts.append(_p(mc["note_line"], inline, mut=True))
+            if mc.get("sources"):
+                parts.append(_p("출처: " + " · ".join(f'{s["label"]}: <a href="{html.escape(s["url"])}">{s["source"]}</a>({s["date"]})'
+                                                   for s in mc["sources"]), inline, mut=True))
             cyc_href = f"{BASE_URL}/cycles.html" if inline else "../cycles.html"
             parts.append(_p(f'{mc["lag_line"]} 인상사이클 표·방법론: <a href="{cyc_href}">과거 인상사이클</a>.', inline, mut=True))
     if inline and level > 0:
@@ -535,7 +541,8 @@ def render_period_post(d: dict) -> dict:
     if d.get("macro_context"):
         mc = d["macro_context"]
         claims.append({"claim": "monthly_macro_context", "asof": mc["asof"], "n_cycles": mc["n_cycles"], "lines": mc["lines"],
-                       "stat_lines": mc["stat_lines"], "grade": "fact", "source": "BOK/FRED/네이버금융(macro 스냅샷)", "site_only": not MACRO_SECTION_TISTORY})
+                       "stat_lines": mc["stat_lines"], "sources": mc.get("sources", []), "grade": "fact",
+                       "source": "BOK/FRED/네이버금융(macro 스냅샷)", "site_only": not MACRO_SECTION_TISTORY})
     return {"title": title, "description": desc, "tags": TISTORY_TAGS + f",{label}", "html": html_out,
             "tistory_html": tistory_html, "tistory_level": level, "claims": claims}
 

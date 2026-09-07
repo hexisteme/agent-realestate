@@ -115,16 +115,20 @@ def test_regime_section_facts_only_and_stale_none():
     assert sec and sec["lines"][0].startswith("기준금리 2.75%(2005-10-01 변경) — 진행 중인 인상사이클: 시작 2005-10-01(2.50%→2.75%), 인상 1회·누적 +25bp")
     assert any("국고채 10년" in x for x in sec["lines"]) is False        # 2005-12 관측은 2026 기준 100일 초과 → 카드 없음(오래된 값 미표기)
     assert sec["stat_lines"] and "과거 인상사이클 시작 6개월 후 국고채 10년(월평균)" in sec["stat_lines"][0] and sec["n_cycles"] == 3
+    assert sec["note_line"] == mc.NOTE_ONE_LINER and [s["source"] for s in sec["sources"]] == ["한국은행", "FRED X"] and "~" in sec["sources"][1]["date"]
     assert mc.build_macro_regime_section(_snapshot("2026-09-01"), "2026-09-07") is None    # 3일 초과
     assert mc.build_macro_regime_section(None, "2026-09-07") is None
     ended = _snapshot("2026-09-06", bok=CHANGES + [["2006-01-01", 2.5]])
     assert "진행 중인 인상사이클 없음(마지막 사이클 2005-10-01~2005-10-01" in mc.build_macro_regime_section(ended, "2026-09-07")["lines"][0]
 
 
-def test_monthly_post_macro_section_site_only_and_claim(tmp_path, monkeypatch):
+@pytest.mark.parametrize("flag", [False, True])
+def test_monthly_post_macro_section_both_flag_states_and_claim(tmp_path, monkeypatch, flag):
+    """게이트 ④: False 면 site 원문에만, True(2026-09-07 기본값) 면 티스토리 원고에도 — 두 상태 모두 출처·해석 제한 줄 포함(Codex 판정)."""
     spec = importlib.util.spec_from_file_location("tpd", pathlib.Path("tests/test_period_delta.py"))
     tpd = importlib.util.module_from_spec(spec); spec.loader.exec_module(tpd)
     monkeypatch.setenv("RE_PERIODIC_POSTS", "monthly")
+    monkeypatch.setattr(pd, "MACRO_SECTION_TISTORY", flag)
     snap = tmp_path / "snapshots"; snap.mkdir()
     for dt in ("2026-09-06", "2026-09-13", "2026-09-20"):
         (snap / f"dataset-{dt}.json").write_text(json.dumps(tpd._ds([tpd._row("강남", "A", 9.9)], gen=dt), ensure_ascii=False), encoding="utf-8")
@@ -134,10 +138,13 @@ def test_monthly_post_macro_section_site_only_and_claim(tmp_path, monkeypatch):
     site = (tmp_path / "posts" / "2026-09-27-월간결산.html").read_text(encoding="utf-8")
     draft = (tmp_path / "tistory" / "2026-09-27-periodic-tistory-draft.html").read_text(encoding="utf-8")
     assert "거시 맥락" in site and "진행 중인 인상사이클" in site and "../cycles.html" in site
-    assert "거시 맥락" not in draft and "인상사이클" not in draft                       # 게이트 ④ 전: 티스토리 원고 제외
+    assert "출처: " in site and "https://www.bok.or.kr/x" in site and "https://fred.stlouisfed.org/series/X" in site and "통계적 유의성·확률이 아님" in site
+    assert ("거시 맥락" in draft) is flag and ("인상사이클" in draft) is flag           # False: 티스토리 원고 제외 / True: 포함
+    assert ("출처: " in draft) is flag and ("https://fred.stlouisfed.org/series/X" in draft) is flag
     claims = [json.loads(x) for x in (tmp_path / "posts" / "2026-09-27-월간결산.claims.jsonl").read_text(encoding="utf-8").splitlines()]
     m = [c for c in claims if c["claim"] == "monthly_macro_context"]
-    assert len(m) == 1 and m[0]["site_only"] is True and m[0]["n_cycles"] == 3
+    assert len(m) == 1 and m[0]["site_only"] is (not flag) and m[0]["n_cycles"] == 3
+    assert [s["url"] for s in m[0]["sources"]] == ["https://www.bok.or.kr/x", "https://fred.stlouisfed.org/series/X"]
     assert pd.write_period_post(tpd._ds([tpd._row("강남", "A", 10.1)], gen="2026-09-27"), "2026-09-27", str(tmp_path))["kind"] == "monthly"   # 스냅샷 없어도 발행
 
 
@@ -172,8 +179,11 @@ def test_real_snapshot_has_three_or_more_completed_cycles():
             del ind["date"]
         else:
             ind["date"] = bad
-        txt = json.dumps(mc.build_macro_regime_section(s2, snap["asof"]), ensure_ascii=False)
-        assert f"기준금리 {last[1]:.2f}%({last[0]} 변경)" in txt and "None" not in txt and "%()" not in txt and "한국은행 기준금리" not in txt
+        sec2 = mc.build_macro_regime_section(s2, snap["asof"])
+        txt = json.dumps(sec2, ensure_ascii=False)
+        assert f"기준금리 {last[1]:.2f}%({last[0]} 변경)" in txt and "None" not in txt and "%()" not in txt
+        assert "한국은행 기준금리" not in " ".join(sec2["lines"])                                 # 카드 줄은 생략
+        assert sec2["sources"][0]["url"] == snap["indicators"]["bok_base"]["url"] and sec2["sources"][0]["date"] == last[0]   # 출처는 유지(S7 Codex)
 
 
 def test_ongoing_cycle_is_not_a_completed_sample_and_gaps_are_labelled():
@@ -208,3 +218,21 @@ def test_january_monthly_post_titles_annual_cycle_report(tmp_path, monkeypatch):
     assert res["kind"] == "monthly"
     site = (tmp_path / "posts" / "2027-01-31-월간결산.html").read_text(encoding="utf-8")
     assert "거시 맥락 · 연간 사이클 리포트" in site and "../cycles.html" in site
+
+
+def test_section_sources_survive_bok_fallback_and_include_fed_range_lower_bound():
+    """S7 Codex ④: 기준금리 카드가 탈락해도(값 None → 시계열 폴백 문장) 한국은행 출처가 남고, 연준 범위를 표시하면 하단 출처도 같이 남는다."""
+    snap = _snapshot("2026-09-06")
+    snap["indicators"]["bok_base"]["value"] = None
+    sec = mc.build_macro_regime_section(snap, "2026-09-07")
+    assert "기준금리 2.75%" in sec["lines"][0] and sec["sources"][0]["url"] == "https://www.bok.or.kr/x" and sec["sources"][0]["date"] == "2005-10-01"
+    snap = _snapshot("2026-09-06")
+    for code, lab, v in (("fed_target_hi", "미 연방기금 목표범위 상단", 3.75), ("fed_target_lo", "미 연방기금 목표범위 하단", 3.5)):
+        snap["indicators"][code] = {"code": code, "label": lab, "unit": "%", "freq": "daily", "series_kind": "observations", "value": v,
+                                    "date": "2026-09-06", "since": "2026-09-06", "since_window_start": False, "prev_value": v + 0.25,
+                                    "prev_date": "2025-12-10", "source": f"FRED {code}", "url": f"https://fred.stlouisfed.org/series/{code}",
+                                    "series": [["2026-09-06", v]]}
+    sec = mc.build_macro_regime_section(snap, "2026-09-07")
+    assert any("미 연방기금 목표범위 3.50~3.75%" in x for x in sec["lines"])
+    assert [s["url"] for s in sec["sources"]] == ["https://www.bok.or.kr/x", "https://fred.stlouisfed.org/series/fed_target_hi",
+                                                  "https://fred.stlouisfed.org/series/fed_target_lo", "https://fred.stlouisfed.org/series/X"]

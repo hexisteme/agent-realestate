@@ -23,6 +23,9 @@ MISSING_TARGETS = (("서울 아파트 실거래 12개월 중위", "MOLIT 2006~ �
                    ("서울 아파트 월 거래량", "같은 백필 전 — 자료 없음"),
                    ("신규 코픽스", "관측 창이 2026-06 이후뿐(네이버금융 일별 표) — 사이클 대조 자료 없음"))
 SECTION_CODES = ("bok_base", "cofix_new", "kr_govt10y_m", "fed_target_hi")   # 월간 '거시 맥락' 절의 관측 줄
+NOTE_ONE_LINER = ("'부호 일치' = 완료 사이클의 Δ 방향이 전부 같았다는 관측이며 통계적 유의성·확률이 아님 · "
+                  "'중위 Δ' = 사이클별(시작 월 값 대비 h개월 후 값의 차)의 중앙값(단위 %p) · "
+                  "'진행 중' = 수집 기준일까지 다음 인하가 관측되지 않은 사이클(대조 표본 제외)")   # 게이트 ④ Codex: 해석 제한을 본문에
 
 
 def _add_months(d: date, n: int) -> date:
@@ -268,7 +271,32 @@ def build_macro_regime_section(snapshot: dict | None, today: str) -> dict | None
                 stat_lines.append(f'과거 인상사이클 시작 {h}개월 후 {tg["label"]}: {stat_txt(s, _delta_unit(tg["unit"]))}')
     if not lines:
         return None
-    for x in lines + stat_lines:
+    ind = snapshot.get("indicators") or {}
+    sources: list[dict] = []
+    bok_card = cards.get("bok_base")
+    if rep or bok_card:                                                         # 기준금리 문장은 시계열 폴백으로도 나오므로 출처는 카드와 무관하게(S7 Codex)
+        bok = ind.get("bok_base") or {}
+        sources.append({"label": bok.get("label") or "한국은행 기준금리", "source": bok.get("source") or "한국은행",
+                        "url": bok.get("url") or "", "date": rep["bok_last"] if rep else bok_card.date})
+    for c in SECTION_CODES:
+        card = cards.get(c)
+        if card and c != "bok_base":                                            # 게이트 ④ Codex: 지표별 출처·관측일을 본문에
+            sources.append({"label": card.label, "source": card.source, "url": card.url, "date": card.date})
+            if c == "fed_target_hi" and card.label == "미 연방기금 목표범위":       # 범위로 표시하면 하단 출처도(S7 Codex)
+                lo = ind.get("fed_target_lo") or {}
+                sources.append({"label": lo.get("label") or "미 연방기금 목표범위 하단", "source": lo.get("source") or "",
+                                "url": lo.get("url") or "", "date": card.date})
+    seen = {s["url"]: s for s in sources}
+    for tg in (rep["targets"] if rep else []):
+        if tg.get("missing"):
+            continue
+        window = f'{tg["first"]}~{tg["last"]}'
+        if tg["url"] in seen:                                                   # 카드와 같은 시계열이면 관측 창으로 합친다
+            seen[tg["url"]]["date"] = window
+        else:
+            sources.append({"label": tg["label"], "source": tg["source"], "url": tg["url"], "date": window})
+    for x in lines + stat_lines + [NOTE_ONE_LINER]:
         assert_lead_wording_ok(x, "macro_regime_section")
     return {"asof": snapshot["asof"], "lines": lines, "stat_lines": stat_lines,
-            "n_cycles": rep["n_completed"] if rep else 0, "lag_line": LAG_ONE_LINER}
+            "n_cycles": rep["n_completed"] if rep else 0, "lag_line": LAG_ONE_LINER,
+            "note_line": NOTE_ONE_LINER, "sources": sources}
