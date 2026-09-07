@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import pytest
 import re
 from datetime import date
 
@@ -142,6 +143,8 @@ def test_add_area_spread_suppresses_unverified_identity(tmp_path):
 
 
 def test_backfill_kapt_area_units_from_cache(tmp_path):
+    if not pathlib.Path("backfill_kapt_area_units.py").exists():                 # 루트 backfill_*.py 는 gitignore(로컬 전용) — CI 체크아웃엔 없다
+        pytest.skip("backfill_kapt_area_units.py 없음(로컬 전용 스크립트)")
     spec = importlib.util.spec_from_file_location("bk", pathlib.Path("backfill_kapt_area_units.py"))
     bk = importlib.util.module_from_spec(spec); spec.loader.exec_module(bk)
     overlay = {"1": {"kapt_code": "A1"}, "2": {"kapt_code": "A2"}, "3": {}, "4": {"kapt_code": "A4", "kapt_area_units": {"le60": 1, "60_85": 0, "85_135": 0, "gt135": 0}}}
