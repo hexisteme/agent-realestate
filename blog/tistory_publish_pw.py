@@ -30,6 +30,7 @@ import os, re, sys, argparse
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tistory_publish import _parse_helper  # noqa: E402
+from periodic_approval import needs_review  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -211,8 +212,6 @@ def _resolve_draft(outroot: str, date: str | None, kind: str = "daily") -> str |
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             headless: bool = False, login_wait_s: int = 300,
             post_id: str | None = None, kind: str = "daily") -> str:
-    from playwright.sync_api import sync_playwright
-
     today = datetime.date.today().isoformat()
     marker, attempted, _ = marker_paths(outroot, kind)   # kind 별 마커(2026-09-07) — daily 는 종전 경로 그대로
     # 마커 게이트는 무인 모드(--date 없는 스케줄 실행)에서만 — --date 백필이 오늘 마커를
@@ -235,6 +234,10 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
     if not data["body"]:
         return f"ERR:empty body parsed from {path}"
     title, body, tags = data["title"], data["body"], data["tags"]
+    # 명시 날짜·기존 글 수정도 실제 원고의 사람검토를 통과해야 한다.
+    if mode == "publish" and needs_review(outroot, path, data, kind):
+        return f"AWAIT_REVIEW:{name} — 첫 결산 원고의 사람 승인 필요"
+    from playwright.sync_api import sync_playwright
 
     log: list[str] = []
     # at-most-once: 직전 슬롯이 발행 클릭 후 확인 실패(NO_REDIRECT)로 죽었을 수 있다 —
@@ -515,6 +518,8 @@ def main():
         traceback.print_exc()
         result = f"ERR:exception:{type(e).__name__}:{e}"
     print(result)
+    if result.startswith("AWAIT_REVIEW:"):
+        return 3  # 실패 알림·nag 마커를 남기지 않는 별도 사람 대기 상태
     # publish 모드에서 발행 성공 신호(PUBLISHED)가 없으면 = 실패(세션만료/빈본문/무리다이렉트) → 알림.
     # SKIP(오늘 이미 발행/프로필 락)은 정상 경로 — 알림 제외. 마커 기록 실패는 성공이어도 알림.
     if a.mode == "publish" and not result.startswith("SKIP") \
@@ -523,4 +528,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
