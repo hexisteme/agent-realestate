@@ -17,6 +17,7 @@ from datetime import date, timedelta
 
 from agent_realestate.collectors.macro import RELEASE_LABELS, next_release, recent_releases, upcoming_releases
 from blog.macro_scenario import DEFAULT_LOAN_KRW, DEFAULT_RATE_PCT, DEFAULT_YEARS, build_scenario_table
+from blog.macro_entry import macro_click_attribute, macro_entry_attributes
 from blog.wording_guard import assert_lead_wording_ok
 
 MAX_SNAPSHOT_AGE_DAYS = 3
@@ -263,7 +264,7 @@ def _strip_cards(ctx: dict, codes: tuple = STRIP_CODES) -> list[dict]:
 
 
 def _ga(code: str) -> str:
-    return f"onclick=\"if(typeof gtag==='function')gtag('event','macro_click',{{code:'{code}'}})\""
+    return macro_click_attribute(code)
 
 
 def render_macro_strip_tistory(ctx: dict) -> str:
@@ -284,7 +285,7 @@ def render_macro_strip_tistory(ctx: dict) -> str:
 
 
 def render_macro_strip_site(ctx: dict) -> str:
-    """사이트 일간 페이지용(클래스 CSS) — GA4 macro_click 이벤트 배선(K10 분자)."""
+    """사이트 일간 페이지용 — 기존 macro_click과 거시 진입 노출/첫 클릭(K10 v2) 배선."""
     rows = "".join(
         f'<tr><td><a href="{html.escape(c["url"])}" {_ga(c["code"])}>{c["label"]}</a><br><span class=mut>{c["date"]}</span></td>'
         f'<td><b>{c["value_txt"]}</b></td><td>{c["delta_prev_txt"]}</td><td>{c["delta_12m_txt"]}</td><td>{c["next_release_txt"] or "—"}</td></tr>'
@@ -293,7 +294,7 @@ def render_macro_strip_site(ctx: dict) -> str:
     rel_p = f'<p class=rel><b>발표 직후</b> — {" / ".join(html.escape(x) for x in rel["lines"])}</p>' if rel else ""
     return (f'<h2>거시 지표 <span class=mut>(기준일별 관측 사실 · 자체 해석 없음)</span></h2>{rel_p}'
             f'<div class=tblwrap><table><tr><th>지표(기준일)</th><th>값</th><th>직전 대비</th><th>1년 전 대비</th><th>다음 발표</th></tr>{rows}</table></div>'
-            f'<p class=mut>시차(구조): {LAG_ONE_LINER} · <a href="../macro.html" {_ga("page")}>캘린더·전체 지표 →</a></p>')
+            f'<p class=mut>시차(구조): {LAG_ONE_LINER} · <a href="../macro.html" {macro_entry_attributes("daily", "macro")}>캘린더·전체 지표 →</a></p>')
 
 
 def render_macro_page(ctx: dict | None, today: str) -> str:

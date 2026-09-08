@@ -145,7 +145,7 @@ def compute_band_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
         cur_rows = [r for r in cur_ds["complexes"] if _band(r) == band]
         base_rows = [r for r in base_ds["complexes"] if _band(r) == band]
         deltas = [v for v in (_pct(c.get("molit_recent_eok"), b.get("molit_recent_eok"))
-                              for c, b in pairs if _band(c) == band) if v is not None]
+                              for c, b in vp if _band(c) == band) if v is not None]
         med, iqr = _median_iqr(deltas)
         vc = [c for c, _ in vp if _band(c) == band]                              # 시점별 밴드 소속(분포) — 같은 단지의 변화는 deltas(S7 Codex P2)
         vb = [b for _, b in vp if _band(b) == band]
@@ -153,19 +153,20 @@ def compute_band_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
                      "median_cur": be.compute_gu_median(vc), "median_base": be.compute_gu_median(vb),
                      "n_med_cur": len(vc), "n_med_base": len(vb),
                      "delta_median_pct": med, "delta_iqr_pct": iqr, "n_pairs": len(deltas),
-                     "moved_in": sum(1 for c, b in pairs if _band(c) == band and _band(b) not in (None, band)),
-                     "moved_out": sum(1 for c, b in pairs if _band(b) == band and _band(c) not in (None, band))})
+                     "moved_in": sum(1 for c, b in vp if _band(c) == band and _band(b) not in (None, band)),
+                     "moved_out": sum(1 for c, b in vp if _band(b) == band and _band(c) not in (None, band))})
     return rows
 
 
 def compute_band_migrations(cur_ds: dict, base_ds: dict) -> list[dict]:
     pairs, _, _ = pair_complexes(cur_ds, base_ds)
     out = []
-    for c, b in pairs:
+    for c, b in valid_pairs(pairs):
         fb, tb = _band(b), _band(c)
         if fb and tb and fb != tb:
             out.append({"name": c["name"], "gu": c["gu"], "area_m2": c.get("area_m2"), "from": fb, "to": tb,
                         "base_eok": b["molit_recent_eok"], "cur_eok": c["molit_recent_eok"], "n": c.get("molit_n"),
+                        "n_base": b.get("molit_n"),
                         "direction": "up" if BANDS.index(tb) > BANDS.index(fb) else "down"})
     return sorted(out, key=lambda x: (x["gu"], x["name"]))
 
@@ -183,7 +184,7 @@ def compute_gu_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
         by_b[r["gu"]].append(r)
     dl, pc, pb = defaultdict(list), defaultdict(list), defaultdict(list)
     pairs = pair_complexes(cur_ds, base_ds)[0]
-    for c, b in pairs:
+    for c, b in valid_pairs(pairs):
         v = _pct(c.get("molit_recent_eok"), b.get("molit_recent_eok"))
         if v is not None:
             dl[c["gu"]].append(v)
@@ -195,7 +196,8 @@ def compute_gu_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
         mc, mb = be.compute_gu_median(pc[gu]), be.compute_gu_median(pb[gu])
         med, _ = _median_iqr(dl[gu])
         rows.append({"gu": gu, "n_cur": len(by_c[gu]), "n_base": len(by_b[gu]), "median_cur": mc, "median_base": mb,
-                     "gu_median_delta_pct": _pct(mc, mb), "delta_median_pct": med, "n_pairs": len(dl[gu]), "n_valid": len(pc[gu]),
+                     "gu_median_delta_pct": _pct(mc, mb), "delta_median_pct": med,
+                     "n_pairs": sum(1 for c, _ in pairs if c["gu"] == gu), "n_delta": len(dl[gu]), "n_valid": len(pc[gu]),
                      "hi_cur": _count_pos(by_c[gu]), "hi_base": _count_pos(by_b[gu]),
                      "lo_cur": _count_pos(by_c[gu], hi=False), "lo_base": _count_pos(by_b[gu], hi=False)})
     return rows
@@ -209,7 +211,7 @@ def _filing_key(rec: dict) -> tuple:
 
 def diff_filings(prev: dict, cur: dict) -> dict:
     """MOLIT 원본 두 시점의 multiset 차. cur 에만 있는 레코드 = 그 사이 새로 확인된 신고(체결일이 아니라 API 반영
-    시점), prev 에만 있던 레코드 = 사라진 건(해제·정정). 레코드 신원 = (apt, area, price, ym) — 현재 수집기가
+    시점), prev 에만 있던 레코드 = 사라진 건(창 이탈·해제·정정 등, 사유 미확인). 레코드 신원 = (apt, area, price, ym) — 현재 수집기가
     거래일·층을 버려 동일 튜플의 중복은 개수 차로 처리한다(P1 FilingDelta 가 필드 보존 뒤 정밀화).
     record_highs = 같은 단지·같은 전용(반올림)의 prev 12개월 표본(≥3건) 최고가를 넘는 신규 레코드."""
     lawd_gu = {v: k for k, v in be.GU_LAWD.items()}
@@ -376,12 +378,13 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
                     f'({_pct_txt(_pct(d["seoul_median_cur"], d["seoul_median_base"]))})', inline))
     parts.append(_band_table(d["bands"], inline))
     parts.append(_p('밴드 중위 = 각 시점에 그 가격대에 속한 양쪽 게이트 통과 짝 단지의 분포(밴드 이동으로 구성이 달라짐). '
-                    '같은 단지의 변화는 오른쪽 단지별 Δ중위.', inline, mut=True))                # S7 Codex P2
+                    '단지별 Δ중위와 가격대 이동도 양쪽 집계 게이트를 통과한 짝만 계산.', inline, mut=True))
     mig, cap = d["migrations"], opt["mig"]
     parts.append(_h(f"가격대 이동 단지 {len(mig)}곳", inline))
     if mig:
         rows = [[f'{m["name"]}({_gu_link(m["gu"], inline)}) {m["area_m2"]:g}㎡' if m["area_m2"] else f'{m["name"]}({_gu_link(m["gu"], inline)})',
-                 f'{m["from"]} → {m["to"]}', _arrow(m["base_eok"], m["cur_eok"]), f'{_pct_txt(_pct(m["cur_eok"], m["base_eok"]))} n{m["n"]}']
+                 f'{m["from"]} → {m["to"]}', _arrow(m["base_eok"], m["cur_eok"]),
+                 f'{_pct_txt(_pct(m["cur_eok"], m["base_eok"]))} n{m["n_base"]}→{m["n"]}']
                 for m in mig[:cap]]
         parts.append(_tbl(["단지(구) 전용", "가격대", "중위(억, 기준→이번)", "Δ n"], rows, inline))
         if len(mig) > cap:
@@ -401,7 +404,7 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
         if opt["gu_full"]:
             row = [_gu_link(g["gu"], inline), f'{g["n_base"]} → {g["n_cur"]}', _arrow(g["median_base"], g["median_cur"]),
                    f'{_pct_txt(g["gu_median_delta_pct"])} n{g["n_valid"]}',
-                   f'{_pct_txt(g["delta_median_pct"])} n{g["n_pairs"]}' if g["delta_median_pct"] is not None else f'— n{g["n_pairs"]}']
+                   f'{_pct_txt(g["delta_median_pct"])} n{g["n_delta"]}' if g["delta_median_pct"] is not None else f'— n{g["n_delta"]}']
             if opt["pos_cols"]:
                 row += [f'{g["hi_base"]} → {g["hi_cur"]}', f'{g["lo_base"]} → {g["lo_cur"]}']
         else:
@@ -412,7 +415,7 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
     parts.append(_tbl(heads, rows, inline))
     parts.append(_h("신고 델타", inline))
     if fil:
-        parts.append(_p(f'기준 아카이브 대비 새로 확인된 신고 {fil["n_new"]}건 · 사라진 건(해제·정정) {fil["n_gone"]}건. '
+        parts.append(_p(f'기준 아카이브 대비 새로 확인된 신고 {fil["n_new"]}건 · 현재 목록에서 사라진 건 {fil["n_gone"]}건(창 이탈·해제·정정 등, 사유 미확인). '
                         f'신고 시점 기준이며 체결일이 아님(신고 지연 최대 30일).', inline))
         parts.append(_tbl(["가격대(신고가)", "건수", "중위(억)"],
                           [[b["band"], str(b["n"]), _eok(b["median_eok"])] for b in fil["bands"]], inline))
@@ -529,11 +532,12 @@ def render_period_post(d: dict) -> dict:
                "grade": "fact", "source": "MOLIT_RTMS_public", "base": d["base_date"], "asof": d["asof"]}
               for b in d["bands"]]
     claims += [{"claim": f"{d['kind']}_gu_change", "gu": g["gu"], "median_base_eok": g["median_base"], "median_cur_eok": g["median_cur"],
-                "delta_pct": g["gu_median_delta_pct"], "n_pairs": g["n_pairs"], "n_valid": g["n_valid"], "median_basis": "valid_pairs",
+                "delta_pct": g["gu_median_delta_pct"], "delta_median_pct": g["delta_median_pct"],
+                "n_pairs": g["n_pairs"], "n_delta": g["n_delta"], "n_valid": g["n_valid"], "median_basis": "valid_pairs",
                 "grade": "fact", "source": "MOLIT_RTMS_public",
                 "base": d["base_date"], "asof": d["asof"]} for g in d["gus"]]
     claims += [{"claim": "price_band_migration", "name": m["name"], "gu": m["gu"], "area_m2": m["area_m2"], "from": m["from"],
-                "to": m["to"], "base_eok": m["base_eok"], "cur_eok": m["cur_eok"], "n": m["n"], "grade": "fact",
+                "to": m["to"], "base_eok": m["base_eok"], "cur_eok": m["cur_eok"], "n": m["n"], "n_base": m["n_base"], "grade": "fact",
                 "source": "MOLIT_RTMS_public", "base": d["base_date"], "asof": d["asof"]} for m in d["migrations"]]
     for key, name, fld in (("gongsi_multiple", "monthly_gongsi_multiple_band", "median_multiple"), ("area_spread", "monthly_area_spread_band", "median_spread_pct")):
         if d.get(key) and d[key]["n"]:                      # 값 없으면 claim 도 없음(절과 동일)

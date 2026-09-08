@@ -11,6 +11,7 @@ import blog.build_explorer as be
 import blog.complex_page as cp
 from blog.build_site import BASE_URL, ga4_snippet
 from blog.fact_lead import build_fact_leads, render_lead_block, render_lead_lines
+from blog.macro_entry import macro_entry_attributes
 from blog.tistory_draft import _TBL, _TH, _TD, _MUT, TISTORY_TAGS
 from blog.wording_guard import assert_wording_ok
 
@@ -252,7 +253,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 </head><body>
 <div class=wrap>
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
-<a href="../daily/latest.html">오늘의 변화</a><a href="../macro.html">거시 지표</a><a href="../methodology.html">방법론</a></nav>
+<a href="../daily/latest.html">오늘의 변화</a><a href="../macro.html" {macro_entry_attributes("daily", "macro")}>거시 지표</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › 오늘의 변화</div>
 <h1>서울 아파트 오늘의 변화</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>

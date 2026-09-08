@@ -8,6 +8,7 @@ from email.utils import format_datetime
 from urllib.parse import quote
 
 import blog.build_explorer as be   # gu_hub.py 와 동일 관례(모듈 top-level import, 순환 없음 — be 는 build_site 를 지연import만 함)
+from blog.macro_entry import macro_entry_attributes, macro_entry_script
 
 # BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
 # 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
@@ -28,7 +29,7 @@ def ga4_snippet() -> str:
             "<script>window.dataLayer=window.dataLayer||[];"
             "function gtag(){dataLayer.push(arguments);}"
             "gtag('js',new Date());"
-            f"gtag('config','{mid}');</script>\n")
+            f"gtag('config','{mid}');</script>\n" + macro_entry_script())
 
 def inject_ga4_tag(html: str) -> str:
     """레거시 포스트(2026-09-05 P1 이전 생성분)에 GA4 로더 주입 — 측정ID 가 이미 있으면 원문(멱등), <head> 없으면 원문."""
@@ -201,7 +202,7 @@ def build(today=None, molit_path=None):
         f'<a class=card href="daily/latest.html"><h3>📰 오늘의 변화</h3><p>{digest_desc}</p></a>'
         '<a class=card href="methodology.html"><h3>📖 방법론</h3>'
         '<p>왜 이 숫자를 믿을 수 있나 — 측정·출처·한계</p></a>'
-        '<a class=card href="macro.html"><h3>📈 거시 지표</h3>'
+        f'<a class=card href="macro.html" {macro_entry_attributes("index", "macro")}><h3>📈 거시 지표</h3>'
         '<p>기준금리·코픽스·국고채·환율·금의 관측값, 발표 캘린더, 시차 · 상환·한도·보유세 계산기</p></a>'
         '</div>')
     recent_items = "".join(

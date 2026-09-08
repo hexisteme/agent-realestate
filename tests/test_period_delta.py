@@ -215,3 +215,35 @@ def test_band_cell_shows_per_period_membership_and_counts(tmp_path, monkeypatch)
     claims = [json.loads(x) for x in (tmp_path / "posts" / "2026-09-13-주간결산.claims.jsonl").read_text(encoding="utf-8").splitlines()]
     c = [x for x in claims if x["claim"] == "weekly_band_change" and x["band"] == "10~15억"][0]
     assert c["n_med_base"] == 10 and c["n_med_cur"] == 5 and c["median_basis"] == "valid_pairs_by_period_band"
+
+
+def test_unit_deltas_and_migrations_exclude_gate_crossing_pairs():
+    """기준 n9→이번 n10 단지가 9→12억이어도 통계·이동에는 양쪽 통과 5개만 사용."""
+    base = _ds([_row("강남", f"S{i}", 12.0) for i in range(5)]
+               + [_row("강남", f"L{i}", 9.0, n=9) for i in range(6)], gen="2026-09-06")
+    cur = _ds([_row("강남", f"S{i}", 12.0) for i in range(5)]
+              + [_row("강남", f"L{i}", 12.0, n=10) for i in range(6)], gen="2026-09-13")
+    d = pd.build_period_delta(cur, base, "weekly", "2026-09-13", date(2026, 9, 6))
+    g = d["gus"][0]
+    assert (g["n_pairs"], g["n_valid"], g["n_delta"]) == (11, 5, 5)
+    assert g["delta_median_pct"] == g["gu_median_delta_pct"] == 0.0
+    assert not d["migrations"]
+    b = next(x for x in d["bands"] if x["band"] == "10~15억")
+    assert b["n_pairs"] == 5 and b["delta_median_pct"] == 0.0 and b["moved_in"] == 0
+    p = pd.render_period_post(d)
+    assert "+33.3%" not in p["tistory_html"] and "가격대 이동 단지 0곳" in p["tistory_html"]
+    c = next(x for x in p["claims"] if x["claim"] == "weekly_gu_change")
+    assert c["n_pairs"] == 11 and c["n_delta"] == 5 and c["delta_median_pct"] == 0.0
+    # 역방향도 현재 n9 때문에 제외되어야 한다.
+    back = pd.build_period_delta(base, cur, "weekly", "2026-09-20", date(2026, 9, 13))
+    assert back["gus"][0]["delta_median_pct"] == 0.0 and not back["migrations"]
+
+
+def test_filing_disappearance_does_not_claim_cancellation():
+    rows = [_row("강남", f"A{i}", 12.0) for i in range(5)]
+    d = pd.build_period_delta(_ds(rows), _ds(rows), "weekly", "2026-09-13", date(2026, 9, 6),
+                             filings={"new": [], "n_new": 0, "n_gone": 7, "record_highs": []})
+    p = pd.render_period_post(d)
+    for text in (p["html"], p["tistory_html"]):
+        assert "사라진 건 7건(창 이탈·해제·정정 등, 사유 미확인)" in text
+        assert "사라진 건(해제·정정)" not in text

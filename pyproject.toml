@@ -15,6 +15,9 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 agent-realestate = "agent_realestate.cli:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = [
     "agent_realestate",
