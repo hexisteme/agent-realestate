@@ -546,7 +546,7 @@ def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> Non
         if sent:
             open(alert_marker, "w", encoding="utf-8").write(today)
     except Exception as e:
-        print(f"[notify] 알림 전송 실패(비치명): {e}")
+        print(f"[notify] 알림 전송 실패(비치명): {type(e).__name__}")
 
 
 def result_exit_code(result: str, mode: str) -> int:

@@ -142,3 +142,11 @@ def test_remote_network_error_is_not_absence(monkeypatch):
 def test_auth_stage_never_returns_queries():
     assert pub._auth_stage('https://accounts.kakao.com/login?code=synthetic-secret') == 'KAKAO_LOGIN'
     assert pub._auth_stage('https://floker.tistory.com.evil.invalid/auth/login') == 'OTHER_PAGE'
+
+
+def test_notification_exception_never_logs_raw_secret(tmp_path, monkeypatch, capsys):
+    from agent_realestate import config
+    monkeypatch.setattr(config, 'load_env_file', Mock(side_effect=OSError('synthetic-secret')))
+    pub._notify_failure('ERR:login_timeout', str(tmp_path))
+    out = capsys.readouterr().out
+    assert 'OSError' in out and 'synthetic-secret' not in out
