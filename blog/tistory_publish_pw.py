@@ -26,11 +26,14 @@ from __future__ import annotations
 import datetime
 import glob
 import os, re, sys, argparse
+from urllib.parse import urlsplit
 
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tistory_publish import _parse_helper  # noqa: E402
-from periodic_approval import needs_review  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from blog.tistory_publish import _parse_helper  # noqa: E402
+from blog.periodic_approval import needs_review  # noqa: E402
+from blog.tistory_delivery import payload_digest, read_delivery, write_delivery  # noqa: E402
+from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -85,35 +88,28 @@ def _latest_draft_for_kind(outroot: str, kind: str = "daily") -> str | None:
 
 
 def _load_state(ctx, log: list[str]) -> None:
-    """STATE_FILE 쿠키를 컨텍스트에 주입 — 세션 쿠키 복원.
-    세션 쿠키(persist=0)만 주입한다: 영속 쿠키는 프로필 SQLite 가 단일 진실원 —
-    사람이 프로필 Chrome 으로 직접 재로그인한 신선한 카카오 토큰을 며칠 전 스냅샷이
-    되돌려 세션을 다시 죽이는 사고 방지 (2026-07-06 리뷰)."""
-    if not os.path.isfile(STATE_FILE):
-        log.append("STATE_EMPTY"); return
-    try:
-        import json as _j
-        cookies = _j.loads(open(STATE_FILE, encoding="utf-8").read()).get("cookies", [])
-        cookies = [c for c in cookies if c.get("expires", -1) <= 0]
-        if cookies:
-            ctx.add_cookies(cookies)
-        log.append(f"STATE_LOADED({len(cookies)})")
-    except Exception as e:
-        log.append(f"STATE_FAIL:{e}")
+    """현재 프로필 쿠키를 우선하고 없는 세션 쿠키만 복원한다."""
+    load_session_state(ctx, STATE_FILE, log)
 
 
 def _save_state(ctx, log: list[str]) -> None:
-    """현재 세션 쿠키(persist=0 포함)를 STATE_FILE 에 덤프."""
-    try:
-        import json as _j
-        state = ctx.storage_state()
-        open(STATE_FILE, "w", encoding="utf-8").write(_j.dumps(state))
-        log.append("STATE_SAVED")
-    except Exception as e:
-        log.append(f"STATE_SAVE_FAIL:{e}")
+    """인증 성공 뒤의 최신 세션을 권한600으로 원자적으로 보존한다."""
+    save_session_state(ctx, STATE_FILE, log)
 
 
-def _relogin_via_kakao_sso(page, log: list[str]) -> bool:
+def _auth_stage(url: str) -> str:
+    """OAuth 쿼리·토큰을 로그에 남기지 않고 실패 단계만 반환한다."""
+    parsed = urlsplit(url)
+    if parsed.hostname == "accounts.kakao.com":
+        return "KAKAO_LOGIN" if "/login" in parsed.path else "KAKAO_ACCOUNT"
+    if parsed.hostname == "kauth.kakao.com":
+        return "KAKAO_SSO"
+    if parsed.hostname in {"www.tistory.com", "floker.tistory.com"}:
+        return "TISTORY_LOGIN" if "/auth/" in parsed.path else "TISTORY_PAGE"
+    return "OTHER_PAGE"
+
+
+def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) -> bool:
     """티스토리 세션만료 시 무인 재로그인 시도 (2026-07-06, 이틀 연속 login_timeout 대응).
 
     티스토리는 세션(__T_) 이 죽으면 auth/login 으로 리다이렉트만 하고 카카오 SSO 를 자동
@@ -121,40 +117,46 @@ def _relogin_via_kakao_sso(page, log: list[str]) -> bool:
     (또는 간편로그인 저장계정이 있으면) 비밀번호 없이 SSO 왕복이 완주된다.
     비밀번호 폼이 뜨면(카카오도 만료) 사람 몫 — False 반환."""
     try:
-        if "auth/login" not in page.url:
-            return False
-        clicked = page.evaluate(
+        stage = _auth_stage(page.url)
+        log.append(f"AUTH_STAGE:{stage}")
+        if stage == "TISTORY_LOGIN":
+            clicked = page.evaluate(
             """() => {
                 const a = [].slice.call(document.querySelectorAll('a,button'))
                   .filter(x => /카카오계정으로 로그인/.test((x.textContent||'')))[0];
                 if (a) { a.click(); return true; }
                 return false;
             }""")
-        if not clicked:
-            log.append("SSO_NO_BTN"); return False
+            if not clicked:
+                log.append("SSO_NO_BTN"); return False
+        elif stage not in {"KAKAO_LOGIN", "KAKAO_ACCOUNT", "KAKAO_SSO"}:
+            log.append("SSO_NO_LOGIN_ROUTE"); return False
         for _ in range(20):
             page.wait_for_timeout(1000)
             url = page.url
             # /auth/kakao/redirect(코드 교환 중)도 /auth/ 라 제외 — 완주 후 URL 만 인정.
-            if "tistory.com" in url and "/auth/" not in url and "kakao.com" not in url:
+            if _auth_stage(url) == "TISTORY_PAGE":
                 break  # SSO 왕복 완료
-            if "accounts.kakao.com" in url:
+            if urlsplit(url).hostname == "accounts.kakao.com":
                 # 비밀번호 폼이 보이면 사람 필요. 저장계정(간편로그인) 타일만 무인 클릭.
                 state = page.evaluate(
                     """() => {
                         const pw = [].slice.call(document.querySelectorAll('input[type=password]'))
                           .filter(x => x.offsetParent !== null).length > 0;
                         if (pw) return 'PW_FORM';
-                        const tile = [].slice.call(document.querySelectorAll('button,a'))
+                        const tiles = [].slice.call(document.querySelectorAll('button,a'))
                           .filter(x => x.offsetParent !== null)
                           .filter(x => /계속하기|간편로그인/.test((x.textContent||''))
-                                       || /account|profile/i.test(x.className||''))[0];
-                        if (tile) { tile.click(); return 'TILE_CLICKED'; }
+                                       || /account|profile/i.test(x.className||''));
+                        if (tiles.length > 1) return 'ACCOUNT_SELECTION';
+                        if (tiles.length === 1) { tiles[0].click(); return 'TILE_CLICKED'; }
                         return 'WAIT';
                     }""")
                 if state == "PW_FORM":
                     log.append("SSO_PW_FORM"); return False
-        page.goto(NEWPOST_URL, wait_until="domcontentloaded", timeout=30000)
+                if state == "ACCOUNT_SELECTION":
+                    log.append("SSO_ACCOUNT_SELECTION_REQUIRED"); return False
+        page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#post-title-inp", timeout=15000)
         log.append("AUTO_RELOGIN_OK")
         return True
@@ -173,7 +175,10 @@ def _refresh_kakao_session(ctx, log: list[str]) -> None:
         kp.goto("https://accounts.kakao.com/weblogin/account/info",
                 wait_until="domcontentloaded", timeout=20000)
         kp.wait_for_timeout(2000)
-        log.append("KAKAO_DEAD" if "/login" in kp.url else "KAKAO_ALIVE")
+        # 임의 오류 페이지/다른 리다이렉트를 정상 인증으로 취급하지 않는다.
+        current = urlsplit(kp.url)
+        alive = current.hostname == "accounts.kakao.com" and current.path.rstrip("/") == "/weblogin/account/info"
+        log.append("KAKAO_ALIVE" if alive else f"KAKAO_NOT_CONFIRMED:{_auth_stage(kp.url)}")
     except Exception as e:
         log.append(f"KAKAO_KEEPALIVE_FAIL:{type(e).__name__}")
     finally:
@@ -184,21 +189,27 @@ def _refresh_kakao_session(ctx, log: list[str]) -> None:
                 pass
 
 
-def _verify_published_on_blog(title: str, log: list[str]) -> bool:
-    """공개 블로그 첫 페이지에 제목(날짜 포함, 일 단위 유일)이 있는지 원격 사후검증.
-    wait_for_url 20s 리다이렉트는 false negative 가능 — 이 2차 신호가 없으면 재시도
-    슬롯이 같은 글을 중복 공개발행한다 (2026-07-06 리뷰 critical)."""
+def _verify_published_on_blog(title: str, log: list[str]) -> bool | None:
+    """공개 목록의 정확한 글 제목·링크를 확인한다. 불완전한 응답은 None."""
     try:
-        import html as _h, re as _r, urllib.request
+        import urllib.request
+        from blog.tistory_remote import parse_publication_listing
         blog_home = NEWPOST_URL.split("/manage")[0] + "/"
-        raw = urllib.request.urlopen(blog_home, timeout=15).read().decode("utf-8", "replace")
-        page_norm = " ".join(_h.unescape(_r.sub(r"<[^>]+>", " ", raw)).split())
-        hit = " ".join(title.split()) in page_norm
-        log.append("REMOTE_VERIFY_HIT" if hit else "REMOTE_VERIFY_MISS")
+        with urllib.request.urlopen(blog_home, timeout=15) as response:
+            raw = response.read().decode("utf-8", "replace")
+        hit, url = parse_publication_listing(raw, title, blog_home)
+        log.append("REMOTE_VERIFY_HIT" if hit else "REMOTE_VERIFY_MISS" if hit is False else "REMOTE_VERIFY_UNKNOWN")
+        if url:
+            log.append(f"PUBLIC_URL:{url}")
         return hit
     except Exception as e:
         log.append(f"REMOTE_VERIFY_FAIL:{type(e).__name__}")
-        return False
+        return None  # 확인 장애는 미발행이 아니다. 재클릭 금지.
+
+
+def _remote_post_url(log: list[str]) -> str:
+    return next((line.removeprefix("PUBLIC_URL:") for line in reversed(log)
+                 if line.startswith("PUBLIC_URL:")), "")
 
 
 def _resolve_draft(outroot: str, date: str | None, kind: str = "daily") -> str | None:
@@ -209,58 +220,94 @@ def _resolve_draft(outroot: str, date: str | None, kind: str = "daily") -> str |
     return _latest_draft_for_kind(outroot, kind)
 
 
+def _write_marker(path: str, day: str) -> None:
+    from blog.periodic_approval import write_review
+    from pathlib import Path
+    write_review(Path(path), day)
+
+
+def _record_published(outroot: str, day: str, kind: str, data: dict, url: str = "") -> None:
+    # 날짜별 기록을 먼저 확정한다. 마커 실패 뒤 재시도도 이 기록으로 중복을 막는다.
+    write_delivery(outroot, day, kind, state="PUBLISHED", data=data, url=url)
+    marker = marker_paths(outroot, kind)[0]
+    if day >= _read_marker(marker):
+        _write_marker(marker, day)
+
+
+def _check_delivery(outroot: str, day: str, kind: str, data: dict, *, explicit: bool,
+                    log: list[str]) -> str | None:
+    """프로필 잠금 안에서만 호출. 날짜 지정도 동일한 중복 방지를 거친다."""
+    receipt = read_delivery(outroot, day, kind)
+    marker, attempted, _ = marker_paths(outroot, kind)
+    if receipt and receipt["state"] == "PUBLISHED":
+        if day >= _read_marker(marker):
+            _write_marker(marker, day)
+        return f"SKIP:already_published({day},{kind})"
+    if _read_marker(marker) == day:
+        return f"SKIP:already_published({day},{kind})"
+    if receipt and receipt["digest"] != payload_digest(data):
+        return "ERR:draft_changed_after_attempt — 이전 발행 시도 확인 필요"
+    attempted_before = bool(receipt) or _read_marker(attempted) == day
+    if explicit or attempted_before:
+        found = _verify_published_on_blog(data["title"], log)
+        if found is None:
+            return f"ERR:publication_unknown | {' '.join(log)}"
+        if found:
+            _record_published(outroot, day, kind, data, url=_remote_post_url(log))
+            return f"SKIP:verified_published_remote | {' '.join(log)}"
+        if attempted_before:
+            # 공개 목록의 반영 지연/페이지 이동은 이전 클릭 실패의 증거가 아니다.
+            return f"ERR:publication_unknown_after_attempt | {' '.join(log)}"
+        log.append("REMOTE_LISTING_NO_MATCH")
+    return None
+
+
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             headless: bool = False, login_wait_s: int = 300,
             post_id: str | None = None, kind: str = "daily") -> str:
     today = datetime.date.today().isoformat()
-    marker, attempted, _ = marker_paths(outroot, kind)   # kind 별 마커(2026-09-07) — daily 는 종전 경로 그대로
-    # 마커 게이트는 무인 모드(--date 없는 스케줄 실행)에서만 — --date 백필이 오늘 마커를
-    # 오염시켜 당일 발행을 무음 소실시키는 결함 방지 (2026-07-06 리뷰). 백필은 마커 불관여.
-    # 글번호 지정(기존 글 수정)은 스케줄 발행이 아니다 — 마커·stale 가드에 관여시키지 않는다.
-    unattended = (mode == "publish" and not date and not post_id)
-    target_url = resolve_editor_url(post_id)
-    if unattended and _read_marker(marker) == today:
-        return f"SKIP:already_published_today({today})"
-
-    path = _resolve_draft(outroot, date, kind)
-    if not path:
-        return f"ERR:no draft helper found (date={date})"
-    name = os.path.basename(path)
-    # stale draft 가드: --date 명시 없이 최신 draft 가 오늘자가 아니면(파이프라인 상류 실패)
-    # 어제 글 재게시 대신 중단 (2026-07-06).
-    if mode == "publish" and not date and not name.startswith(today):
+    if kind not in {"daily", "periodic"} or mode not in {"auth", "inject", "draft", "publish"}:
+        return "ERR:invalid publication mode/kind"
+    if date and (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date)
+                 or datetime.date.fromisoformat(date).isoformat() != date):
+        return "ERR:invalid publication date"
+    if post_id and not re.fullmatch(r"[0-9]+", post_id):
+        return "ERR:invalid post id"
+    path = _resolve_draft(outroot, date, kind) if mode != "auth" else None
+    if mode != "auth" and not path:
+        return "ERR:no draft helper found"
+    name = os.path.basename(path) if path else "auth"
+    day = name[:10] if path else today
+    if mode == "publish" and not date and day != today:
         return f"ERR:draft_stale({name}) — 오늘자 draft 없음"
-    data = _parse_helper(path)
-    if not data["body"]:
-        return f"ERR:empty body parsed from {path}"
-    title, body, tags = data["title"], data["body"], data["tags"]
-    # 명시 날짜·기존 글 수정도 실제 원고의 사람검토를 통과해야 한다.
+    data = _parse_helper(path) if path else {"title": "", "body": "", "tags": ""}
+    if mode != "auth" and (not data["title"] or not data["body"]):
+        return "ERR:empty title/body parsed"
     if mode == "publish" and needs_review(outroot, path, data, kind):
         return f"AWAIT_REVIEW:{name} — 첫 결산 원고의 사람 승인 필요"
-    from playwright.sync_api import sync_playwright
-
-    log: list[str] = []
-    # at-most-once: 직전 슬롯이 발행 클릭 후 확인 실패(NO_REDIRECT)로 죽었을 수 있다 —
-    # 재발행 전에 공개 블로그를 원격 대조, 이미 올라갔으면 발행 없이 마커만 복구.
-    if unattended and _read_marker(attempted) == today:
-        if _verify_published_on_blog(title, log):
-            try:
-                open(marker, "w", encoding="utf-8").write(today)
-            except OSError:
-                log.append("MARKER_FAIL")
-            return f"SKIP:verified_published_remote | {' '.join(log)}"
-        log.append("ATTEMPT_RETRY")
-
-    os.makedirs(PROFILE_DIR, exist_ok=True)
-    # 프로필 싱글턴 락: launchd 재시도 슬롯과 수동 재로그인 명령이 같은 .pw-profile 을
-    # 두고 Chrome SingletonLock 충돌하지 않게 스크립트 레벨에서 직렬화 (2026-07-06 리뷰).
     import fcntl
-    lock_f = open(os.path.join(PROFILE_DIR, ".lock"), "w")
-    try:
-        fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return "SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중"
+    os.makedirs(PROFILE_DIR, exist_ok=True)
+    with open(os.path.join(PROFILE_DIR, ".lock"), "w") as lock_f:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중"
+        # 마커·원격 대조·클릭을 하나의 잠금으로 묶는다.
+        return _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind,
+                               explicit=bool(date))
 
+
+def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit):
+    from playwright.sync_api import sync_playwright
+    title, body, tags = data["title"], data["body"], data["tags"]
+    target_url = resolve_editor_url(post_id)
+    tracked = mode == "publish" and not post_id
+    marker, attempted, _ = marker_paths(outroot, kind)
+    log = []
+    if tracked:
+        stopped = _check_delivery(outroot, day, kind, data, explicit=explicit, log=log)
+        if stopped:
+            return stopped
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             PROFILE_DIR, channel="chrome", headless=headless,
@@ -288,6 +335,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         # (ctx.close() 는 persist=0 쿠키를 SQLite 에서 제거 → goto 전에 재주입 필요.)
         _load_state(ctx, log)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        authenticated = False
         try:
             page.bring_to_front()
             page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
@@ -298,23 +346,26 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
                 page.wait_for_selector("#post-title-inp", timeout=30000)
             except Exception:
                 # 1차: 카카오 SSO 무인 재로그인 (카카오 세션 생존 시 사람 불필요, 2026-07-06)
-                if not _relogin_via_kakao_sso(page, log):
+                if not _relogin_via_kakao_sso(page, log, target_url):
                     if headless:
-                        return "ERR:not_logged_in (headless) — 1회 headful 로그인 필요"
+                        return f"ERR:not_logged_in (headless) | {' '.join(log)} AUTH_STAGE:{_auth_stage(page.url)}"
                     log.append("LOGIN_WAIT")
                     print(f"[로그인 필요] 뜬 창에서 Tistory(카카오) 로그인하세요. "
                           f"최대 {login_wait_s}s 대기…", flush=True)
                     try:
                         page.wait_for_selector("#post-title-inp", timeout=login_wait_s * 1000)
                     except Exception:
-                        return "ERR:login_timeout — 티스토리(카카오) 세션 만료, 재로그인 필요"
+                        return f"ERR:login_timeout — 티스토리 재로그인 필요 | {' '.join(log)} AUTH_STAGE:{_auth_stage(page.url)}"
                     # 로그인 후 newpost 로 다시
                     page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
                     page.wait_for_selector("#post-title-inp", timeout=30000)
 
             # 로그인 확인 후 → 카카오 keepalive → 세션 쿠키를 STATE_FILE 에 즉시 덤프.
+            authenticated = True
             _refresh_kakao_session(ctx, log)
             _save_state(ctx, log)
+            if mode == "auth":
+                return f"AUTH_OK | {' '.join(log)}"
             # keepalive 탭이 포커스를 가져가면 clipboard.write 가 NotAllowedError —
             # 본문 주입 전에 메인 탭 포커스 복원.
             page.bring_to_front()
@@ -435,8 +486,9 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             page.wait_for_timeout(600)
             # at-most-once: 발행 클릭 '직전' 시도 마커 — 클릭 후 확인 실패(NO_REDIRECT)여도
             # 다음 슬롯이 원격 대조 없이는 재클릭하지 않게 한다 (2026-07-06 리뷰 critical).
-            if unattended:
-                open(attempted, "w", encoding="utf-8").write(today)
+            if tracked:
+                write_delivery(outroot, day, kind, state="ATTEMPTED", data=data)
+                _write_marker(attempted, day)
             # 발행 클릭 + manage/posts 리다이렉트 대기 = 게시 성공 1차 신호
             clicked = page.evaluate(
                 """() => { const b = document.getElementById('publish-btn');
@@ -451,25 +503,26 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             published = False
             try:
                 page.wait_for_url("**/manage/posts/**", timeout=20000)
-                published = True
-                log.append("PUBLISHED")
+                log.append("PUBLISH_REDIRECT")
             except Exception:
                 # 리다이렉트 20s 단일 신호로 실패 단정 금지 — 공개 블로그 원격 대조 2차 확인.
                 page.wait_for_timeout(5000)
-                if _verify_published_on_blog(title, log):
-                    published = True
-                    log.append("PUBLISHED(remote-verified)")
-                else:
-                    log.append(f"NO_REDIRECT(url={page.url})")
-            if published and unattended:
-                # 성공 마커 — 같은 날 재시도 슬롯의 중복발행 차단. 기록 실패는 무음 금지.
-                try:
-                    open(marker, "w", encoding="utf-8").write(today)
-                except OSError:
-                    log.append("MARKER_FAIL")
-            return f"[{name}] {' '.join(log)} | FINAL={page.url}"
+                log.append(f"NO_REDIRECT(stage={_auth_stage(page.url)})")
+            # 이동만으로 성공 마커를 쓰지 않는다. 공개 글 링크가 확인돼야 완료다.
+            published = _verify_published_on_blog(title, log) is True
+            if published:
+                log.append("PUBLISHED(remote-verified)")
+            else:
+                log.append("ERR:publication_unconfirmed")
+            if published and tracked:
+                _record_published(outroot, day, kind, data, url=_remote_post_url(log))
+            return f"[{name}] {' '.join(log)} | FINAL_STAGE={_auth_stage(page.url)}"
         finally:
-            ctx.close()
+            try:
+                if authenticated and not save_session_state(ctx, STATE_FILE, log):
+                    raise RuntimeError("session persistence failed")
+            finally:
+                ctx.close()
 
 
 def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> None:
@@ -496,35 +549,66 @@ def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> Non
         print(f"[notify] 알림 전송 실패(비치명): {e}")
 
 
+def result_exit_code(result: str, mode: str) -> int:
+    if "ERR:" in result or "MARKER_FAIL" in result or "STATE_SAVE_FAIL" in result:
+        return 1
+    if result.startswith("AWAIT_REVIEW:"):
+        return 3
+    if result.startswith("SKIP:profile_locked"):
+        return 4
+    if result.startswith("SKIP:"):
+        return 0
+    success = {"auth": "AUTH_OK", "inject": "INJECT_OK", "draft": "DRAFT_SAVED", "publish": "PUBLISHED"}[mode]
+    return 0 if re.search(r"(?:^|\s|\|)" + success + r"(?:\(|\s|$)", result) else 1
+
+
+def pending_dates(outroot: str, today: str) -> list[str]:
+    """마지막 성공 다음부터 준비된 원고를 최대 두 건씩 복구한다."""
+    marker = _read_marker(marker_paths(outroot)[0])
+    try:
+        lower = datetime.date.fromisoformat(marker).isoformat()
+    except ValueError:
+        lower = today  # 기존 기록이 없으면 과거 전체를 일괄 발행하지 않는다.
+    drafts = glob.glob(os.path.join(outroot, "report/blog/tistory/*-tistory-draft.html"))
+    days = sorted({os.path.basename(p)[:10] for p in drafts
+                   if _DAILY_DRAFT_RE.fullmatch(os.path.basename(p))
+                   and lower <= os.path.basename(p)[:10] <= today})
+    return [d for d in days if d > lower or d == today][:2]
+
+
 def main():
     ap = argparse.ArgumentParser(description="티스토리 Playwright 퍼블리셔 (본문 모델 주입)")
-    ap.add_argument("--mode", choices=["inject", "draft", "publish"], default="inject")
+    ap.add_argument("--mode", choices=["auth", "inject", "draft", "publish"], default="inject")
     ap.add_argument("--date", help="YYYY-MM-DD (기본: 최신)")
     ap.add_argument("--outroot", default=".")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
     ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
     ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) — kind 별 원고·마커")
+    ap.add_argument("--pending", action="store_true", help="일간 누락 원고를 오래된 순서로 최대 2건 복구")
+    ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
     a = ap.parse_args()
-    if not re.fullmatch(r"[a-z]+", a.kind):
-        raise SystemExit(f"--kind 는 소문자 영문만: {a.kind!r}")
-    try:
-        result = publish(a.outroot, a.mode, a.date, headless=a.headless, login_wait_s=a.login_wait,
-                         post_id=a.post_id, kind=a.kind)
-    except Exception as e:
-        # 예외도 알림 경로로 접어 넣는다 — goto 타임아웃/프로필 크래시류가 무음 실패로
-        # 며칠 발행이 끊기던 사고 클래스 차단 (2026-07-06 리뷰).
-        import traceback
-        traceback.print_exc()
-        result = f"ERR:exception:{type(e).__name__}:{e}"
-    print(result)
-    if result.startswith("AWAIT_REVIEW:"):
-        return 3  # 실패 알림·nag 마커를 남기지 않는 별도 사람 대기 상태
-    # publish 모드에서 발행 성공 신호(PUBLISHED)가 없으면 = 실패(세션만료/빈본문/무리다이렉트) → 알림.
-    # SKIP(오늘 이미 발행/프로필 락)은 정상 경로 — 알림 제외. 마커 기록 실패는 성공이어도 알림.
-    if a.mode == "publish" and not result.startswith("SKIP") \
-            and ("PUBLISHED" not in result or "MARKER_FAIL" in result):
-        _notify_failure(result, a.outroot, kind=a.kind)
+    if a.kind not in {"daily", "periodic"}:
+        ap.error("--kind 는 daily 또는 periodic")
+    if a.pending and (a.mode != "publish" or a.kind != "daily" or a.date or a.post_id):
+        ap.error("--pending 은 날짜/글번호 없는 daily publish 전용")
+    dates = pending_dates(a.outroot, datetime.date.today().isoformat()) if a.pending else [a.date]
+    if not dates:
+        dates = [None]  # 원고 부재/stale를 성공으로 숨기지 않는다.
+    for stamp in dates:
+        try:
+            result = publish(a.outroot, a.mode, stamp, headless=a.headless, login_wait_s=a.login_wait,
+                             post_id=a.post_id, kind=a.kind)
+        except Exception as e:
+            # Playwright 예외/URL에는 인증 토큰이 있을 수 있어 종류만 출력한다.
+            result = f"ERR:exception:{type(e).__name__}"
+        print(result, flush=True)
+        rc = result_exit_code(result, a.mode)
+        if rc == 1 and a.mode == "publish" and not a.no_notify:
+            _notify_failure(result, a.outroot, kind=a.kind)
+        if rc:
+            return rc
+    return 0
 
 
 if __name__ == "__main__":

@@ -49,12 +49,13 @@ TISTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published"
 # 기간 결산(주간결산/월간결산, 2026-09-07): run_daily 가 일요일에 periodic 원고를 쓰면 2편째 발행 대상 — kind 별 마커.
 PERSTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published-periodic"
 PERDRAFT="/Volumes/EXT_SSD/bot/agent_realestate/report/blog/tistory/${TODAY}-periodic-tistory-draft.html"
-periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null)" != "$TODAY" ]; }
-if [ "$(cat "$STAMP" 2>/dev/null)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null)" = "$TODAY" ] && ! periodic_pending; then
+# 누락 마커는 미발행 상태다. 읽기 실패가 ERR 트랩의 장애 알림을 부르지 않게 한다.
+periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null || true)" != "$TODAY" ]; }
+if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending; then
   echo "[$(date)] 오늘($TODAY) 사이트+티스토리 모두 발행 완료 — skip (멱등 가드)"
   exit 0
 fi
-if [ "$(cat "$STAMP" 2>/dev/null)" = "$TODAY" ]; then
+if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ]; then
   echo "[$(date)] 사이트는 발행 완료 — 티스토리만 재시도"
 else
   echo "[$(date)] daily run start"
@@ -75,11 +76,38 @@ fi
 # 2026-07-06 자가복구 3종: (1) 카카오 SSO 자동 재로그인, (2) 카카오 keepalive,
 # (3) 발행마커+주간 재시도(plist StartCalendarInterval 배열). 성공 마커는 퍼블리셔가 기록.
 # --login-wait 120: 무인 재로그인 실패 시 사람이 창을 볼 기회 — 재시도마다 2분.
-caffeinate -d -i python3 blog/tistory_publish_pw.py --mode publish --login-wait 120 \
-  || echo "[$(date)] tistory_publish_pw skipped (로그인 만료? 재로그인: python3 blog/tistory_publish_pw.py --mode publish --login-wait 600)"
+publish_rc=0
+publish_kind() {
+  local kind="$1" rc
+  shift
+  if caffeinate -d -i python3 blog/tistory_publish_pw.py --mode publish --login-wait 120 "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) echo "[$(date)] tistory $kind: 완료 또는 기발행" ;;
+    3)
+      echo "[$(date)] tistory $kind: 사람 검토 대기 (rc=3)"
+      [ "$publish_rc" -ne 0 ] || publish_rc=3
+      ;;
+    4)
+      echo "[$(date)] tistory $kind: 브라우저 프로필 사용 중 (rc=4, 다음 슬롯 재시도)"
+      [ "$publish_rc" -eq 1 ] || publish_rc=4
+      ;;
+    *)
+      echo "[$(date)] tistory $kind: 발행 실패 (rc=$rc, 다음 슬롯 재시도)"
+      publish_rc=1
+      ;;
+  esac
+}
+publish_kind daily --pending
 # 2편째: 주간결산/월간결산(일요일에만 원고가 생긴다). daily 마커와 독립(.last-tistory-published-periodic).
 if periodic_pending; then
-  caffeinate -d -i python3 blog/tistory_publish_pw.py --mode publish --kind periodic --login-wait 120 \
-    || echo "[$(date)] tistory periodic publish skipped"
+  publish_kind periodic --kind periodic
 fi
-echo "[$(date)] done"
+echo "[$(date)] done (publish rc=$publish_rc)"
+# 위에서 분류한 퍼블리셔 결과는 Python 알림 경로가 처리한다. 상류 daily 실패의
+# ERR 최후 알림은 유지하되, 이 명시 종료에서는 같은 장애를 다시 알리지 않는다.
+trap - ERR
+exit "$publish_rc"

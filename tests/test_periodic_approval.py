@@ -94,6 +94,9 @@ def test_unaffected_and_approved_reach_existing_browser_path(prepared, date, kin
     draft(root, date, kind)
     if approved:
         approve_fixture(root, date)
+    # 승인 통과/비대상도 명시 날짜 발행의 중복 대조는 수행한다.
+    publish._verify_published_on_blog.side_effect = None
+    publish._verify_published_on_blog.return_value = False
     with pytest.raises(BrowserBoundary):
         publish.publish(str(root), "publish", date, kind=kind)
     browser.assert_called_once()
