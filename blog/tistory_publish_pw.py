@@ -34,6 +34,7 @@ from blog.tistory_publish import _parse_helper  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
 from blog.tistory_delivery import payload_digest, read_delivery, write_delivery  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
+from blog.tistory_sso import select_kakao_account  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -131,6 +132,8 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
                 log.append("SSO_NO_BTN"); return False
         elif stage not in {"KAKAO_LOGIN", "KAKAO_ACCOUNT", "KAKAO_SSO"}:
             log.append("SSO_NO_LOGIN_ROUTE"); return False
+        clicked_account = False
+        last_state = "WAIT"
         for _ in range(20):
             page.wait_for_timeout(1000)
             url = page.url
@@ -138,24 +141,17 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
             if _auth_stage(url) == "TISTORY_PAGE":
                 break  # SSO 왕복 완료
             if urlsplit(url).hostname == "accounts.kakao.com":
-                # 비밀번호 폼이 보이면 사람 필요. 저장계정(간편로그인) 타일만 무인 클릭.
-                state = page.evaluate(
-                    """() => {
-                        const pw = [].slice.call(document.querySelectorAll('input[type=password]'))
-                          .filter(x => x.offsetParent !== null).length > 0;
-                        if (pw) return 'PW_FORM';
-                        const tiles = [].slice.call(document.querySelectorAll('button,a'))
-                          .filter(x => x.offsetParent !== null)
-                          .filter(x => /계속하기|간편로그인/.test((x.textContent||''))
-                                       || /account|profile/i.test(x.className||''));
-                        if (tiles.length > 1) return 'ACCOUNT_SELECTION';
-                        if (tiles.length === 1) { tiles[0].click(); return 'TILE_CLICKED'; }
-                        return 'WAIT';
-                    }""")
+                state = select_kakao_account(page, already_clicked=clicked_account)
+                last_state = state
+                if state == "TILE_CLICKED":
+                    clicked_account = True
+                    log.append("SSO_ACCOUNT_CLICKED")
                 if state == "PW_FORM":
                     log.append("SSO_PW_FORM"); return False
                 if state == "ACCOUNT_SELECTION":
                     log.append("SSO_ACCOUNT_SELECTION_REQUIRED"); return False
+        if last_state == "LAYOUT_UNRECOGNIZED":
+            log.append("SSO_LAYOUT_UNRECOGNIZED")
         page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#post-title-inp", timeout=15000)
         log.append("AUTO_RELOGIN_OK")
@@ -163,6 +159,38 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
     except Exception as e:
         log.append(f"SSO_FAIL:{type(e).__name__}")
         return False
+
+
+def _wait_for_login_return(page, target_url: str, wait_s: int) -> None:
+    """사람 로그인이 관리 홈으로 끝나도 요청했던 에디터로 돌아간다."""
+    page.wait_for_function(
+        """host => location.hostname === host &&
+        (!!document.querySelector('#post-title-inp') ||
+         (location.pathname.startsWith('/manage/') &&
+          !!document.querySelector('a[href$="/manage/posts"]')))""",
+        arg=urlsplit(target_url).hostname, timeout=wait_s * 1000)
+    page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_selector("#post-title-inp", timeout=30000)
+
+
+def _probe_kakao_relogin(ctx, target_url: str, log: list[str]) -> bool:
+    """운영 세션을 지우지 않고 별도 메모리 컨텍스트에서 Tistory 만료를 재현한다."""
+    isolated = ctx.browser.new_context()
+    try:
+        # 이미 허용된 카카오 세션만 같은 인증 서비스에 재사용한다. 디스크 저장 없음.
+        kakao = [cookie for cookie in ctx.cookies()
+                 if cookie["domain"].lstrip(".").lower() == "kakao.com"
+                 or cookie["domain"].lstrip(".").lower().endswith(".kakao.com")]
+        isolated.add_cookies(kakao)
+        log.append("RELOGIN_PROBE_NO_TISTORY_SESSION")
+        page = isolated.new_page()
+        page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        if not _relogin_via_kakao_sso(page, log, target_url):
+            return False
+        log.append("RELOGIN_PROBE_OK")
+        return True
+    finally:
+        isolated.close()
 
 
 def _refresh_kakao_session(ctx, log: list[str]) -> None:
@@ -264,10 +292,12 @@ def _check_delivery(outroot: str, day: str, kind: str, data: dict, *, explicit: 
 
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             headless: bool = False, login_wait_s: int = 300,
-            post_id: str | None = None, kind: str = "daily") -> str:
+            post_id: str | None = None, kind: str = "daily", probe_relogin: bool = False) -> str:
     today = datetime.date.today().isoformat()
     if kind not in {"daily", "periodic"} or mode not in {"auth", "inject", "draft", "publish"}:
         return "ERR:invalid publication mode/kind"
+    if probe_relogin and mode != "auth":
+        return "ERR:relogin_probe_requires_auth_mode"
     if date and (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date)
                  or datetime.date.fromisoformat(date).isoformat() != date):
         return "ERR:invalid publication date"
@@ -294,10 +324,11 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             return "SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중"
         # 마커·원격 대조·클릭을 하나의 잠금으로 묶는다.
         return _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind,
-                               explicit=bool(date))
+                               explicit=bool(date), probe_relogin=probe_relogin)
 
 
-def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit):
+def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit,
+                    probe_relogin=False):
     from playwright.sync_api import sync_playwright
     title, body, tags = data["title"], data["body"], data["tags"]
     target_url = resolve_editor_url(post_id)
@@ -353,18 +384,17 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                     print(f"[로그인 필요] 뜬 창에서 Tistory(카카오) 로그인하세요. "
                           f"최대 {login_wait_s}s 대기…", flush=True)
                     try:
-                        page.wait_for_selector("#post-title-inp", timeout=login_wait_s * 1000)
+                        _wait_for_login_return(page, target_url, login_wait_s)
                     except Exception:
                         return f"ERR:login_timeout — 티스토리 재로그인 필요 | {' '.join(log)} AUTH_STAGE:{_auth_stage(page.url)}"
-                    # 로그인 후 newpost 로 다시
-                    page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_selector("#post-title-inp", timeout=30000)
 
             # 로그인 확인 후 → 카카오 keepalive → 세션 쿠키를 STATE_FILE 에 즉시 덤프.
             authenticated = True
             _refresh_kakao_session(ctx, log)
             _save_state(ctx, log)
             if mode == "auth":
+                if probe_relogin and not _probe_kakao_relogin(ctx, target_url, log):
+                    return f"ERR:relogin_probe_failed | {' '.join(log)}"
                 return f"AUTH_OK | {' '.join(log)}"
             # keepalive 탭이 포커스를 가져가면 clipboard.write 가 NotAllowedError —
             # 본문 주입 전에 메인 탭 포커스 복원.
@@ -587,18 +617,21 @@ def main():
     ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) — kind 별 원고·마커")
     ap.add_argument("--pending", action="store_true", help="일간 누락 원고를 오래된 순서로 최대 2건 복구")
     ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
+    ap.add_argument("--probe-relogin", action="store_true", help="auth 전용: 별도 메모리 컨텍스트에서 티스토리 세션 만료 후 SSO 검증")
     a = ap.parse_args()
     if a.kind not in {"daily", "periodic"}:
         ap.error("--kind 는 daily 또는 periodic")
     if a.pending and (a.mode != "publish" or a.kind != "daily" or a.date or a.post_id):
         ap.error("--pending 은 날짜/글번호 없는 daily publish 전용")
+    if a.probe_relogin and a.mode != "auth":
+        ap.error("--probe-relogin 은 auth 전용")
     dates = pending_dates(a.outroot, datetime.date.today().isoformat()) if a.pending else [a.date]
     if not dates:
         dates = [None]  # 원고 부재/stale를 성공으로 숨기지 않는다.
     for stamp in dates:
         try:
             result = publish(a.outroot, a.mode, stamp, headless=a.headless, login_wait_s=a.login_wait,
-                             post_id=a.post_id, kind=a.kind)
+                             post_id=a.post_id, kind=a.kind, probe_relogin=a.probe_relogin)
         except Exception as e:
             # Playwright 예외/URL에는 인증 토큰이 있을 수 있어 종류만 출력한다.
             result = f"ERR:exception:{type(e).__name__}"
