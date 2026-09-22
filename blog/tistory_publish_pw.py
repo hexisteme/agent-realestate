@@ -329,7 +329,6 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
 
 def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit,
                     probe_relogin=False):
-    from playwright.sync_api import sync_playwright
     title, body, tags = data["title"], data["body"], data["tags"]
     target_url = resolve_editor_url(post_id)
     tracked = mode == "publish" and not post_id
@@ -339,6 +338,7 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
         stopped = _check_delivery(outroot, day, kind, data, explicit=explicit, log=log)
         if stopped:
             return stopped
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             PROFILE_DIR, channel="chrome", headless=headless,

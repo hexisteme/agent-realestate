@@ -62,10 +62,9 @@ esac
         command = bins / name
         command.write_text("#!/bin/bash\nset -eu\n" + body)
         command.chmod(0o700)
-    # Replace only the workspace location: all scheduling, guards and traps run.
     source = (ROOT / "blog/cron_daily.sh").read_text()
     script = tmp_path / "cron_daily.sh"
-    script.write_text(source.replace(str(ROOT), str(root)))
+    script.write_text(source)
     env = {
         "PATH": str(bins),
         "HOME": str(tmp_path),
@@ -73,6 +72,7 @@ esac
         "STUB_DAILY_RC": str(daily_rc),
         "STUB_PERIODIC_RC": str(periodic_rc),
         "STUB_BUILD_RC": str(build_rc),
+        "AGENT_REALESTATE_ROOT": str(root),
         "LC_ALL": "C",
     }
     # No inherited secrets or shell initialization; no actual child binaries.

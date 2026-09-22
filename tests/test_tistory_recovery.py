@@ -2,6 +2,7 @@
 import datetime
 import html
 import sys
+import types
 from unittest.mock import Mock
 
 import pytest
@@ -103,9 +104,13 @@ def test_unknown_remote_cannot_reenter_click_path(isolated, monkeypatch, remote)
     data = pub._parse_helper(str(path))
     write_delivery(str(isolated), '2026-09-10', 'daily', state='ATTEMPTED', data=data)
     pub._verify_published_on_blog.return_value = remote
-    import playwright.sync_api
     browser = Mock(side_effect=AssertionError('browser must not start'))
-    monkeypatch.setattr(playwright.sync_api, 'sync_playwright', browser)
+    package = types.ModuleType('playwright')
+    api = types.ModuleType('playwright.sync_api')
+    api.sync_playwright = browser
+    package.sync_api = api
+    monkeypatch.setitem(sys.modules, 'playwright', package)
+    monkeypatch.setitem(sys.modules, 'playwright.sync_api', api)
     assert pub.publish(str(isolated), 'publish', '2026-09-10').startswith('ERR:publication_unknown')
     browser.assert_not_called()
     assert read_delivery(str(isolated), '2026-09-10', 'daily')['state'] == 'ATTEMPTED'

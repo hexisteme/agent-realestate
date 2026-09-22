@@ -5,8 +5,8 @@
 # launchd: com.hexisteme.re-blog.daily — 07:05 본실행 + 09/12/15/18/21:05 재시도 슬롯,
 #          로그 ~/Library/Logs/re-blog.log (2026-07-06, /tmp 는 재부팅 소실이라 이동)
 set -Eeuo pipefail   # -E(errtrace): 함수/서브셸 실패도 ERR 트랩으로 (2026-07-11)
-cd /Volumes/EXT_SSD/bot/agent_realestate
-ROOT="/Volumes/EXT_SSD/bot/agent_realestate"
+ROOT="${AGENT_REALESTATE_ROOT:-/Volumes/EXT_SSD/bot/agent_realestate}"
+cd "$ROOT"
 
 # ★재발방지 2종(2026-07-11 무알림 크래시 사고 — grok-4.5 적대검증 채택, AGENTS.md 07-11):
 # ① 쉘 최후방어선: python 알림망(cmd_daily 래퍼/step()/티스토리 퍼블리셔)에 도달조차 못 하는
@@ -44,11 +44,11 @@ fi
 #   건너뛰고 티스토리만 재시도할 수 있게 한다(기존엔 사이트 마커가 전체를 막아
 #   재로그인 후에도 수동 명령 없이는 그날 발행 불가였음). 마커는 EXT_SSD 영속.
 TODAY="$(date +%F)"
-STAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-published"
-TISTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published"
+STAMP="$ROOT/.last-published"
+TISTAMP="$ROOT/.last-tistory-published"
 # 기간 결산(주간결산/월간결산, 2026-09-07): run_daily 가 일요일에 periodic 원고를 쓰면 2편째 발행 대상 — kind 별 마커.
-PERSTAMP="/Volumes/EXT_SSD/bot/agent_realestate/.last-tistory-published-periodic"
-PERDRAFT="/Volumes/EXT_SSD/bot/agent_realestate/report/blog/tistory/${TODAY}-periodic-tistory-draft.html"
+PERSTAMP="$ROOT/.last-tistory-published-periodic"
+PERDRAFT="$ROOT/report/blog/tistory/${TODAY}-periodic-tistory-draft.html"
 # 누락 마커는 미발행 상태다. 읽기 실패가 ERR 트랩의 장애 알림을 부르지 않게 한다.
 periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null || true)" != "$TODAY" ]; }
 if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending; then
