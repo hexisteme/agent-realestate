@@ -29,6 +29,10 @@ from blog.listing_inventory import METHOD_VERSION, build_inventory_snapshot, loa
 
 DEFAULT_READ_SCRIPT = "/Users/kimjonghyun/.codex/scripts/read-chrome-tab.sh"
 DEFAULT_TAB_PATTERN = "new.land.naver.com"
+NAVER_SEED_URL = "https://new.land.naver.com/"
+NAVER_SEED_COMMAND = ("open", "-g", "-a", "Google Chrome", NAVER_SEED_URL)
+NAVER_SEED_TIMEOUT_SECONDS = 10
+NAVER_SEED_WAIT_SECONDS = 2.0
 _NAVER_TAB_URL_RE = re.compile(r"<(https://new[.]land[.]naver[.]com/[^>]*)>")
 
 
@@ -156,21 +160,87 @@ def _run_expression(
     return result.stdout.strip()
 
 
-def discover_tab_pattern(script: str = DEFAULT_READ_SCRIPT) -> str | None:
-    """Choose the newest responsive Naver tab instead of the first stale tab."""
+def _discover_tab_pattern_detail(script: str) -> tuple[str | None, bool]:
+    """Return ``(pattern, listed)`` so a broken reader never seeds a tab."""
     try:
         result = subprocess.run(
             [script, "--list"], capture_output=True, text=True, timeout=20,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+        return None, False
     if result.returncode != 0:
-        return None
+        return None, False
     candidates = _NAVER_TAB_URL_RE.findall(result.stdout)
     for candidate in reversed(candidates):
         if _run_expression(script, candidate, "document.title", timeout=12):
-            return candidate
-    return None
+            return candidate, True
+    return None, True
+
+
+def discover_tab_pattern(script: str = DEFAULT_READ_SCRIPT) -> str | None:
+    """Choose the newest responsive Naver tab instead of the first stale tab."""
+    return _discover_tab_pattern_detail(script)[0]
+
+
+def seed_naver_tab(
+    *,
+    runner: Callable[..., object] | None = None,
+    command: tuple[str, ...] = NAVER_SEED_COMMAND,
+) -> bool:
+    """Open one background Naver Land tab, without exposing command output.
+
+    ``open -g`` avoids focusing Chrome under launchd.  This function has no
+    retry: its caller may invoke it only after confirming that no responsive
+    Naver tab is available.
+    """
+    run = runner or subprocess.run
+    try:
+        result = run(
+            list(command), capture_output=True, text=True,
+            timeout=NAVER_SEED_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return getattr(result, "returncode", 1) == 0
+
+
+def prepare_naver_tab(
+    script: str = DEFAULT_READ_SCRIPT,
+    *,
+    discover: Callable[[str], str | None] | None = None,
+    seed: Callable[[], bool] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    wait_seconds: float = NAVER_SEED_WAIT_SECONDS,
+) -> tuple[str | None, str | None]:
+    """Find a live Naver tab, seeding at most one only when none is usable.
+
+    The returned diagnostic is a fixed safe code.  No subprocess exception,
+    stdout, stderr, URL query, or other command detail crosses this boundary.
+    """
+    if wait_seconds < 0:
+        raise ValueError("wait_seconds must be nonnegative")
+    if discover is None:
+        def find() -> tuple[str | None, bool]:
+            return _discover_tab_pattern_detail(script)
+    else:
+        def find() -> tuple[str | None, bool]:
+            return discover(script), True
+
+    tab_pattern, listed = find()
+    if tab_pattern:
+        return tab_pattern, None
+    if not listed:
+        return None, "NAVER_TAB_DISCOVERY_UNAVAILABLE"
+    if not (seed or seed_naver_tab)():
+        return None, "NAVER_TAB_SEED_UNAVAILABLE"
+    try:
+        (sleeper or time.sleep)(wait_seconds)
+    except Exception:  # noqa: BLE001 - preserve the fixed diagnostic boundary
+        return None, "NAVER_TAB_SEED_WAIT_UNAVAILABLE"
+    tab_pattern, _listed = find()
+    if tab_pattern:
+        return tab_pattern, None
+    return None, "NAVER_TAB_SEED_NOT_READY"
 
 
 def scan_gu_inventory(
@@ -366,9 +436,12 @@ def main(argv: list[str] | None = None) -> int:
         print("[listing-inventory] Chrome 읽기 스크립트 없음 — 집계 중단")
         return 2
 
-    tab_pattern = args.tab_pattern or discover_tab_pattern(args.script)
+    tab_pattern = args.tab_pattern
+    diagnostic = None
     if not tab_pattern:
-        print("[listing-inventory] 응답 가능한 네이버부동산 Chrome 탭 없음 — 집계 중단")
+        tab_pattern, diagnostic = prepare_naver_tab(args.script)
+    if not tab_pattern:
+        print(f"[listing-inventory] {diagnostic or 'NAVER_TAB_UNAVAILABLE'} — 집계 중단")
         return 2
 
     observed_at = datetime.now().astimezone().isoformat(timespec="seconds")

@@ -51,6 +51,78 @@ def test_discover_tab_pattern_chooses_newest_responsive_naver_tab(monkeypatch):
     assert len(calls) == 1
 
 
+def test_prepare_naver_tab_keeps_existing_tab_without_seed_or_wait():
+    discovered = []
+    seeded = []
+    waited = []
+
+    tab, diagnostic = collector.prepare_naver_tab(
+        "/fake/read.sh",
+        discover=lambda script: discovered.append(script) or "https://new.land.naver.com/existing",
+        seed=lambda: seeded.append(True) or True,
+        sleeper=lambda seconds: waited.append(seconds),
+    )
+
+    assert tab == "https://new.land.naver.com/existing"
+    assert diagnostic is None
+    assert discovered == ["/fake/read.sh"]
+    assert seeded == [] and waited == []
+
+
+def test_prepare_naver_tab_seeds_once_then_rediscovers_with_bounded_wait():
+    discoveries = iter([None, "https://new.land.naver.com/seeded"])
+    seeded = []
+    waited = []
+
+    tab, diagnostic = collector.prepare_naver_tab(
+        "/fake/read.sh", discover=lambda _script: next(discoveries),
+        seed=lambda: seeded.append(True) or True,
+        sleeper=lambda seconds: waited.append(seconds), wait_seconds=0.25,
+    )
+
+    assert tab == "https://new.land.naver.com/seeded"
+    assert diagnostic is None
+    assert seeded == [True]
+    assert waited == [0.25]
+
+
+def test_prepare_does_not_seed_when_tab_discovery_is_unavailable(monkeypatch):
+    monkeypatch.setattr(collector, "_discover_tab_pattern_detail", lambda _script: (None, False))
+    seeded = []
+
+    tab, diagnostic = collector.prepare_naver_tab("/fake/read.sh", seed=lambda: seeded.append(True) or True)
+
+    assert tab is None and diagnostic == "NAVER_TAB_DISCOVERY_UNAVAILABLE"
+    assert seeded == []
+
+
+def test_seed_failure_is_single_safe_command_and_never_prints_raw_output(capsys):
+    calls = []
+
+    def failing_runner(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=1, stdout="secret-token=should-not-print", stderr="sensitive")
+
+    assert collector.seed_naver_tab(runner=failing_runner) is False
+    assert calls == [(
+        (["open", "-g", "-a", "Google Chrome", "https://new.land.naver.com/"],),
+        {"capture_output": True, "text": True, "timeout": collector.NAVER_SEED_TIMEOUT_SECONDS},
+    )]
+    assert capsys.readouterr().out == ""
+
+    tab, diagnostic = collector.prepare_naver_tab(
+        "/fake/read.sh", discover=lambda _script: None, seed=lambda: False,
+    )
+    assert tab is None and diagnostic == "NAVER_TAB_SEED_UNAVAILABLE"
+    assert "secret-token" not in diagnostic
+
+    def timeout_runner(*_args, **_kwargs):
+        raise collector.subprocess.TimeoutExpired("open", 1, output="secret-token=timeout")
+
+    assert collector.seed_naver_tab(runner=timeout_runner) is False
+    assert "secret-token" not in capsys.readouterr().out
+
+
 def test_scan_gu_inventory_polls_async_result_without_raw_error_output(monkeypatch):
     payload = [{
         "complexNo": "1", "name": "단지1", "far": 0, "builtYm": "200001",
