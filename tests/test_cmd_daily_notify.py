@@ -78,3 +78,14 @@ def test_site_build_step_sees_refreshed_molit_path_via_env():
     assert assign_at is not None, "os.environ['RE_MOLIT'] 배선이 사라짐"
     assert call_at is not None
     assert assign_at < call_at, "RE_MOLIT 은 '사이트 조립' step 보다 먼저 설정돼야 한다"
+
+
+def test_listing_inventory_collection_does_not_depend_on_frame_district_map():
+    """법정동 API 기반 v3 매물 재고는 RTMS 단지 소재구 맵 유무와 독립적으로 실행한다."""
+    import inspect
+
+    source = inspect.getsource(cli._cmd_daily_inner)
+    inventory_at = source.index('step("네이버 표시 매물 재고 수집(25구 전체)"')
+    district_map_gate_at = source.index('if district_maps:')
+
+    assert inventory_at < district_map_gate_at

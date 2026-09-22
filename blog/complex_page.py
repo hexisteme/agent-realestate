@@ -10,10 +10,11 @@ A모델 무점수 원칙 그대로: 공공 실거래 사실·분포·추세·전
 이미 검증한 값을 재사용한다(동일 수치 두 곳에서 다르게 계산되는 사고 방지).
 """
 from __future__ import annotations
+import html
 import re
 import json
 import statistics as st
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import blog.build_explorer as be
 from blog.fact_lead import build_fact_leads, render_lead_block
@@ -57,6 +58,9 @@ _CSS = (
     ".t td{padding:8px 0;border-bottom:1px solid #e6e2d9;vertical-align:top}"
     ".t .r{text-align:right;padding-left:8px;white-space:nowrap}"
     ".factgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}"
+    ".context{padding:10px 0;border-bottom:1px solid #e6e2d9}.context:last-child{border-bottom:0;padding-bottom:0}"
+    ".context:first-of-type{padding-top:0}.context h3{font-size:14px;margin:0 0 4px}.context p{font-size:12px;color:#5c584f;margin:3px 0}"
+    ".status{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:10px;background:#f7f5f0;color:#8a857a;font-size:10px;font-weight:400}"
     ".more a{display:flex;align-items:center;justify-content:space-between;min-height:40px;"
     "border-bottom:1px solid #e6e2d9;font-weight:500}.more a:last-child{border-bottom:0}"
     ".foot{font-size:12px;color:#8a857a;margin-top:4px;line-height:1.6}"
@@ -398,6 +402,79 @@ def _facts_card(row: dict) -> str:
     return f'<section class="card"><div class="q">입지·단지</div><div class="factgrid">{"".join(items)}</div></section>'
 
 
+def _safe_source(label, url) -> str:
+    label_text = html.escape(str(label or "출처 미기재"))
+    if not isinstance(url, str):
+        return label_text
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return label_text
+    return f'<a href="{html.escape(url, quote=True)}" rel="nofollow noopener">{label_text}</a>'
+
+
+def _context_status(value: str | None) -> str:
+    return {
+        "current": "확인",
+        "stale": "오래됨",
+        "legacy_unverified": "항목별 확인일 없음",
+        "missing": "미수집",
+    }.get(value or "", "미수집")
+
+
+def _living_context_card(row: dict) -> str:
+    context = row.get("living_context") if isinstance(row.get("living_context"), dict) else {}
+    school = context.get("school") if isinstance(context.get("school"), dict) else {"status": "missing"}
+    terrain = context.get("terrain") if isinstance(context.get("terrain"), dict) else {"status": "missing"}
+    reviews = context.get("reviews") if isinstance(context.get("reviews"), dict) else {"status": "missing"}
+
+    school_values = []
+    if school.get("nearest_elem_school"):
+        school_values.append(f'최근접 초등학교 {html.escape(str(school["nearest_elem_school"]))}')
+    if school.get("academy_exam") is not None:
+        school_values.append(f'입시 학원 {html.escape(str(school["academy_exam"]))}곳(1km)')
+    if school.get("school_achievement") is not None:
+        school_values.append(f'기존 학업성취 지표 {html.escape(str(school["school_achievement"]))}%')
+    if school.get("tukmokgo_pct") is not None:
+        school_values.append(f'기존 특목·자사·영재고 진학 지표 {html.escape(str(school["tukmokgo_pct"]))}%')
+    school_text = " · ".join(school_values) if school_values else "연결된 학군 정보 없음"
+
+    slope = terrain.get("slope_pct")
+    terrain_text = f'경사 근사 {html.escape(str(slope))}%' if slope is not None else "연결된 경사 정보 없음"
+
+    positive = [html.escape(str(item)) for item in reviews.get("themes_pos", []) if isinstance(item, str)]
+    caution = [html.escape(str(item)) for item in reviews.get("themes_caution", []) if isinstance(item, str)]
+    review_bits = [f'표본 {int(reviews.get("n_seen") or 0)}건'] if reviews.get("status") != "missing" else []
+    if positive:
+        review_bits.append("긍정: " + " · ".join(positive))
+    if caution:
+        review_bits.append("주의: " + " · ".join(caution))
+    review_text = "<br>".join(review_bits) if review_bits else "정확히 연결된 커뮤니티 후기 표본 없음"
+
+    def meta(section: dict) -> str:
+        pieces = [_safe_source(section.get("source_label"), section.get("source_url"))]
+        if section.get("observed_date"):
+            pieces.append("확인 " + html.escape(str(section["observed_date"])))
+        if section.get("warning"):
+            pieces.append(html.escape(str(section["warning"])))
+        return " · ".join(pieces)
+
+    bias = html.escape(str(reviews.get("bias_warning") or ""))
+    return (
+        '<section class="card"><div class="q">생활 맥락</div>'
+        '<div class="context"><h3>학군·교육'
+        f'<span class="status">{_context_status(school.get("status"))}</span></h3>'
+        f'<p><b>{school_text}</b></p><p>최근접 검색과 기존 지표이며 배정학교를 뜻하지 않습니다.</p><p>{meta(school)}</p></div>'
+        '<div class="context"><h3>지형 경사'
+        f'<span class="status">{_context_status(terrain.get("status"))}</span></h3>'
+        f'<p><b>{terrain_text}</b></p><p>SRTM30m 중심±150m 표고 기반 근사이며 실제 보행 경사가 아닙니다.</p><p>{meta(terrain)}</p></div>'
+        '<div class="context"><h3>커뮤니티 후기 모음'
+        f'<span class="status">{_context_status(reviews.get("status"))}</span></h3>'
+        f'<p>{review_text}</p><p>{meta(reviews)}</p>'
+        + (f'<p>{bias}</p>' if bias else "")
+        + "</div></section>"
+    )
+
+
 def _peers_card(row: dict, peers: list[dict]) -> str:
     if not peers:
         return ""
@@ -447,7 +524,7 @@ def _foot_block(asof: str) -> str:
         "52주 위치=최근 3개월 체결 중위가 12개월 실거래 최저~최고 레인지에서 차지하는 위치(%, 예: 74%면 1년 범위에서 74% 지점). "
         "전세가율=전세 중위÷매매 중위(전세표본 5건 미만 또는 95% 초과 시 —). "
         "회전율=12개월 거래건수÷세대수×100(%). 구 중위 대비%=(단지 중위÷구 중위−1)×100."
-        f" 기준일 {asof}. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>"
+        f" 기준일 {asof}. 가격·거래는 국토부 RTMS 공공데이터이며 학군·지형·후기는 각 카드의 출처·확인 상태를 따름.<br>"
         f"{be.DISCLAIMER} {be._takedown()}"
         "</div>"
     )
@@ -498,6 +575,7 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
         + _liquidity_card(row)
         + _peers_card(row, peers)
         + '</div><div class="aside">'
+        + _living_context_card(row)
         + _facts_card(row)
         + _links_card(row)
         + "</div></div>"

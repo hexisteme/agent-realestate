@@ -4,6 +4,7 @@
 A모델 무점수 — 정렬·상단/하단 근접은 관측된 사실 위치일 뿐 추천이 아니다(wording_guard 로 강제).
 """
 from __future__ import annotations
+import html
 import json
 from urllib.parse import quote
 
@@ -35,6 +36,7 @@ _SITE_CSS = (
     ".tiles{display:flex;gap:10px;flex-wrap:wrap}"
     ".tile{background:#fff;border:1px solid #e6e2d9;border-radius:10px;padding:12px 14px;flex:1 1 110px;min-width:100px}"
     ".tile .k{font-size:12px;color:#8a857a;display:block}.tile .v{font-size:19px;font-weight:700}"
+    ".notice{background:#fff;border:1px solid #e6e2d9;border-radius:10px;padding:14px;color:#5c584f}"
     ".tblwrap{overflow-x:auto;background:#fff;border:1px solid #e6e2d9;border-radius:10px;margin-top:4px}"
     "table{width:100%;border-collapse:collapse;font-size:13px}"
     "th,td{padding:7px 9px;border-bottom:1px solid #e6e2d9;text-align:right;white-space:nowrap}"
@@ -137,7 +139,105 @@ def _today_counts(ds: dict) -> dict:
     }
 
 
-def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, macro_html="") -> str:
+def _delta_txt(value) -> str:
+    return "—" if value is None else f"{value:+,}"
+
+
+def _inventory_delta(inventory: dict, gu: str, period: str, metric: str = "total_article_count"):
+    try:
+        return inventory["comparisons"][period]["districts"][gu][metric]["delta"]
+    except (KeyError, TypeError):
+        return None
+
+
+def _inventory_notice(inventory: dict | None) -> str:
+    if not inventory:
+        return "매물 재고 관측이 아직 없습니다."
+    if inventory.get("status") == "missing":
+        return inventory.get("unavailable_reason") or "매물 재고 관측이 아직 없습니다."
+    if not inventory.get("complete"):
+        return "25개 구 전체 수집을 완료하지 못해 부분 합계와 증감은 공개하지 않습니다."
+    return "관측 후 36시간을 초과해 현재 합계와 증감은 공개하지 않습니다."
+
+
+def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
+    if not inventory or not inventory.get("fresh"):
+        return (f'<p><b>구별 네이버 표시 매물</b></p><p style="{_MUT}">'
+                f'{html.escape(_inventory_notice(inventory))}</p>')
+    total = inventory.get("total", {})
+    districts = inventory.get("districts", {})
+    period = "7d" if any(_inventory_delta(inventory, gu, "7d") is not None for gu in districts) else "1d"
+    comparable = any(_inventory_delta(inventory, gu, period) is not None for gu in districts)
+    rows = sorted(
+        districts.items(),
+        key=lambda item: (
+            -(abs(_inventory_delta(inventory, item[0], period)) if comparable else item[1].get("total_article_count", 0)),
+            item[0],
+        ),
+    )[:8]
+    label = "7일 Δ" if period == "7d" else "1일 Δ"
+    trs = "".join(
+        f'<tr><td style="{_TD}"><b>{html.escape(gu)}</b></td>'
+        f'<td style="{_TD}">{values.get("total_article_count", 0):,}</td>'
+        f'<td style="{_TD}">{_delta_txt(_inventory_delta(inventory, gu, period))}</td>'
+        f'<td style="{_TD}">{values.get("sale_article_count", 0):,}</td>'
+        f'<td style="{_TD}">{values.get("lease_article_count", 0):,}</td></tr>'
+        for gu, values in rows
+    )
+    baseline_note = "" if comparable else " 비교 가능한 같은 방식의 기준 관측은 아직 없습니다."
+    observed = html.escape(str(inventory.get("observed_at") or ""))
+    return (
+        '<p><b>서울 25개 구 네이버 표시 매물</b></p>'
+        f'<p>전체 {total.get("total_article_count", 0):,}건 · 매매 {total.get("sale_article_count", 0):,}건 · '
+        f'전세 {total.get("lease_article_count", 0):,}건 · 월세 {total.get("rent_article_count", 0):,}건 · '
+        f'단기 {total.get("short_term_rent_article_count", 0):,}건 · '
+        f'물리 단지 {total.get("physical_complex_count", 0):,}곳 · 관측 {observed}.{baseline_note}</p>'
+        f'<table style="{_TBL}"><tr><td style="{_TH}"><b>구</b></td><td style="{_TH}"><b>전체</b></td>'
+        f'<td style="{_TH}"><b>{label}</b></td><td style="{_TH}"><b>매매</b></td>'
+        f'<td style="{_TH}"><b>전세</b></td></tr>{trs}</table>'
+        f'<p style="{_MUT}">절대 증감이 큰 8개 구만 표시합니다. 25개 구 전체 1일·7일 표는 '
+        f'<a href="{BASE_URL}/daily/{today}.html">사이트 일간 페이지</a>에서 확인할 수 있습니다. '
+        '네이버 법정동별 단지 목록의 표시 건수 합계이며 전체는 매매·전세·월세·단기임대를 더한 값입니다. '
+        '한 주택 수나 수요를 뜻하지 않고 중개사 중복 노출이 있을 수 있습니다.</p>'
+    )
+
+
+def _render_inventory_site(inventory: dict | None) -> str:
+    if not inventory or not inventory.get("fresh"):
+        return (
+            '<h2>구별 네이버 표시 매물</h2><div class="notice">'
+            f'{html.escape(_inventory_notice(inventory))}</div>'
+        )
+    total = inventory.get("total", {})
+    districts = inventory.get("districts", {})
+    rows = "".join(
+        f'<tr><td><a href="../gu/{quote(gu)}.html">{html.escape(gu)}</a></td>'
+        f'<td>{values.get("total_article_count", 0):,}</td>'
+        f'<td>{_delta_txt(_inventory_delta(inventory, gu, "1d"))}</td>'
+        f'<td>{_delta_txt(_inventory_delta(inventory, gu, "7d"))}</td>'
+        f'<td>{values.get("sale_article_count", 0):,}</td>'
+        f'<td>{values.get("lease_article_count", 0):,}</td>'
+        f'<td>{values.get("rent_article_count", 0):,}</td>'
+        f'<td>{values.get("physical_complex_count", 0):,}</td></tr>'
+        for gu, values in sorted(districts.items())
+    )
+    observed = html.escape(str(inventory.get("observed_at") or ""))
+    return f"""
+<h2>구별 네이버 표시 매물 <span class=mut>(25개 구 전체 아파트)</span></h2>
+<div class=tiles>
+<div class=tile><span class=k>전체 표시건수</span><span class=v>{total.get('total_article_count', 0):,}</span></div>
+<div class=tile><span class=k>매매 표시건수</span><span class=v>{total.get('sale_article_count', 0):,}</span></div>
+<div class=tile><span class=k>전세 표시건수</span><span class=v>{total.get('lease_article_count', 0):,}</span></div>
+<div class=tile><span class=k>월세 표시건수</span><span class=v>{total.get('rent_article_count', 0):,}</span></div>
+<div class=tile><span class=k>물리 단지</span><span class=v>{total.get('physical_complex_count', 0):,}</span></div>
+<div class=tile><span class=k>매매 표시 단지</span><span class=v>{total.get('complexes_with_sale_articles', 0):,}</span></div>
+</div>
+<div class=tblwrap><table><tr><th>구</th><th>전체</th><th>1일 Δ</th><th>7일 Δ</th><th>매매</th><th>전세</th><th>월세</th><th>집계 단지</th></tr>{rows}</table></div>
+<p class=mut style="margin-top:8px">관측 {observed}. 같은 출처·범위·방법의 정확히 1일·7일 전 완전 관측이 없으면 Δ는 —입니다. 네이버 법정동별 단지 목록의 표시 건수 합계이며 전체는 매매·전세·월세·단기임대를 더한 값입니다. 한 주택 수나 수요를 뜻하지 않고 중개사 중복 노출이 있을 수 있습니다.</p>
+"""
+
+
+def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, macro_html="", inventory=None) -> str:
     def name_cell(r):
         href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a>({r["gu"]})'
@@ -173,6 +273,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, ma
     parts = [
         *lead_ps,
         *([macro_html] if macro_html else []),   # 거시 지표 스트립(2026-09-07 S2) — 컨텍스트 없으면 생략
+        _render_inventory_tistory(inventory, today),
         f'<p><b>오늘의 숫자</b> — 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
         f'상승 {counts["up"]} · 하락 {counts["down"]} · 보합 {counts["flat"]}(국토부 실거래 사실, 자체 점수 없음)</p>',
         *([ '<p><b>가격대별 요약</b>(12개월 중위 구간·사실)</p>',
@@ -194,14 +295,15 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, ma
         f'3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음"). '
         f'52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%, 예: 74%면 1년 범위에서 74% 지점). '
         f'회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위의 중위(억). '
-        f'기준일 {asof}, 표본수는 각 셀 n 표기. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.</p>',
+        f'기준일 {asof}, 표본수는 각 셀 n 표기. 가격·거래는 국토부 RTMS 공공데이터, '
+        f'매물 노출 건수는 별도 관측시각의 네이버 법정동별 단지 목록 집계입니다.</p>',
         f'<p style="{_MUT}">{be.DISCLAIMER} {be._takedown()}</p>',
         f'<p><a href="{BASE_URL}/">전체 탐색기·인덱스</a> · <a href="{BASE_URL}/methodology.html">방법론 전문</a></p>',
     ]
     return "".join(parts)
 
 
-def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None, macro_html="") -> str:
+def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None, macro_html="", inventory=None) -> str:
     def name_cell(r):
         href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
@@ -259,6 +361,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
 {render_lead_block(leads)}
 {macro_html}
+{_render_inventory_site(inventory)}
 <h2>오늘의 숫자</h2>
 <div class=tiles>
 <div class=tile><span class=k>발행 단지</span><span class=v>{counts['n_total']}</span></div>
@@ -288,7 +391,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 회전율은 회전율 값 존재). 3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음").
 52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%, 예: 74%면 1년 범위에서 74% 지점). 회전율=12개월 거래건수÷세대수×100(%).
 구 중위=게이트 통과 단지 중위의 중위(억).
-기준일 {asof}. 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>
+기준일 {asof}. 가격·거래는 국토부 RTMS 공공데이터, 매물 노출 건수는 별도 관측시각의 네이버 법정동별 단지 목록 집계.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
 <a href="../methodology.html">방법론 전문</a> · <a href="../explorer.html">탐색기</a> ·
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
@@ -315,15 +418,19 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")
 
     band_rows = _band_summary_rows(ds)   # 가격대 4밴드 요약(2026-09-07)
-    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows, macro_html=(macro or {}).get("tistory_html", ""))
-    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=band_rows, macro_html=(macro or {}).get("site_html", ""))
+    inventory = ds.get("listing_inventory")
+    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows,
+                                    macro_html=(macro or {}).get("tistory_html", ""), inventory=inventory)
+    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=band_rows,
+                             macro_html=(macro or {}).get("site_html", ""), inventory=inventory)
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")
     assert_wording_ok(site_html, "daily_digest:site_html")
 
     tb = len(tistory_html.encode("utf-8"))
     if tb > 30000 and macro:                                   # 거시 스트립은 선택 섹션(2026-09-07) — 예산 초과면 먼저 뺀다(사이트는 유지)
-        tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows)
+        tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows,
+                                       inventory=inventory)
         tb = len(tistory_html.encode("utf-8"))
     if tb > 30000:
         raise ValueError(f"[daily_digest] tistory_html {tb}B > 30000B 예산 초과 — 섹션을 줄이세요")

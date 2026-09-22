@@ -3,7 +3,7 @@
 배경: overview/parse-naver 는 "단지명을 주면 그 단지를 가져오는" 구조라 후보를 스스로 찾지 못했다.
 single-markers/2.0 마커 API(무인증 200, 페이지 컨텍스트)는 구/동 bbox 안의 *모든 단지*를
 용적률(floorAreaRatio)·준공·세대수와 함께 반환한다 → 지역을 통째로 열거하고 재건축 후보를
-필터할 수 있다. 이 모듈은 `~/.claude/scripts/naver-region-scan.sh` 가 반환한 JSON 을 파싱한다.
+필터할 수 있다. 이 모듈은 `~/.codex/scripts/naver-region-scan.sh` 가 반환한 JSON 을 파싱한다.
 
 per-매물 4요소(동·층·향·중개사)는 여전히 parse-naver(매물탭 DOM) 영역 — 본 모듈은 *후보 열거*까지.
 관련: RDU-124(불가능 선언 전 방법 계층 전환), AGENTS.md 2026-05-29.
@@ -15,7 +15,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 
-DEFAULT_SCRIPT = "/Users/kimjonghyun/.claude/scripts/naver-region-scan.sh"
+DEFAULT_SCRIPT = "/Users/kimjonghyun/.codex/scripts/naver-region-scan.sh"
 
 # 서울 25개 구 → cortarNo (법정동코드 prefix + 000000). 구 이름으로도 스캔 가능하게.
 SEOUL_GU: dict[str, str] = {
@@ -45,6 +45,12 @@ class RegionComplex:
     lat: float | None = None
     lng: float | None = None
     district: str | None = None   # 스캔 구 (실제 소재 구와 다를 수 있음 — bbox bleed)
+    # Marker payload counts. ``None`` means the endpoint omitted the value; it
+    # is deliberately distinct from 0 (a confirmed zero active article).
+    deal_count: int | None = None
+    lease_count: int | None = None
+    rent_count: int | None = None
+    short_term_rent_count: int | None = None
 
     @property
     def built_year(self) -> int | None:
@@ -61,6 +67,28 @@ def _to_int(v) -> int | None:
         return None
 
 
+def _optional_nonnegative_int(value, field: str) -> int | None:
+    """Parse an optional marker count without turning malformed data into zero.
+
+    Naver has returned numeric strings as well as JSON integers.  Accept only
+    canonical nonnegative integer values; booleans, fractions, negatives, and
+    arbitrary strings are data-contract failures rather than missing values.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a nonnegative integer, not bool")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        parsed = int(value)
+    else:
+        raise ValueError(f"{field} must be a nonnegative integer or null: {value!r}")
+    if parsed < 0:
+        raise ValueError(f"{field} must be nonnegative: {value!r}")
+    return parsed
+
+
 def parse_region(json_str, district: str | None = None) -> list[RegionComplex]:
     """naver-region-scan.sh 의 JSON 배열 → RegionComplex 리스트. 파싱 전용(테스트 가능)."""
     data = json.loads(json_str) if isinstance(json_str, str) else json_str
@@ -74,7 +102,12 @@ def parse_region(json_str, district: str | None = None) -> list[RegionComplex]:
             households=_to_int(r.get("households")) or 0, dongs=_to_int(r.get("dongs")),
             min_area_m2=(float(r["minArea"]) if r.get("minArea") else None),
             max_area_m2=(float(r["maxArea"]) if r.get("maxArea") else None),
-            lat=r.get("lat"), lng=r.get("lng"), district=district))
+            lat=r.get("lat"), lng=r.get("lng"), district=district,
+            deal_count=_optional_nonnegative_int(r.get("dealCount"), "dealCount"),
+            lease_count=_optional_nonnegative_int(r.get("leaseCount"), "leaseCount"),
+            rent_count=_optional_nonnegative_int(r.get("rentCount"), "rentCount"),
+            short_term_rent_count=_optional_nonnegative_int(
+                r.get("shortTermRentCount"), "shortTermRentCount")))
     return out
 
 
@@ -92,5 +125,5 @@ def scan_region(district: str, far_max: int = 9999, built_max_ym: int = 999912,
         return []
     try:
         return parse_region(res.stdout.strip(), district=district)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError:
         return []

@@ -25,6 +25,8 @@ _CSS = ("*{box-sizing:border-box}body{margin:0;background:#f7f5f0;color:#1b1a17;
         ".tile{background:#fff;border:1px solid #e6e2d9;border-radius:10px;padding:14px 16px;"
         "flex:1 1 150px;min-width:140px}"
         ".tile .k{font-size:12px;color:#8a857a}.tile .v{font-size:20px;font-weight:700;margin-top:2px}"
+        ".panel{background:#fff;border:1px solid #e6e2d9;border-radius:10px;padding:14px 16px;margin-bottom:16px}"
+        ".panel h2{font-size:15px;margin:0 0 8px}.panel p{font-size:12px;color:#5c584f;margin:3px 0}"
         ".up{color:#c43d2f}.down{color:#2f5fc4}"
         ".tblwrap{overflow-x:auto;background:#fff;border:1px solid #e6e2d9;border-radius:10px}"
         "table{width:100%;border-collapse:collapse;font-size:13px}"
@@ -68,6 +70,60 @@ def _trend_cell(r: dict) -> str:
     return f'<span class="{cls}">{d}{abs(p):g}%</span>'
 
 
+def _inventory_delta(inventory: dict, gu: str, period: str):
+    try:
+        return inventory["comparisons"][period]["districts"][gu]["total_article_count"]["delta"]
+    except (KeyError, TypeError):
+        return None
+
+
+def _delta_text(value) -> str:
+    return "—" if value is None else f"{value:+,}"
+
+
+def _context_coverage(rows: list[dict], section: str) -> int:
+    return sum(
+        1 for row in rows
+        if isinstance(row.get("living_context"), dict)
+        and isinstance(row["living_context"].get(section), dict)
+        and row["living_context"][section].get("status") != "missing"
+    )
+
+
+def _inventory_panel(gu: str, rows: list[dict], ds: dict | None) -> str:
+    inventory = ds.get("listing_inventory") if isinstance(ds, dict) else None
+    coverage = (
+        f'생활정보 연결: 학군 {_context_coverage(rows, "school")}/{len(rows)} · '
+        f'경사 {_context_coverage(rows, "terrain")}/{len(rows)} · '
+        f'후기 {_context_coverage(rows, "reviews")}/{len(rows)}단지'
+    )
+    if not isinstance(inventory, dict) or not inventory.get("fresh"):
+        if isinstance(inventory, dict) and not inventory.get("complete"):
+            message = "25개 구 전체 수집을 완료하지 못해 부분 매물 합계는 숨겼습니다."
+        elif isinstance(inventory, dict) and inventory.get("status") == "stale":
+            message = "매물 관측 후 36시간을 초과해 현재 합계와 증감은 숨겼습니다."
+        else:
+            message = "비교 가능한 매물 재고 관측이 아직 없습니다."
+        return f'<div class="panel"><h2>네이버 표시 매물</h2><p>{message}</p><p>{coverage}</p></div>'
+    values = inventory.get("districts", {}).get(gu)
+    if not isinstance(values, dict):
+        return f'<div class="panel"><h2>네이버 표시 매물</h2><p>이 구의 완전한 집계가 없습니다.</p><p>{coverage}</p></div>'
+    observed = str(inventory.get("observed_at") or "")
+    return (
+        '<div class="panel"><h2>네이버 표시 매물 <span style="color:#8a857a;font-weight:400">'
+        f'관측 {observed}</span></h2>'
+        f'<p><b>전체 {values.get("total_article_count", 0):,}건</b> '
+        f'(1일 {_delta_text(_inventory_delta(inventory, gu, "1d"))} · '
+        f'7일 {_delta_text(_inventory_delta(inventory, gu, "7d"))}) · '
+        f'매매 {values.get("sale_article_count", 0):,}건 · '
+        f'전세 {values.get("lease_article_count", 0):,}건 · 월세 {values.get("rent_article_count", 0):,}건 · '
+        f'단기 {values.get("short_term_rent_article_count", 0):,}건 · '
+        f'집계 단지 {values.get("physical_complex_count", 0):,}곳</p>'
+        '<p>네이버 법정동별 단지 목록의 표시 건수 합계입니다. 전체는 매매·전세·월세·단기임대를 더한 값이며, 한 주택 수나 수요를 뜻하지 않고 중개사 중복 노출이 있을 수 있습니다.</p>'
+        f'<p>{coverage}</p></div>'
+    )
+
+
 def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
                    ds: dict | None = None, prev_ds: dict | None = None,
                    weekly_post_href: str | None = None) -> str:
@@ -89,6 +145,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     down = sum(1 for r in rows if r.get("molit_trend_dir") == "▼")
     flat = sum(1 for r in rows if r.get("molit_trend_dir") == "—")
     jeonse_med = be.compute_gu_jeonse_ratio_median(rows)
+    inventory_panel = _inventory_panel(gu, rows, ds)
 
     srt = sorted(rows, key=lambda r: (r.get("molit_recent_eok") is None, -(r.get("molit_recent_eok") or 0), r["name"]))
     trs = []
@@ -153,6 +210,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
 <h1>{gu} 아파트 실거래</h1>
 <p class=meta>{n}단지 · 기준 {asof} · 국토부 실거래(신고 지연 최대 30일) · 매일 자동 갱신</p>
 {lead_html}
+{inventory_panel}
 <div class=tiles>{tiles}</div>
 <div class=tblwrap><table><thead><tr>
 <th>단지</th><th>전용</th><th>중위 n</th><th>P25–P75</th><th>구중위대비%</th>
@@ -162,7 +220,8 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
 산식: 구 중위=아파트·전용40㎡+·매매표본10건+ 단지만 골라 그 단지들 중위의 중위(억). 구중위대비%=(단지 중위÷구 중위−1)×100.
 3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음"). 52주 위치=최근 3개월 체결 중위가
 12개월 실거래 최저~최고 레인지에서 차지하는 위치(%, 예: 74%면 1년 범위에서 74% 지점). 전세가율=전세 중위÷매매 중위(전세표본 5건 미만 또는 95% 초과·매매표본
-10건 미만·비아파트·40㎡ 미만은 —). 회전율=12개월 거래건수÷세대수×100(%). 기준일 {asof} · 국토부 RTMS 공공데이터, 민간 시세는 사용·게재하지 않음.<br>
+10건 미만·비아파트·40㎡ 미만은 —). 회전율=12개월 거래건수÷세대수×100(%). 기준일 {asof}. 가격·거래는 국토부 RTMS 공공데이터,
+매물 노출 건수는 별도 관측시각의 네이버 법정동별 단지 목록 집계이며 생활 맥락은 단지 페이지의 출처·확인 상태를 따름.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
 <a href="../methodology.html">방법론 전문</a> · {weekly_link}
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>

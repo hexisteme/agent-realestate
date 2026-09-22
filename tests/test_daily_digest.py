@@ -44,6 +44,29 @@ def _sample_ds() -> dict:
     return {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04", "generated": "2026-09-05"}
 
 
+def _inventory(fresh=True, complete=True):
+    districts = {
+        "강남": {"total_article_count": 180, "sale_article_count": 120, "lease_article_count": 40,
+                 "rent_article_count": 19, "short_term_rent_article_count": 1,
+                 "physical_complex_count": 10, "complexes_with_sale_articles": 9},
+        "서초": {"total_article_count": 130, "sale_article_count": 80, "lease_article_count": 30,
+                 "rent_article_count": 20, "short_term_rent_article_count": 0,
+                 "physical_complex_count": 8, "complexes_with_sale_articles": 7},
+    }
+    changes = {
+        gu: {"total_article_count": {"delta": delta}}
+        for gu, delta in (("강남", 5), ("서초", -3))
+    }
+    return {
+        "status": "current", "fresh": fresh, "complete": complete,
+        "observed_at": "2026-09-05T07:05:00+09:00", "districts": districts,
+        "total": {"total_article_count": 310, "sale_article_count": 200, "lease_article_count": 70,
+                  "rent_article_count": 39, "short_term_rent_article_count": 1,
+                  "physical_complex_count": 18, "complexes_with_sale_articles": 16},
+        "comparisons": {"1d": {"districts": changes}, "7d": {"districts": changes}},
+    }
+
+
 # ── 게이트: _select_ranked ───────────────────────────────────────────────
 
 def test_select_ranked_excludes_jusang_narrow_and_low_n():
@@ -92,6 +115,27 @@ def test_no_forbidden_words_in_either_html():
     for w in FORBIDDEN_WORDS:
         assert w not in d["tistory_html"], f"금칙어 '{w}' in tistory_html"
         assert w not in d["site_html"], f"금칙어 '{w}' in site_html"
+
+
+def test_listing_inventory_is_separate_full_district_table_and_compact_tistory():
+    ds = _sample_ds()
+    ds["listing_inventory"] = _inventory()
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    assert "구별 네이버 표시 매물" in d["site_html"]
+    assert "전체 표시건수" in d["site_html"]
+    assert "+5" in d["site_html"] and "-3" in d["site_html"]
+    assert "중개사 중복 노출" in d["site_html"]
+    assert "25개 구 전체 1일·7일 표" in d["tistory_html"]
+    assert "국토부 RTMS" in d["site_html"] and "네이버 법정동별 단지 목록" in d["site_html"]
+
+
+def test_incomplete_inventory_never_exposes_partial_counts_or_deltas():
+    ds = _sample_ds()
+    ds["listing_inventory"] = _inventory(fresh=False, complete=False)
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    assert "부분 합계와 증감은 공개하지 않습니다" in d["site_html"]
+    assert "매매 표시건수" not in d["site_html"]
+    assert "310" not in d["site_html"]
 
 
 def test_complex_name_links_to_gu_hub_anchor():

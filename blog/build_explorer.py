@@ -1031,7 +1031,7 @@ tbody tr:hover{background:#f6faff}
 <header>
   <h1>서울 부동산 탐색기 <span class=muted style="font-size:13px">— 공공 실거래 + 단지정보</span></h1>
   <div class=disc id=disc>불러오는 중…</div>
-  <div class=disc>모든 수치는 국토부 실거래 사실(F)이며 표본 n 을 동반합니다.</div>
+  <div class=disc>표의 가격·거래 수치는 국토부 실거래 사실(F)이며 표본 n 을 동반합니다.</div>
 </header>
 <div class=wrap>
   <aside class=panel id=filters></aside>
@@ -1227,7 +1227,7 @@ function init(){
     render();});
   document.getElementById("foot").innerHTML=
     "<b>출처·고지</b><br>"+DB.sources.map(s=>`• ${esc(s.name)}${s.url?` — <a href="${esc(s.url)}">${esc(s.url)}</a>`:""}${s.note?` <span class=muted>(${esc(s.note)})</span>`:""}`).join("<br>")
-    +`<br>• 가격은 국토부 공공 실거래가(12개월 동일평형 중위)만 표시 — 사설 시세(호가)는 게재하지 않습니다. 모든 수치는 국토부 실거래 사실(F)이며 n=표본수입니다.`
+    +`<br>• 표의 가격은 국토부 공공 실거래가(12개월 동일평형 중위)만 표시 — 사설 시세(호가)는 게재하지 않습니다. 가격·거래 수치는 국토부 실거래 사실(F)이며 n=표본수입니다.`
     +`<br>• P25·중위·P75 = 동일평형 실거래 분위수(협상 레인지). 추세 = 최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주위치 = <b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지에서 차지하는 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 구간은 —.`
     +`<br>• 자체 평가·점수·순위를 매기지 않습니다. 공개된 사실 수치만 제공합니다.`
     +`<br>• <b>가격대</b> = 매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천을 의미하지 않습니다 — 대출 가능 여부·금리·한도는 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오.`

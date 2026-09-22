@@ -762,9 +762,19 @@ def _cmd_daily_inner(args) -> None:
         jeonse_json = Path(inputs["jeonse"])
         _refresh_with_backup_guard(molit_json, "fetch_molit_recent_25gu.py", "MOLIT 실거래 fresh 재수집(25구)")
         _refresh_with_backup_guard(jeonse_json, "fetch_molit_jeonse_recent_25gu.py", "MOLIT 전세 fresh 재수집(25구)")
+        step("네이버 표시 매물 재고 수집(25구 전체)", [
+            "python3", "-m", "blog.collect_listing_inventory", "--today", today,
+        ], fatal=False)
+        district_maps = sorted(root.glob("examples/frame_district_*.json"))
+        if district_maps:
+            district_map = district_maps[-1]
+        else:
+            district_map = None
         run_daily_cmd += ["--molit", str(molit_json), "--jeonse", str(jeonse_json),
                           "--public-frame", str(inputs["public_frame"]),
                           "--survivors", str(inputs["survivors"])]
+        if district_map:
+            run_daily_cmd += ["--frame-district", str(district_map)]
         gu_allow = inputs["public_gu_allow"]
         if gu_allow:
             run_daily_cmd += ["--public-gu-allow", gu_allow]

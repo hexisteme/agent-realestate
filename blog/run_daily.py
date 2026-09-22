@@ -13,7 +13,7 @@ cron: `5 7 * * *  agent-realestate daily` (cli.cmd_daily 가 호출).
 """
 from __future__ import annotations
 import os, glob, argparse
-from datetime import date
+from datetime import date, datetime
 from collections import defaultdict
 from pathlib import Path
 
@@ -77,7 +77,51 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     (str(inputs["jeonse"]) if inputs["jeonse"] else None) or
                     _latest_or("examples/molit_jeonse_recent*.json", "")),
                     help="전세 recent 12개월 MOLIT(D 파생용, fetch_molit_jeonse_recent_25gu.py 산출). 없으면 스킵.")
+    ap.add_argument("--listing-inventory", default=(os.environ.get("RE_LISTING_INVENTORY") or
+                    _latest_or("report/blog/snapshots/listings/listing-inventory-*.json", "")),
+                    help="서울 25구 전체 네이버 표시 매물 스냅샷. 발행 풀·MOLIT 표본과 별도 집계.")
+    ap.add_argument("--reviews", default=(os.environ.get("RE_COMMUNITY_REVIEWS") or
+                    "examples/reviews_full_plus3_20260604.json"),
+                    help="단지별 커뮤니티 후기 집계 JSON. 원문·평점은 공개하지 않고 표본수·테마만 사용.")
     return ap
+
+
+def _attach_inventory(ds: dict, path: str, now: datetime) -> dict:
+    """Attach a freshness-gated view; malformed evidence degrades explicitly."""
+    from blog.listing_inventory import build_inventory_view, load_snapshot
+
+    if not path or not os.path.exists(path):
+        ds["listing_inventory"] = {
+            "complete": False, "fresh": False, "status": "missing",
+            "unavailable_reason": "수집된 매물 재고 관측이 없습니다.",
+        }
+        return ds
+    try:
+        current = load_snapshot(path)
+        history = []
+        for candidate in sorted(glob.glob(os.path.join(os.path.dirname(path), "listing-inventory-*.json"))):
+            try:
+                history.append(load_snapshot(candidate))
+            except (OSError, ValueError):
+                continue
+        view = build_inventory_view(current, history, now=now)
+        view["status"] = "current" if view["fresh"] else ("incomplete" if not view.get("complete") else "stale")
+        ds["listing_inventory"] = view
+        if view["fresh"]:
+            sources = ds.setdefault("sources", [])
+            sources.append({
+                "name": "네이버부동산 법정동별 단지 표시 매물 집계",
+                "url": "https://new.land.naver.com/",
+                "note": "서울 25개 구 전체 아파트 단지의 표시 매매·전세·월세·단기임대 건수 합계. 중개사 중복 노출 가능.",
+                "observed_at": view.get("observed_at"),
+            })
+    except Exception as exc:  # noqa: BLE001 - 가격·거래 발행을 막지 않고 상태를 공개한다
+        print(f"[run_daily] 매물 재고 연결 실패: {type(exc).__name__}")
+        ds["listing_inventory"] = {
+            "complete": False, "fresh": False, "status": "invalid",
+            "unavailable_reason": "매물 재고 관측 파일을 검증하지 못했습니다.",
+        }
+    return ds
 
 
 def main():
@@ -108,6 +152,9 @@ def main():
     ds = be.add_jeonse_facts(ds, a.jeonse)              # jeonse 파일 없으면 조용히 스킵
     ds = be.add_gongsi_multiple(ds)                     # 공시가 배율(S4, overlay 병합 뒤 — 면적 일치분만)
     ds = be.add_area_spread(ds, a.molit, frame_path=a.public_frame, district_map_path=a.frame_district)   # 동명 단지 가드에 프레임 필요                # 평형 격차 59↔84(S4, 같은 MOLIT 파일)
+    from blog.living_context import attach_living_context
+    ds = attach_living_context(ds, a.reviews, today)
+    ds = _attach_inventory(ds, a.listing_inventory, datetime.now().astimezone())
     if a.districts:
         keep = {g.strip() for g in a.districts.split(",")}
         ds["complexes"] = [r for r in ds["complexes"] if r["gu"] in keep]

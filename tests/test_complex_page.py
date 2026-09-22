@@ -150,6 +150,54 @@ def test_render_complex_page_monthly_none_shows_fallback_without_crash():
     assert "<!DOCTYPE html>" in out
 
 
+def test_living_context_restores_school_terrain_and_review_aggregates_with_limits():
+    row = _row("노원", "생활정보단지", living_context={
+        "school": {
+            "status": "legacy_unverified", "nearest_elem_school": "가까운초", "academy_exam": 12,
+            "school_achievement": 83.2, "tukmokgo_pct": 3.4, "source_label": "학교 공개자료",
+            "source_url": "https://example.com/school", "observed_date": None, "warning": "항목별 확인일 없음",
+        },
+        "terrain": {
+            "status": "current", "slope_pct": 4.1, "source_label": "OpenTopoData SRTM30m",
+            "source_url": "https://example.com/terrain", "observed_date": "2026-09-01", "warning": "",
+        },
+        "reviews": {
+            "status": "stale", "n_seen": 7, "themes_pos": ["조용함", "공원"],
+            "themes_caution": ["주차"], "source_label": "커뮤니티 집계",
+            "source_url": "https://example.com/reviews", "observed_date": "2026-06-04",
+            "warning": "30일 초과", "bias_warning": "소표본·자기선택 편향",
+        },
+    })
+    out = cp.render_complex_page(row, [], None, "2026-08-31", "2026-09-05")
+    for text in ("생활 맥락", "가까운초", "입시 학원 12곳", "기존 학업성취 지표 83.2%",
+                 "배정학교를 뜻하지 않습니다", "경사 근사 4.1%", "실제 보행 경사가 아닙니다",
+                 "표본 7건", "긍정: 조용함 · 공원", "주의: 주차", "소표본·자기선택 편향"):
+        assert text in out
+
+
+def test_living_context_escapes_hostile_themes_and_drops_unsafe_source_url():
+    hostile = '<img src=x onerror="boom()">'
+    row = _row("노원", "안전단지", living_context={
+        "school": {"status": "missing"},
+        "terrain": {"status": "missing"},
+        "reviews": {"status": "current", "n_seen": 1, "themes_pos": [hostile],
+                    "themes_caution": [], "source_label": hostile, "source_url": "javascript:boom()",
+                    "warning": "", "bias_warning": hostile},
+    })
+    out = cp.render_complex_page(row, [], None, "2026-08-31", "2026-09-05")
+    assert hostile not in out
+    assert "&lt;img src=x onerror=&quot;boom()&quot;&gt;" in out
+    assert "javascript:boom()" not in out
+
+
+def test_living_context_missing_states_are_visible_instead_of_disappearing():
+    out = cp.render_complex_page(_row("노원", "미수집단지"), [], None, "2026-08-31", "2026-09-05")
+    assert out.count("미수집") >= 3
+    assert "연결된 학군 정보 없음" in out
+    assert "연결된 경사 정보 없음" in out
+    assert "커뮤니티 후기 표본 없음" in out
+
+
 def test_render_complex_page_jeonse_gate_dash_when_undersampled():
     row = _row("노원", "전세미달", jeonse_n=2, jeonse_ratio_complex_pct=50.0)
     out = cp.render_complex_page(row, [], None, "2026-08-31", "2026-09-05")

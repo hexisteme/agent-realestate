@@ -126,6 +126,47 @@ def test_ga4_snippet_present_with_custom_measurement_id(monkeypatch):
     assert "G-TESTHUB1" in out and "gtag" in out
 
 
+def test_gu_hub_shows_separate_inventory_deltas_and_context_coverage():
+    rows = [
+        _row("노원", "A", living_context={
+            "school": {"status": "legacy_unverified"},
+            "terrain": {"status": "current"},
+            "reviews": {"status": "stale"},
+        }),
+        _row("노원", "B", living_context={
+            "school": {"status": "missing"},
+            "terrain": {"status": "missing"},
+            "reviews": {"status": "missing"},
+        }),
+    ]
+    changes = {"노원": {"total_article_count": {"delta": 4}}}
+    ds = {"complexes": rows, "listing_inventory": {
+        "fresh": True, "complete": True, "observed_at": "2026-09-22T07:05:00+09:00",
+        "districts": {"노원": {"total_article_count": 450, "sale_article_count": 321,
+                                "lease_article_count": 88, "rent_article_count": 39,
+                                "short_term_rent_article_count": 2,
+                                "physical_complex_count": 47}},
+        "comparisons": {"1d": {"districts": changes}, "7d": {"districts": changes}},
+    }}
+    out = render_gu_hub("노원", rows, "2026-09-21", "2026-09-22", ds=ds)
+    assert "전체 450건" in out and "1일 +4" in out and "7일 +4" in out
+    assert "매매 321건" in out
+    assert "전세 88건" in out and "집계 단지 47곳" in out
+    assert "생활정보 연결: 학군 1/2 · 경사 1/2 · 후기 1/2단지" in out
+    assert "중개사 중복 노출" in out
+
+
+def test_gu_hub_hides_partial_inventory_counts():
+    rows = [_row("노원", "A")]
+    ds = {"complexes": rows, "listing_inventory": {
+        "fresh": False, "complete": False, "status": "incomplete",
+        "districts": {"노원": {"sale_article_count": 999}},
+    }}
+    out = render_gu_hub("노원", rows, "2026-09-21", "2026-09-22", ds=ds)
+    assert "부분 매물 합계는 숨겼습니다" in out
+    assert "999" not in out
+
+
 # ── build_site.build() 통합: 25구 허브 + sitemap + index + feed 배선 ────────
 
 def test_build_site_wires_25_gu_hubs_sitemap_index_feed(tmp_path, monkeypatch):
