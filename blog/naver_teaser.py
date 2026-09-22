@@ -35,7 +35,7 @@ def build_teaser_text(today: str, gu_results: list[dict], tistory_url: str = "")
     url = tistory_url or _PH
     lines = [
         f"[{today}] 서울 아파트 국토부 공공 실거래 + 단지정보 스냅샷 📊",
-        f"{n_gu}개 구 {n_complex}개 단지(세대수 200+ · 안전제외 반영).",
+        f"{n_gu}개 구 {n_complex}개 단지(세대수 100+ · 안전제외 반영).",
     ]
     if top:
         lines.append(f"실거래 상위: {top['gu']} {top['top_eok']}억대.")

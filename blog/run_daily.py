@@ -2,7 +2,7 @@
 
 흐름(2026-06-17 재설계 — 익명+점수 → 실명 사실):
   1) build_explorer.build_dataset: 공공 실거래(국토부 RTMS) + 단지정보(세대수·연식·전용·유형) 실명 수집
-     + 사용자 고정 제외규칙(세대수≥200·corridor) 적용.
+     + 공개 범위 규칙(세대수≥100·corridor) 적용.
   2) write_out: dataset.json + explorer.html(방문자 필터형 탐색기).
   3) write_posts: 자치구별 실명 사실 포스트(SEO 본체) + claims.jsonl + llms.txt.
   4) 신선도 게이트: data_asof 초과면 STALE(차단 옵션).

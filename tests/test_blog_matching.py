@@ -192,6 +192,29 @@ def test_assert_no_duplicate_signatures_ignores_small_samples():
     assert_no_duplicate_signatures(ds)
 
 
+def test_assert_no_duplicate_signatures_allows_rounded_collision_from_distinct_sources():
+    first = _row("롯데캐슬에듀포레", "동작", n=5, med=20.9, p25=20.5, p75=21.3, trend=None, pos=None)
+    second = _row("서울숲삼부", "성동", n=5, med=20.9, p25=20.5, p75=21.3, trend=None, pos=None)
+    first["_molit_source_signature"] = "source-a"
+    second["_molit_source_signature"] = "source-b"
+    ds = {"complexes": [first, second]}
+
+    assert_no_duplicate_signatures(ds)
+
+    assert "_molit_source_signature" not in first
+    assert "_molit_source_signature" not in second
+
+
+def test_assert_no_duplicate_signatures_still_blocks_reused_source_records():
+    first = _row("A단지", "노원")
+    second = _row("B단지", "노원")
+    first["_molit_source_signature"] = "same-source"
+    second["_molit_source_signature"] = "same-source"
+
+    with pytest.raises(ValueError, match="A단지"):
+        assert_no_duplicate_signatures({"complexes": [first, second]})
+
+
 # ── build_dataset_public 종단(합성 frame+MOLIT) ──────────────────────────
 
 def test_build_dataset_public_distinguishes_prefix_sharing_complexes(tmp_path):

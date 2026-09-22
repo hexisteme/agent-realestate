@@ -86,6 +86,21 @@ def test_listing_inventory_collection_does_not_depend_on_frame_district_map():
 
     source = inspect.getsource(cli._cmd_daily_inner)
     inventory_at = source.index('step("네이버 표시 매물 재고 수집(25구 전체)"')
-    district_map_gate_at = source.index('if district_maps:')
+    district_map_gate_at = source.index('district_maps = sorted')
 
     assert inventory_at < district_map_gate_at
+
+
+def test_expanded_public_scope_is_built_after_complete_inventory_before_blog():
+    """법정동 raw 관측으로 100세대 이상 프레임을 만든 뒤 그 경로를 일간 빌드에 넘긴다."""
+    import inspect
+
+    source = inspect.getsource(cli._cmd_daily_inner)
+    inventory_at = source.index('step("네이버 표시 매물 재고 수집(25구 전체)"')
+    scope_at = source.index('step("공개 조사단지 범위 갱신(100세대 이상)"')
+    blog_at = source.index('step("블로그 생성(실명 포스트+탐색기)"')
+
+    assert inventory_at < scope_at < blog_at
+    assert '"--public-frame", str(public_frame)' in source
+    assert '"--survivors", str(survivors)' in source
+    assert '"--frame-district", str(district_map)' in source

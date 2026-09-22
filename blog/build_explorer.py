@@ -11,7 +11,7 @@
 명예훼손 구성요건 자체가 사라짐 · 사설 호가 정량 재게시는 DB권(대법 2021도1533)이라 band/배제.
 """
 from __future__ import annotations
-import os, re, json, glob, statistics as st
+import hashlib, os, re, json, glob, statistics as st
 from datetime import date
 from urllib.parse import quote
 
@@ -170,6 +170,23 @@ def _median_of(recs: list[dict]) -> tuple[float | None, int]:
     return (round(st.median(px) / 1e8, 2) if px else None), len(px)
 
 
+def _molit_source_signature(gu: str, recs: list[dict]) -> str | None:
+    """Fingerprint the exact RTMS records used by one published row.
+
+    The value is transient and removed before serialization.  It separates a
+    legitimate collision in rounded statistics from two display rows that
+    accidentally reused the same source transactions.
+    """
+    if not recs:
+        return None
+    facts = sorted(
+        (str(r.get("apt") or ""), float(r.get("area") or 0), int(r.get("price") or 0), str(r.get("ym") or ""))
+        for r in recs
+    )
+    payload = json.dumps([gu, facts], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def molit_median(c, lawd, molit) -> tuple[float | None, int]:
     """공공 RTMS 12개월 동일평형 중위(억) — run_daily.gen_gu.med 와 동일 로직. 사설 호가 fallback 없음."""
     return _median_of(_match_records(c, lawd, molit))
@@ -240,8 +257,8 @@ def derive_tier_now(recs: list[dict], asof: str) -> dict:
     return out
 
 
-# 사용자 고정 제외 규칙([[feedback-realestate-scan-exclusions]], 2026-06-06 확인) — 실명 공개라 hard 적용.
-MIN_UNITS = 200                                   # ① 세대수<200 제외(환금성 우려)
+# 사용자 제외 규칙. 2026-09-22 조사범위 확대: 실거래 신원·표본 게이트는 유지하고 규모 하한만 완화.
+MIN_UNITS = 100                                   # ① 세대수<100 제외(극소단지 표본 불안정 방어)
 CORRIDOR_EXCLUDE = {"구로현대", "구로두산", "두산"}  # ② 대림역~남구로역 corridor(구로동) hard 제외 — gu==구로 한정
 
 
@@ -288,6 +305,7 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
                 "molit_trend_n_recent": tier["trend_n_recent"],  # ② 최근3개월 창 표본수
                 "molit_trend_n_prior": tier["trend_n_prior"],    # ② 직전9개월 창 표본수
                 "molit_pos_52w": tier["pos_52w"],                # ③ 최근3개월 체결 중위의 12개월(52주) 레인지 내 위치(%)
+                "_molit_source_signature": _molit_source_signature(gu, matched),
                 "pyeong_price_man": round(md * 1e8 / pyeong / 1e4) if (md and pyeong) else None,  # 평단가(만원/평) 파생 공개사실
                 # ★ 점수·순위·등급·강점축·세그먼트 일절 없음(A 모델) — 사실 수치만.
                 # ── 입지·인프라 사실 필드(A 모델 확장, 2026-07-03) ──
@@ -457,7 +475,7 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
           부족=실명 중복 발행).
         · v1(스캔용 밴드 55~66/78~95)·v2(frame 변형명 fuzzy 재앵커)는 기존 게재 수치를 바꿔
           게이트 FAIL → 폐기 (경위는 git/AGENTS 기록).
-    공통: 세대수≥200·구로 corridor 제외(build_dataset 동일). survivors_path 지정 시 (B)를 스캔 생존
+    공통: 세대수≥100·구로 corridor 제외(build_dataset 동일). survivors_path 지정 시 (B)를 스캔 생존
     complexNo 로 제한(발행 풀 = 스캔 레이어 단일 진실; (A)는 기존 발행 유지라 미적용). 매칭 0(ghost)
     제외. (B)의 호가·enrichment 필드는 None(문자열 ""). A모델 가드(점수·순위·사설호가 없음) 동일.
 
@@ -597,6 +615,7 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
             "molit_trend_n_recent": tier["trend_n_recent"],
             "molit_trend_n_prior": tier["trend_n_prior"],
             "molit_pos_52w": tier["pos_52w"],
+            "_molit_source_signature": _molit_source_signature(gu, recs),
             "pyeong_price_man": round(md * 1e8 / pyeong / 1e4) if (md and pyeong) else None,
             # ★ 점수·순위·등급·강점축·세그먼트 일절 없음(A 모델) — 사실 수치만.
             # ── public 경로(B)는 호가/enrichment 배선이 없어 아래 전부 None(문자열 필드는 "") ──
@@ -949,19 +968,34 @@ def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
 
 
 def assert_no_duplicate_signatures(ds: dict) -> None:
-    """동일시그니처(매칭결함 재발) 게이트 — (molit_recent_eok, molit_n, molit_p25_eok, molit_p75_eok,
-    molit_trend_pct, molit_pos_52w) 가 완전히 같은 단지가 2개 이상(molit_n>=5 한정 — 소표본 우연
-    일치는 실제 매칭결함이 아닐 수 있어 제외) 있으면 이름매칭이 다시 뭉쳤다는 신호로 보고
-    ValueError(그룹 목록 포함)를 낸다. run_daily.py 가 write_out 직전에 호출해 회귀 시 발행을
-    막는다(2026-09-05, 188/690 동일시그니처 사고 재발방지 — [[feedback-realestate-regen-pipeline]])."""
-    groups: dict[tuple, list[str]] = {}
+    """Block different display rows that reused the same RTMS transactions.
+
+    Rounded summary values can legitimately collide as the public pool grows.
+    A collision is a mapping defect only when its transient source fingerprint
+    also matches. Rows without a fingerprint keep the conservative legacy
+    behavior. The private helper field is always removed before publication.
+    """
+    groups: dict[tuple, list[tuple[str, str | None]]] = {}
     for r in ds["complexes"]:
+        source_signature = r.pop("_molit_source_signature", None)
         if (r.get("molit_n") or 0) < 5:
             continue
         sig = (r.get("molit_recent_eok"), r.get("molit_n"), r.get("molit_p25_eok"),
                r.get("molit_p75_eok"), r.get("molit_trend_pct"), r.get("molit_pos_52w"))
-        groups.setdefault(sig, []).append(f'{r.get("gu")}/{r.get("name")}')
-    dups = {sig: names for sig, names in groups.items() if len(names) > 1}
+        groups.setdefault(sig, []).append((f'{r.get("gu")}/{r.get("name")}', source_signature))
+    dups: dict[tuple, list[str]] = {}
+    for sig, entries in groups.items():
+        if len(entries) < 2:
+            continue
+        if any(source is None for _, source in entries):
+            dups[sig] = [name for name, _ in entries]
+            continue
+        by_source: dict[str, list[str]] = {}
+        for name, source in entries:
+            by_source.setdefault(source, []).append(name)
+        reused = [name for names in by_source.values() if len(names) > 1 for name in names]
+        if reused:
+            dups[sig] = reused
     if dups:
         lines = [f"  {sig} -> {names}" for sig, names in dups.items()]
         raise ValueError(f"동일 시그니처(매칭결함 의심) 단지 그룹 {len(dups)}개:\n" + "\n".join(lines))
@@ -1347,7 +1381,7 @@ def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
              else f'<span class="badge">데이터 {asof} · 신선</span>')
     srt = sorted(rows, key=lambda r: (r["molit_recent_eok"] is None, -(r["molit_recent_eok"] or 0), r["name"]))
     priced = [r for r in rows if r["molit_recent_eok"] is not None]
-    bluf = (f"{gu} {len(rows)}개 단지(세대수 200+ · 안전제외 반영)의 공공 실거래·단지정보 스냅샷. "
+    bluf = (f"{gu} {len(rows)}개 단지(세대수 100+ · 안전제외 반영)의 공공 실거래·단지정보 스냅샷. "
             f"국토부 RTMS 12개월 동일평형 중위 기준. 자체 평가·점수·순위 없음 — 공개된 사실 수치만.")
     trs = ""
     for r in srt:
@@ -1392,7 +1426,7 @@ P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최�
 <b>방법론·출처</b><br>
 • 실거래 = 국토교통부 RTMS 공공데이터(12개월 동일평형 중위), 매일 자동 재수집. 세대수·연식·전용면적·유형 = 공개정보.<br>
 • 자체 평가·점수·순위를 매기지 않습니다. 사설 시세 원본은 미게재(공공 실거래만).<br>
-• 세대수 200+ 단지 대상, 일부 단지 안전제외 반영. 데이터 {asof} 기준. {('<b>현재 STALE</b>.' if stale else '신선도 임계 내.')} 거래 전 원출처 재확인 필수.<br>
+• 세대수 100+ 단지 대상, 일부 단지 안전제외 반영. 데이터 {asof} 기준. {('<b>현재 STALE</b>.' if stale else '신선도 임계 내.')} 거래 전 원출처 재확인 필수.<br>
 • {_takedown()}<br>
 • <a href="../methodology.html">방법론 전문</a> · 코드: <a href="https://github.com/hexisteme/agent-realestate">github.com/hexisteme/agent-realestate</a>
 </div></body></html>"""

@@ -32,7 +32,7 @@ def build_tistory_section(gu: str, rows: list[dict]) -> str:
       · 생존: p·b·br·a·span(color)·td·table
     → 메인 표 7→4컬럼(셀 내 <br> 적층), 헤더는 <td><b>, 단지별 상세는 요약 tr 바로 아래
       전폭 <td colspan=4> 행으로 인터리브(그룹 라벨·확인된 항목만). 데이터·가드는 종전과 동일."""
-    bluf = (f"{gu} {len(rows)}개 단지(세대수 200+ · 안전제외 반영)의 공공 실거래·단지정보. "
+    bluf = (f"{gu} {len(rows)}개 단지(세대수 100+ · 안전제외 반영)의 공공 실거래·단지정보. "
             f"국토부 RTMS 12개월 동일평형 중위. 자체 평가·점수 없음 — 공개된 사실 수치만.")
     srt = sorted(rows, key=lambda x: (x["molit_recent_eok"] is None, -(x["molit_recent_eok"] or 0)))
     head = (f'<tr><td style="{_TH}"><b>단지</b></td><td style="{_TH}"><b>스펙</b></td>'

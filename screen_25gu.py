@@ -1,12 +1,12 @@
 """오늘자 25개구 전수 스크린 — enumeration(frame_25gu) ↔ 최근 MOLIT median 매칭.
-필터: 전용59㎡+(band 59/84) · 세대수≥200 · 예산≤CAP(RE_CAP env; 미설정/0/none = 무캡, 2026-09-07 가격대 4밴드 수집 결정 · MOLIT median) · corridor 제외 · MOLIT-matched(ghost 제거).
+필터: 거래 최다 대표평형 · 세대수≥100 · 예산≤CAP(RE_CAP env; 미설정/0/none = 무캡, 2026-09-07 가격대 4밴드 수집 결정 · MOLIT median) · corridor 제외 · MOLIT-matched(ghost 제거).
 gu 귀속: frame 의 gu 태그로 그 구 MOLIT 와 매칭 → 경계누수는 자동 자가교정(타구 MOLIT 불일치→탈락). 단지당 1(complexNo).
 screen_11gu.py 의 25구 확장 복제 (WS-1). 사용: python3 screen_25gu.py [--dry-run] [--out=examples/screen_25gu_survivors_<YYYYMMDD>.json]"""
 import os, sys, json, statistics, math, time
 from collections import defaultdict
 from pathlib import Path
 
-EX = Path("examples"); MIN_UNITS = 200
+EX = Path("examples"); MIN_UNITS = 100
 # 2026-09-07 가격대 4밴드 수집 결정: RE_CAP 미설정/0/none = 무캡(15~20억·20억+ 밴드까지 수집). 숫자면 그 값(원) 이하만.
 _cap_env = os.environ.get("RE_CAP", "").strip().lower()
 CAP = None if _cap_env in ("", "0", "none") else float(_cap_env)
@@ -37,17 +37,25 @@ def base(n): return str(n).split("[")[0].strip()
 frame = json.load(open(EX/"frame_25gu_20260710.json"))
 molit = json.load(open(EX/"molit_recent_25gu_20260710.json"))
 
-# 구별 (normname, band) → median price
-def med_by_band(lawd):
-    by59, by84 = defaultdict(list), defaultdict(list)
+# 구별 단지의 거래 최다 전용면적 → (대표면적, 중위가). 59/84㎡가 없는 단지도 보존한다.
+def representative_by_name(lawd):
+    grouped = defaultdict(lambda: defaultdict(list))
     for r in molit.get(lawd, []):
-        a = r.get("area", 0)
-        if 55 <= a < 66: by59[norm(r["apt"])].append(r["price"])
-        elif 78 <= a < 95: by84[norm(r["apt"])].append(r["price"])
-    return ({k: int(statistics.median(v)) for k, v in by59.items()},
-            {k: int(statistics.median(v)) for k, v in by84.items()})
+        try:
+            area = round(float(r.get("area") or 0), 1)
+            price = int(r["price"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if area > 0 and price > 0:
+            grouped[norm(r.get("apt"))][area].append(price)
+    result = {}
+    for name, by_area in grouped.items():
+        # 표본 최다 → 84㎡에 가까운 면적 → 작은 면적 순으로 결정론적 선택.
+        area, prices = max(by_area.items(), key=lambda item: (len(item[1]), -abs(item[0] - 84), -item[0]))
+        result[name] = (area, int(statistics.median(prices)))
+    return result
 
-med_cache = {gu: med_by_band(lawd) for gu, lawd in LAWD.items()}
+med_cache = {gu: representative_by_name(lawd) for gu, lawd in LAWD.items()}
 surv = []
 for c in frame:
     gu = c["gu"]
@@ -55,17 +63,18 @@ for c in frame:
     if gu == "구로" and base(c["name"]) in CORRIDOR: continue
     lat, lng = c.get("lat"), c.get("lng")
     if lat and lng and any(hav(lat, lng, p[0], p[1]) <= 1100 for p in EXCL_PT.values()): continue  # corridor 좌표
-    m59, m84 = med_cache.get(gu, ({}, {}))
     k = norm(c["name"])
-    band, m = (84, m84.get(k)) if m84.get(k) else (59, m59.get(k))
-    if m is None or (CAP is not None and m > CAP): continue   # ghost 제거 + 예산필터(CAP=None 이면 무캡)
+    representative = med_cache.get(gu, {}).get(k)
+    if representative is None: continue
+    area, m = representative
+    if CAP is not None and m > CAP: continue                  # ghost 제거 + 예산필터(CAP=None 이면 무캡)
     by = (c.get("builtYm") or "")[:4]
     redev = (c.get("far") or 999) <= 200 and by and by.isdigit() and int(by) <= 1995
     surv.append({"complex_name": c["name"], "district": f"서울 {gu}구", "gu": gu,
                  "complex_no": str(c["complexNo"]), "saenghwalgwon": GU_SG[gu],
                  "households": c.get("households"), "built_year": int(by) if by.isdigit() else None,
                  "far_pct": c.get("far"), "lat": lat, "lng": lng, "type": c.get("type"),
-                 "entry_band": band, "molit_median_eok": round(m/1e8, 2),
+                 "entry_area_m2": area, "entry_band": round(area), "molit_median_eok": round(m/1e8, 2),
                  "deal_count": c.get("dealCount"), "redev_proxy": bool(redev)})
 
 # 단지당 1 (complexNo), 최저가
@@ -81,7 +90,7 @@ bygu = defaultdict(list)
 for s in surv: bygu[s["gu"]].append(s)
 nre = sum(1 for s in surv if s["redev_proxy"])
 capk = f"≤{CAP/1e8:.2f}억" if CAP is not None else "무캡"
-print(f"=== 오늘자 25개구 전수 스크린 (전용59+·세대수≥200·{capk}·corridor제외·MOLIT매칭) → {len(surv)}단지 (재건축proxy {nre}) ===")
+print(f"=== 오늘자 25개구 전수 스크린 (대표평형·세대수≥100·{capk}·corridor제외·MOLIT매칭) → {len(surv)}단지 (재건축proxy {nre}) ===")
 for gu in LAWD:
     g = sorted(bygu.get(gu, []), key=lambda x: x["molit_median_eok"])
     print(f"[{gu}] {len(g)}: " + ", ".join(f"{'★' if s['redev_proxy'] else ''}{s['complex_name'][:10]}({s['molit_median_eok']:.1f})" for s in g[:10]))

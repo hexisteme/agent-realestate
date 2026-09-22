@@ -685,7 +685,7 @@ def cmd_daily(args) -> None:
     전제: editable 설치(pip install -e .) 또는 repo 루트 실행 — 루트는 regen_reports.py 위치로 탐지.
 
     ★RE_SCAN_SCOPE=25gu(2026-07-10, 풀확대 3단계 — 기본 미설정=기존 11gu 동작 완전 동일):
-    설정 시 25구 스캔(15억 CAP) + jeonse 최근수집 + public-only 경로로 전환한다. **주의**: 신규 14구
+    설정 시 25구 법정동 전수관측(100세대 이상) + jeonse 최근수집 + public-only 경로로 전환한다. **주의**: 신규 14구
     enrichment(공시가·관리비·학군) 백필이 완료·검증되기 전엔 켜지 말 것(coverage-pending 경고로
     확인 — write_out 이 50% 미만이면 발화). RE_PUBLIC_GU_ALLOW(쉼표목록)로 구별 단계오픈 가능."""
     # ★2026-07-11 무알림 크래시 사고: 본문 미처리 예외(예: NameError)는 step()/티스토리 퍼블리셔
@@ -765,14 +765,39 @@ def _cmd_daily_inner(args) -> None:
         step("네이버 표시 매물 재고 수집(25구 전체)", [
             "python3", "-m", "blog.collect_listing_inventory", "--today", today,
         ], fatal=False)
-        district_maps = sorted(root.glob("examples/frame_district_*.json"))
-        if district_maps:
-            district_map = district_maps[-1]
+        # 같은 법정동 전수관측의 raw checkpoint로 조사 프레임도 갱신한다. 기존 frame은 최초부터
+        # 200세대 미만을 버렸고 survivors는 59/84㎡ 거래만 허용해 범위를 이중 축소했다.
+        # 새 프레임은 100세대 이상을 보존하고, 실제 발행 여부는 build_dataset_public의 정확한
+        # 단지명·소재구·MOLIT 표본 게이트가 결정한다. 25구 중 하나라도 결손이면 이전 프레임으로 폴백.
+        scope_dir = root / "report" / "public-scope" / today
+        step("공개 조사단지 범위 갱신(100세대 이상)", [
+            "python3", "-m", "blog.public_scope",
+            "--today", today,
+            "--checkpoint-dir", str(root / "report/blog/snapshots/listings/raw" / today),
+            "--out-dir", str(scope_dir),
+            "--previous-frame", str(inputs["public_frame"]),
+        ], fatal=False)
+        from blog.public_scope import latest_public_scope, load_public_scope
+        expanded = load_public_scope(scope_dir, observation_date=today)
+        if expanded is None:
+            expanded = latest_public_scope(root / "report" / "public-scope", on_or_before=today)
+
+        if expanded is not None:
+            public_frame = Path(expanded["public_frame"])
+            survivors = Path(expanded["survivors"])
+            district_map = Path(expanded["district_map"])
+            reused = expanded["observation_date"] != today
+            suffix = f" (직전 완전관측 {expanded['observation_date']} 재사용)" if reused else ""
+            print(f"[daily] 조사 프레임 확대 적용: {expanded['frame_count']:,}단지{suffix}")
         else:
-            district_map = None
+            public_frame = Path(inputs["public_frame"])
+            survivors = Path(inputs["survivors"])
+            district_maps = sorted(root.glob("examples/frame_district_*.json"))
+            district_map = district_maps[-1] if district_maps else None
+            print("[daily] 조사 프레임 확대 미적용 — 직전 검증 프레임 사용")
         run_daily_cmd += ["--molit", str(molit_json), "--jeonse", str(jeonse_json),
-                          "--public-frame", str(inputs["public_frame"]),
-                          "--survivors", str(inputs["survivors"])]
+                          "--public-frame", str(public_frame),
+                          "--survivors", str(survivors)]
         if district_map:
             run_daily_cmd += ["--frame-district", str(district_map)]
         gu_allow = inputs["public_gu_allow"]
@@ -782,7 +807,7 @@ def _cmd_daily_inner(args) -> None:
     else:
         _refresh_with_backup_guard(molit_json, "fetch_molit_recent_11gu.py", "MOLIT 실거래 fresh 재수집")
     # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
-    #   (자체 점수 없음·공공 실거래만·세대수200/corridor 제외). build_site 가 site/ 로 조립.
+    #   (자체 점수 없음·공공 실거래만·세대수100/corridor 제외). build_site 가 site/ 로 조립.
     step("블로그 생성(실명 포스트+탐색기)", run_daily_cmd)
     # 단지 페이지 월별 차트(2026-09-05 P2)가 방금 refresh 된 MOLIT 파일을 보도록 build_site 에 경로 전달(subprocess env 상속).
     #   미지정 시 build_site 는 25gu 예제 경로로 폴백 — 11gu 스코프에선 다른 파일을 읽게 되는 구멍을 명시로 막는다.
