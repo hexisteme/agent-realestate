@@ -757,6 +757,7 @@ def _cmd_daily_inner(args) -> None:
     scope = os.environ.get("RE_SCAN_SCOPE", "11gu")
     inputs = resolve_scope_inputs(scope, root)   # ★단일소스화(2026-09-05) — run_daily 단독실행 기본값과 동일 함수를 공유
     molit_json = Path(inputs["molit"])
+    kapt_public_frame: Path | None = None
     run_daily_cmd = ["python3", "-m", "blog.run_daily", "--asof", today, "--today", today, "--block-stale"]
     if scope == "25gu":
         jeonse_json = Path(inputs["jeonse"])
@@ -798,6 +799,7 @@ def _cmd_daily_inner(args) -> None:
         run_daily_cmd += ["--molit", str(molit_json), "--jeonse", str(jeonse_json),
                           "--public-frame", str(public_frame),
                           "--survivors", str(survivors)]
+        kapt_public_frame = public_frame
         if district_map:
             run_daily_cmd += ["--frame-district", str(district_map)]
         gu_allow = inputs["public_gu_allow"]
@@ -809,6 +811,24 @@ def _cmd_daily_inner(args) -> None:
     # ★A모델(2026-06-17): run_daily 가 실명 사실 포스트 + dataset.json + explorer.html 를 모두 생성
     #   (자체 점수 없음·공공 실거래만·세대수100/corridor 제외). build_site 가 site/ 로 조립.
     step("블로그 생성(실명 포스트+탐색기)", run_daily_cmd)
+    # K-apt 시설정보는 공개 풀 전체를 7일 주기로 보강한다. 첫 조립의 dataset.json을 정확한 대상
+    # 목록으로 쓰고, 완전 캐시가 실제로 바뀐 경우에만 로컬 조립을 한 번 더 돌려 같은 날 반영한다.
+    # 수집 실패는 가격·거래 발행을 막지 않으며 이전 검증 캐시를 보존한다.
+    kapt_cache = root / "report" / "enrichment" / "kapt-facilities.json"
+    cache_mtime = kapt_cache.stat().st_mtime_ns if kapt_cache.exists() else None
+    kapt_refresh_cmd = [
+        "python3", "-m", "blog.kapt_facilities",
+        "--dataset", str(root / "report" / "blog" / "dataset.json"),
+        "--out", str(kapt_cache),
+        "--today", today,
+        "--max-age-days", "7",
+    ]
+    if kapt_public_frame is not None:
+        kapt_refresh_cmd += ["--public-frame", str(kapt_public_frame)]
+    step("K-apt 난방·주차 주기 보강", kapt_refresh_cmd, fatal=False)
+    refreshed_mtime = kapt_cache.stat().st_mtime_ns if kapt_cache.exists() else None
+    if refreshed_mtime is not None and refreshed_mtime != cache_mtime:
+        step("블로그 재생성(K-apt 최신 시설정보 반영)", run_daily_cmd)
     # 단지 페이지 월별 차트(2026-09-05 P2)가 방금 refresh 된 MOLIT 파일을 보도록 build_site 에 경로 전달(subprocess env 상속).
     #   미지정 시 build_site 는 25gu 예제 경로로 폴백 — 11gu 스코프에선 다른 파일을 읽게 되는 구멍을 명시로 막는다.
     os.environ["RE_MOLIT"] = str(molit_json)

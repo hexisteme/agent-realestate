@@ -967,6 +967,74 @@ def add_enrich_overlay(ds: dict, overlay_path: str) -> dict:
     return ds
 
 
+def add_kapt_facilities(ds: dict, cache_path: str) -> dict:
+    """최신 K-apt 난방·주차 캐시를 ``complex_no``로 병합한다.
+
+    캐시 전체 회차가 완료됐고 각 행이 구·주소·이름·세대수 신원 게이트를 통과한 경우만 쓴다.
+    최신 공식 값은 기존 레거시 보강값보다 우선하며, 난방과 주차에 각각 출처·관측일을 붙인다.
+    """
+    if not cache_path or not os.path.exists(cache_path):
+        return ds
+    try:
+        value = json.load(open(cache_path, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ds
+    meta = value.get("_meta") if isinstance(value, dict) else None
+    entries = value.get("complexes") if isinstance(value, dict) else None
+    if (
+        not isinstance(meta, dict)
+        or meta.get("schema") != 1
+        or meta.get("complete") is not True
+        or not isinstance(entries, dict)
+    ):
+        return ds
+
+    source_name = "K-apt 공동주택 기본정보 OpenAPI"
+    source_url = "https://www.data.go.kr/data/15058453/openapi.do"
+    merged = 0
+    for row in ds.get("complexes", []):
+        entry = entries.get(str(row.get("complex_no") or ""))
+        if not isinstance(entry, dict) or entry.get("kapt_verified") is not True:
+            continue
+        if str(entry.get("gu") or "").rstrip("구") != str(row.get("gu") or "").rstrip("구"):
+            continue
+        observed = entry.get("observed_date")
+        if entry.get("heating"):
+            row["heating"] = entry["heating"]
+            row["heating_source_name"] = source_name
+            row["heating_source_url"] = source_url
+            row["heating_observed_date"] = observed
+        if entry.get("corridor_type"):
+            row["corridor_type"] = entry["corridor_type"]
+        if entry.get("builder"):
+            row["builder"] = entry["builder"]
+        if entry.get("parking_per_unit") is not None:
+            for field in (
+                "parking_ground",
+                "parking_underground",
+                "parking_total",
+                "parking_household_count",
+                "parking_per_unit",
+            ):
+                row[field] = entry.get(field)
+            row["parking_source_name"] = source_name
+            row["parking_source_url"] = source_url
+            row["parking_observed_date"] = observed
+        row["kapt_verified"] = True
+        merged += 1
+
+    if merged:
+        sources = ds.setdefault("sources", [])
+        if not any(isinstance(src, dict) and src.get("url") == source_url for src in sources):
+            sources.append({
+                "name": source_name,
+                "url": source_url,
+                "note": "단지코드·소재구·이름·세대수·준공연도를 교차검증한 난방방식과 지상·지하 주차대수.",
+                "observed_at": meta.get("latest_observed_date"),
+            })
+    return ds
+
+
 def assert_no_duplicate_signatures(ds: dict) -> None:
     """Block different display rows that reused the same RTMS transactions.
 

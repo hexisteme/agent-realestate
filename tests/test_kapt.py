@@ -115,8 +115,41 @@ def test_fetch_basis_merges_v5_basis_and_detail(monkeypatch):
     assert calls == [kapt.BASIS_EP_V5, kapt.DETAIL_EP_V5]
     assert (m["kaptName"], m["units"], m["dong_cnt"], m["built_year"]) == ("영등포푸르지오", 2462, 20, 2002)
     assert m["builder"] == "대우건설" and m["parking_total"] == 2462 and m["parking_per_unit"] == 1.0
+    assert (m["parking_ground"], m["parking_underground"], m["parking_household_count"]) == (1000, 1462, 2462)
     # 신원게이트(verify_kapt_basis_identity)용 원시값 — 주소·세대수(kaptdaCnt)·호수(hoCnt, 주상복합 폴백) 노출(2026-09-05)
     assert (m["kaptAddr"], m["kaptdaCnt"], m["hoCnt"]) == ("서울특별시 영등포구 영등포동 1-1 영등포푸르지오", 2462, 2470)
+
+
+def test_fetch_basis_does_not_invent_missing_parking_half_and_uses_hocnt_denominator(monkeypatch):
+    from agent_realestate.collectors import kapt
+
+    def missing_half(url, params, key):
+        if url == kapt.BASIS_EP_V5:
+            return {
+                "kaptName": "주상복합", "kaptdaCnt": 0, "hoCnt": 200,
+                "kaptUsedate": "20200101", "kaptAddr": "서울특별시 중구",
+            }
+        return {"kaptdPcnt": 20}  # 지하 필드 자체가 없으면 0으로 간주하면 안 된다.
+
+    monkeypatch.setattr(kapt, "_get_json_item", missing_half)
+    missing = kapt.fetch_basis("A", key="k")
+    assert missing["parking_ground"] == 20
+    assert missing["parking_underground"] is None
+    assert missing["parking_total"] is None
+    assert missing["parking_per_unit"] is None
+
+    def complete(url, params, key):
+        if url == kapt.BASIS_EP_V5:
+            return {
+                "kaptName": "주상복합", "kaptdaCnt": 0, "hoCnt": 200,
+                "kaptUsedate": "20200101", "kaptAddr": "서울특별시 중구",
+            }
+        return {"kaptdPcnt": 20, "kaptdPcntu": 180}
+
+    monkeypatch.setattr(kapt, "_get_json_item", complete)
+    filled = kapt.fetch_basis("A", key="k")
+    assert filled["parking_household_count"] == 200
+    assert filled["parking_per_unit"] == 1.0
 
 
 def test_list_endpoint_is_v4_and_parse_apt_list_accepts_v4_json():
@@ -127,3 +160,24 @@ def test_list_endpoint_is_v4_and_parse_apt_list_accepts_v4_json():
             '{"kaptCode":"","kaptName":"무코드"}],"numOfRows":3,"pageNo":1,"totalCount":2},"header":{"resultCode":"00"}}}')
     assert kapt.parse_apt_list(body) == [{"kaptCode": "A10020255", "kaptName": "월계건양 노블레스 아파트"}]
     assert kapt.parse_apt_list("{not json") == []
+
+
+def test_json_gateway_error_exposes_only_fixed_code(monkeypatch):
+    from agent_realestate.collectors import kapt
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return (b'{"OpenAPI_ServiceResponse":{"cmmMsgHeader":'
+                    b'{"returnReasonCode":"04","returnAuthMsg":"raw secret-bearing text"}}}')
+
+    monkeypatch.setattr(kapt.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    assert kapt._get_json_item("https://example.invalid", {}, "never-print") == {}
+    assert kapt.last_service_error_code() == "04"
+    kapt.clear_last_service_error()
+    assert kapt.last_service_error_code() is None

@@ -25,6 +25,8 @@ BASIS_EP = "http://apis.data.go.kr/1613000/AptBasisInfoServiceV3/getAphusBassInf
 #   응답 필드 동일: kaptName·kaptAddr·bjdCode·kaptdaCnt·kaptDongCnt·kaptUsedate·kaptBcompany…).
 BASIS_EP_V5 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5"
 DETAIL_EP_V5 = "https://apis.data.go.kr/1613000/AptBasisInfoServiceV5/getAphusDtlInfoV5"
+KAPT_DATASET_URL = "https://www.data.go.kr/data/15058453/openapi.do"
+_LAST_SERVICE_ERROR_CODE: str | None = None
 
 # ── 공용관리비 API (서비스 ID 15057937) ──────────────────────────────────────
 # 현행 = V2(1613000, JSON) — 구 1611000 XML 서비스는 폐기(전 버전 HTTP500, 2026-07-08 실측).
@@ -102,14 +104,32 @@ def parse_basis(xml_text: str) -> dict:
 
 def _get_json_item(url: str, params: dict, key: str) -> dict:
     """V4/V5 계열(JSON 응답) 단건 item 추출. 실패/형식이상은 빈 dict — 배치 지속성 우선."""
+    global _LAST_SERVICE_ERROR_CODE
     import json as _j
     qs = urllib.parse.urlencode({**params, "serviceKey": key})
     try:
         with urllib.request.urlopen(f"{url}?{qs}", timeout=20) as r:
             body = _j.loads(r.read().decode("utf-8"))
+        service_error = body.get("OpenAPI_ServiceResponse") if isinstance(body, dict) else None
+        if isinstance(service_error, dict):
+            header = service_error.get("cmmMsgHeader") or {}
+            _LAST_SERVICE_ERROR_CODE = str(header.get("returnReasonCode") or "SERVICE_ERROR")
+            return {}
+        _LAST_SERVICE_ERROR_CODE = None
         return body.get("response", {}).get("body", {}).get("item", {}) or {}
     except Exception:
+        _LAST_SERVICE_ERROR_CODE = "TRANSPORT_ERROR"
         return {}
+
+
+def last_service_error_code() -> str | None:
+    """Return only the fixed gateway/transport code from the latest JSON request."""
+    return _LAST_SERVICE_ERROR_CODE
+
+
+def clear_last_service_error() -> None:
+    global _LAST_SERVICE_ERROR_CODE
+    _LAST_SERVICE_ERROR_CODE = None
 
 
 def fetch_basis(kapt_code: str, key: str | None = None) -> dict | None:
@@ -133,22 +153,49 @@ def fetch_basis(kapt_code: str, key: str | None = None) -> dict | None:
         except (TypeError, ValueError):
             return 0
 
+    def _optional_nonnegative_int(v) -> int | None:
+        """Distinguish an explicit zero from a missing/corrupt API field."""
+        if v is None or str(v).strip() == "":
+            return None
+        try:
+            parsed = int(float(v))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
     units = _i(b.get("kaptdaCnt"))
+    ho_count = _i(b.get("hoCnt"))
     used = str(b.get("kaptUsedate") or "")
-    parking_total = (_i(d.get("kaptdPcnt")) + _i(d.get("kaptdPcntu"))) or None
+    parking_ground = _optional_nonnegative_int(d.get("kaptdPcnt"))
+    parking_underground = _optional_nonnegative_int(d.get("kaptdPcntu"))
+    # 한쪽 필드가 누락된 응답을 0대로 간주해 합계를 축소하지 않는다. 두 공식 필드가
+    # 모두 존재할 때만 총계를 만들고, 분모는 일반 공동주택 kaptdaCnt → 주상복합 hoCnt 순이다.
+    parking_total = (
+        parking_ground + parking_underground
+        if parking_ground is not None and parking_underground is not None
+        else None
+    )
+    parking_household_count = units or ho_count
     return {
         "kaptName": (b.get("kaptName") or "").strip(),
         "kaptAddr": (b.get("kaptAddr") or "").strip(),
         "units": units,
         "kaptdaCnt": units,
-        "hoCnt": _i(b.get("hoCnt")),   # 주상복합은 kaptdaCnt=0·hoCnt 만 채워짐 → 신원게이트 세대수 폴백(2026-09-05)
+        "hoCnt": ho_count,   # 주상복합은 kaptdaCnt=0·hoCnt 만 채워짐 → 신원게이트 세대수 폴백(2026-09-05)
         "dong_cnt": _i(b.get("kaptDongCnt")),
         "built_year": int(used[:4]) if used[:4].isdigit() else 0,
         "heating": (b.get("codeHeatNm") or "").strip() or None,
         "corridor_type": (b.get("codeHallNm") or "").strip() or None,
         "builder": (b.get("kaptBcompany") or "").strip() or None,
+        "parking_ground": parking_ground,
+        "parking_underground": parking_underground,
         "parking_total": parking_total,
-        "parking_per_unit": round(parking_total / units, 2) if parking_total and units else None,
+        "parking_household_count": parking_household_count or None,
+        "parking_per_unit": (
+            round(parking_total / parking_household_count, 2)
+            if parking_total is not None and parking_household_count > 0
+            else None
+        ),
     }
 
 

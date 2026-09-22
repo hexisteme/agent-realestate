@@ -1,0 +1,93 @@
+name: 구·단지 생활 관찰 제보
+description: 서울 아파트의 난방, 주차, 소음, 교통, 보행, 시설 변화를 공개 제보합니다.
+title: "[생활관찰] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        이 제보는 공개됩니다. 동·호수, 전화번호, 이메일, 실명, 아동 정보, 거주 인증자료와 특정 주민·중개사에 대한 비방을 적지 마세요.
+        제출 내용은 검토 전 사이트의 외부 후기 표본, 가격, 점수, 순위에 자동 반영되지 않습니다.
+  - type: dropdown
+    id: district
+    attributes:
+      label: 자치구
+      options:
+        - 강남
+        - 강동
+        - 강북
+        - 강서
+        - 관악
+        - 광진
+        - 구로
+        - 금천
+        - 노원
+        - 도봉
+        - 동대문
+        - 동작
+        - 마포
+        - 서대문
+        - 서초
+        - 성동
+        - 성북
+        - 송파
+        - 양천
+        - 영등포
+        - 용산
+        - 은평
+        - 종로
+        - 중구
+        - 중랑
+    validations:
+      required: true
+  - type: input
+    id: complex
+    attributes:
+      label: 단지명
+      description: 단지 제보가 아니면 비워도 됩니다.
+      placeholder: 예) 상계주공3단지
+  - type: dropdown
+    id: category
+    attributes:
+      label: 관찰 범주
+      options:
+        - 난방
+        - 주차
+        - 소음
+        - 교통·보행
+        - 학군·교육
+        - 편의시설
+        - 단지 시설 변화
+        - 데이터 정정
+    validations:
+      required: true
+  - type: input
+    id: observed_date
+    attributes:
+      label: 관찰일
+      description: 직접 확인한 날짜 또는 기간을 적어주세요.
+      placeholder: YYYY-MM-DD 또는 2026년 9월
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: 관찰한 사실
+      description: 예측·추천보다 장소, 시간, 빈도, 수량처럼 확인 가능한 내용을 적어주세요.
+      placeholder: 언제 어디서 무엇을 확인했는지 적어주세요.
+    validations:
+      required: true
+  - type: input
+    id: evidence
+    attributes:
+      label: 공개 근거 링크
+      description: 공공기관 공지, 관리사무소 공개문, 공개 사진 등 권리를 침해하지 않는 자료만 연결하세요.
+      placeholder: https://
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: 공개·재이용 확인
+      options:
+        - label: 개인정보와 거주 인증자료를 포함하지 않았습니다.
+          required: true
+        - label: 직접 관찰한 사실을 작성했으며, 사이트가 출처와 함께 요약해 표시할 수 있음에 동의합니다.
+          required: true

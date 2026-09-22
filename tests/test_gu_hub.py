@@ -152,8 +152,12 @@ def test_gu_hub_shows_separate_inventory_deltas_and_context_coverage():
     assert "전체 450건" in out and "1일 +4" in out and "7일 +4" in out
     assert "매매 321건" in out
     assert "전세 88건" in out and "집계 단지 47곳" in out
-    assert "생활정보 연결: 학군 1/2 · 경사 1/2 · 후기 1/2단지" in out
+    assert "생활정보 연결: 학군 1/2 · 경사 1/2 · 외부 후기 1/2단지" in out
     assert "중개사 중복 노출" in out
+    assert "구별 주민 관찰 커뮤니티" in out
+    assert "노원 생활 관찰 제보하기" in out
+    assert "노원 관찰·댓글 보기" in out
+    assert "외부 후기 표본·가격·점수·순위에 자동 합산되지 않습니다" in out
 
 
 def test_gu_hub_hides_partial_inventory_counts():

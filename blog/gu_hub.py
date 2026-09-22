@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import blog.build_explorer as be
 import blog.complex_page as cp
+from blog.community_participation import render_gu_panel
 from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.wording_guard import assert_wording_ok
 
@@ -95,7 +96,7 @@ def _inventory_panel(gu: str, rows: list[dict], ds: dict | None) -> str:
     coverage = (
         f'생활정보 연결: 학군 {_context_coverage(rows, "school")}/{len(rows)} · '
         f'경사 {_context_coverage(rows, "terrain")}/{len(rows)} · '
-        f'후기 {_context_coverage(rows, "reviews")}/{len(rows)}단지'
+        f'외부 후기 {_context_coverage(rows, "reviews")}/{len(rows)}단지'
     )
     if not isinstance(inventory, dict) or not inventory.get("fresh"):
         if isinstance(inventory, dict) and not inventory.get("complete"):
@@ -146,6 +147,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     flat = sum(1 for r in rows if r.get("molit_trend_dir") == "—")
     jeonse_med = be.compute_gu_jeonse_ratio_median(rows)
     inventory_panel = _inventory_panel(gu, rows, ds)
+    community_panel = render_gu_panel(gu)
 
     srt = sorted(rows, key=lambda r: (r.get("molit_recent_eok") is None, -(r.get("molit_recent_eok") or 0), r["name"]))
     trs = []
@@ -211,6 +213,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
 <p class=meta>{n}단지 · 기준 {asof} · 국토부 실거래(신고 지연 최대 30일) · 매일 자동 갱신</p>
 {lead_html}
 {inventory_panel}
+{community_panel}
 <div class=tiles>{tiles}</div>
 <div class=tblwrap><table><thead><tr>
 <th>단지</th><th>전용</th><th>중위 n</th><th>P25–P75</th><th>구중위대비%</th>

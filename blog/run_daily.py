@@ -68,6 +68,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--enrich-overlay", default=(os.environ.get("RE_ENRICH_OVERLAY") or
                     _latest_or("examples/enrich_overlay_*.json", "")),
                     help="public 신규단지 K-apt/공시가/관리비/카카오 overlay(collect_public_enrich.py 산출). 없으면 스킵.")
+    ap.add_argument("--kapt-facilities", default=(os.environ.get("RE_KAPT_FACILITIES") or
+                    "report/enrichment/kapt-facilities.json"),
+                    help="현재 공개 단지 전체의 신원검증된 K-apt 난방·지상/지하 주차 캐시. 없으면 스킵.")
     ap.add_argument("--frame-district", default=(os.environ.get("RE_FRAME_DISTRICT") or
                     _latest_or("examples/frame_district_*.json", "")),
                     help="프레임 cno → 좌표로 확정한 법정 소재구 맵(collect_frame_district.py 산출). "
@@ -146,6 +149,9 @@ def main():
         ds = be.add_enrich_overlay(ds, a.enrich_overlay)   # K-apt·공시가·관리비·카카오(신규단지, 없으면 스킵)
     else:
         ds = be.build_dataset(a.universe, a.molit, a.asof, today)
+    # 기존 overlay는 신규 단지 일부만 대상으로 만들어졌다. 전용 K-apt 캐시는 현재 공개 풀 전체를
+    # 주기 갱신하고, 신원검증된 최신 난방·주차값만 레거시 값 위에 덮어쓴다.
+    ds = be.add_kapt_facilities(ds, a.kapt_facilities)
     # ── 가격세그먼트(F)·유동성(C)·전세갭(D) — 경로 무관 단일 후처리(풀확대 2단계, 2026-07-10) ──
     ds = be.add_price_segment(ds)
     ds = be.add_liquidity_facts(ds, a.molit)

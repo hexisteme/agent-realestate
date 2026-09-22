@@ -87,7 +87,8 @@ def _live_candidates(name: str, district: str, key: str) -> list[str]:
                 _LIVE_CACHE[sgg] = parse_apt_list(body)
             time.sleep(SLEEP_SEC)
         except Exception as e:
-            print(f"  [live 목록 실패] {district}: {e}")
+            # urllib 예외 문자열에는 요청 URL(서비스키 포함)이 실릴 수 있으므로 종류만 남긴다.
+            print(f"  [live 목록 실패] {district}: {type(e).__name__}")
             _LIVE_CACHE[sgg] = []
     norm = name.replace(" ", "")
     return [a["kaptCode"] for a in _LIVE_CACHE[sgg]
@@ -95,7 +96,8 @@ def _live_candidates(name: str, district: str, key: str) -> list[str]:
 
 
 def _resolve_kapt_basis(name: str, district: str, units: int, built_year: int,
-                        lookup: dict, key: str) -> tuple[str, dict] | None:
+                        lookup: dict, key: str,
+                        basis_cache: dict[str, dict | None] | None = None) -> tuple[str, dict] | None:
     """substring 후보 전체를 세대수·준공연도로 교차검증해 (kaptCode, basis) 채택.
 
     첫-매치 채택이 만든 오매칭(노원 '두산'→녹천역두산위브 등 5건, 타 단지의 난방·시공사가
@@ -109,14 +111,20 @@ def _resolve_kapt_basis(name: str, district: str, units: int, built_year: int,
     cands = _offline_candidates(name, district, lookup) or _live_candidates(name, district, key)
     verified: list[tuple[int, str, dict]] = []
     for code in cands:
-        b = fetch_basis(code, key)
-        time.sleep(SLEEP_SEC)
+        if basis_cache is not None and code in basis_cache:
+            b = basis_cache[code]
+        else:
+            b = fetch_basis(code, key)
+            if basis_cache is not None:
+                basis_cache[code] = b
+            time.sleep(SLEEP_SEC)
         if not b:
             continue
+        basis_units = int(b.get("units") or b.get("hoCnt") or 0)
         u_tol = max(3, int(units * 0.15)) if units else 0
-        u_known = bool(units and b["units"])
+        u_known = bool(units and basis_units)
         y_known = bool(built_year and b["built_year"])
-        u_ok = (not u_known) or abs(b["units"] - units) <= u_tol
+        u_ok = (not u_known) or abs(basis_units - units) <= u_tol
         y_ok = (not y_known) or abs(b["built_year"] - built_year) <= 2
         strong = (u_known and u_ok) or (y_known and y_ok)
         if not (u_ok and y_ok and strong):
@@ -125,7 +133,7 @@ def _resolve_kapt_basis(name: str, district: str, units: int, built_year: int,
         if gate_reason:
             print(f"  [kapt신원거부:{gate_reason}] {name} ↔ {b.get('kaptName')} ({b.get('kaptAddr', '')})")
             continue
-        verified.append((abs(b["units"] - units) if u_known else 10**6, code, b))
+        verified.append((abs(basis_units - units) if u_known else 10**6, code, b))
     if not verified:
         return None
     _, code, b = min(verified)

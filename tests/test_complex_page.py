@@ -127,6 +127,13 @@ def test_render_complex_page_contains_required_blocks_and_wording_ok():
     row = _row("노원", "상계주공2단지", jeonse_n=50, jeonse_ratio_complex_pct=41.6,
                jeonse_recent_eok=2.7, gap_eok=3.79, trade_annual=136.0, turnover_pct=6.7,
                subway_m=470, gongsi_man=35800, maint_fee_won=69642, parking_per_unit=0.39,
+               parking_total=390, parking_ground=40, parking_underground=350,
+               parking_source_name="K-apt 공동주택 기본정보 OpenAPI",
+               parking_source_url="https://www.data.go.kr/data/15058453/openapi.do",
+               parking_observed_date="2026-09-22", heating="지역난방", corridor_type="계단식",
+               heating_source_name="K-apt 공동주택 기본정보 OpenAPI",
+               heating_source_url="https://www.data.go.kr/data/15058453/openapi.do",
+               heating_observed_date="2026-09-22",
                _gu_median_eok=6.0)
     peers = [_row("노원", "벽산", area_m2=60.0, molit_recent_eok=5.6)]
     out = cp.render_complex_page(row, peers, _sample_monthly(), "2026-08-31", "2026-09-05")
@@ -140,6 +147,9 @@ def test_render_complex_page_contains_required_blocks_and_wording_ok():
     assert "거래가 잦은 단지인가" in out
     assert "같은 구, 비슷한 전용" in out            # peers 카드
     assert "입지·단지" in out                     # facts 카드
+    assert "총 390대 (지상 40 · 지하 350)" in out
+    assert "복도 유형" in out and "확인 2026-09-22" in out
+    assert "상계주공2단지 생활 관찰 제보하기" in out
     assert be.DISCLAIMER in out
 
 
@@ -171,7 +181,8 @@ def test_living_context_restores_school_terrain_and_review_aggregates_with_limit
     out = cp.render_complex_page(row, [], None, "2026-08-31", "2026-09-05")
     for text in ("생활 맥락", "가까운초", "입시 학원 12곳", "기존 학업성취 지표 83.2%",
                  "배정학교를 뜻하지 않습니다", "경사 근사 4.1%", "실제 보행 경사가 아닙니다",
-                 "표본 7건", "긍정: 조용함 · 공원", "주의: 주차", "소표본·자기선택 편향"):
+                 "외부 커뮤니티 후기 집계", "표본 7건", "긍정: 조용함 · 공원", "주의: 주차",
+                 "소표본·자기선택 편향", "이 사이트에 새 관찰 제보"):
         assert text in out
 
 

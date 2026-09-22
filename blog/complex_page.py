@@ -17,6 +17,7 @@ import statistics as st
 from urllib.parse import quote, urlsplit
 
 import blog.build_explorer as be
+from blog.community_participation import render_complex_card
 from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.wording_guard import assert_wording_ok
 
@@ -379,8 +380,14 @@ _FACT_SPECS = [
     ("nearest_elem_school", "인근 초등학교", lambda v, r: v),
     ("academy_exam", "학원가(1km)", lambda v, r: f"{v:g}곳"),
     ("maint_fee_won", "관리비", lambda v, r: f"{v:,.0f}원/월"),
-    ("parking_per_unit", "세대당 주차", lambda v, r: f"{v:g}대"),
+    ("parking_per_unit", "세대당 주차", lambda v, r: (
+        f"{v:g}대"
+        + (f" · 총 {r['parking_total']:,}대" if r.get("parking_total") is not None else "")
+        + (f" (지상 {r['parking_ground']:,} · 지하 {r['parking_underground']:,})"
+           if r.get("parking_ground") is not None and r.get("parking_underground") is not None else "")
+    )),
     ("heating", "난방", lambda v, r: v),
+    ("corridor_type", "복도 유형", lambda v, r: v),
     ("far_pct", "용적률", lambda v, r: f"{v:g}%" + (f" / 건폐 {r['bcr_pct']:g}%" if r.get("bcr_pct") is not None else "")),
     ("gongsi_man", "공시가격", lambda v, r: f"{v / 10000:.2f}억"),
     ("gongsi_multiple", "공시가 배율", lambda v, r: f"×{v:.2f} (실거래 12개월 중위 ÷ 같은 평형 공시가격)"),
@@ -399,7 +406,25 @@ def _facts_card(row: dict) -> str:
                       f'<span class="v" style="font-size:14px">{fmt(v, row)}</span></div>')
     if not items:
         return ""
-    return f'<section class="card"><div class="q">입지·단지</div><div class="factgrid">{"".join(items)}</div></section>'
+    evidence = ""
+    facility_dates = {
+        str(row.get(key))
+        for key in ("heating_observed_date", "parking_observed_date")
+        if row.get(key)
+    }
+    if row.get("heating_source_url") or row.get("parking_source_url"):
+        source_url = row.get("heating_source_url") or row.get("parking_source_url")
+        source_name = row.get("heating_source_name") or row.get("parking_source_name") or "K-apt"
+        observed = " · 확인 " + ", ".join(sorted(facility_dates)) if facility_dates else ""
+        evidence = (
+            '<p style="font-size:12px;color:#5c584f">난방·주차: '
+            f'{_safe_source(source_name, source_url)}{observed} · '
+            "단지코드·소재구·이름·세대수·준공연도 교차검증</p>"
+        )
+    return (
+        '<section class="card"><div class="q">입지·단지</div>'
+        f'<div class="factgrid">{"".join(items)}</div>{evidence}</section>'
+    )
 
 
 def _safe_source(label, url) -> str:
@@ -467,7 +492,7 @@ def _living_context_card(row: dict) -> str:
         '<div class="context"><h3>지형 경사'
         f'<span class="status">{_context_status(terrain.get("status"))}</span></h3>'
         f'<p><b>{terrain_text}</b></p><p>SRTM30m 중심±150m 표고 기반 근사이며 실제 보행 경사가 아닙니다.</p><p>{meta(terrain)}</p></div>'
-        '<div class="context"><h3>커뮤니티 후기 모음'
+        '<div class="context"><h3>외부 커뮤니티 후기 집계'
         f'<span class="status">{_context_status(reviews.get("status"))}</span></h3>'
         f'<p>{review_text}</p><p>{meta(reviews)}</p>'
         + (f'<p>{bias}</p>' if bias else "")
@@ -576,6 +601,7 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
         + _peers_card(row, peers)
         + '</div><div class="aside">'
         + _living_context_card(row)
+        + render_complex_card(gu, name)
         + _facts_card(row)
         + _links_card(row)
         + "</div></div>"
