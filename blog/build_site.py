@@ -121,16 +121,26 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
     today=today or date.today().isoformat()
     probe_path = probe_path or os.environ.get("BLOG_ACQUISITION_PROBE") or None
     cohort_path = cohort_path or os.environ.get("BLOG_ACQUISITION_COHORT") or None
+    # Controls must be valid before mkdir, image copies, overwrites or pruning.
+    overlay = None
+    probe = None
+    if probe_path:
+        from blog.acquisition_probe import build_treatment_overlay
+        probe = json.loads(Path(probe_path).read_text(encoding="utf-8"))
+        overlay = build_treatment_overlay(probe)
+    if cohort_path:
+        from blog.acquisition_probe import prepare_probe_cohort_restore
+        source_dataset = Path(SRC) / "dataset.json"
+        dataset_path = source_dataset if source_dataset.exists() else Path(SITE) / "dataset.json"
+        current_dataset = json.loads(dataset_path.read_text(encoding="utf-8")) if dataset_path.exists() else {"complexes": []}
+        current_intents = build_intent_registry(current_dataset, current_dataset.get("generated", today))
+        prepare_probe_cohort_restore(cohort_path, SITE, BASE_URL, current_intents, today=today, probe=probe)
     # molit_path(2026-09-05 P2) — 단지 페이지 월별차트용 raw MOLIT. 없으면(파일 부재) 차트만 생략.
     mp = molit_path or os.environ.get("RE_MOLIT") or "examples/molit_recent_25gu_20260710.json"
     os.makedirs(f"{SITE}/posts",exist_ok=True)
     os.makedirs(f"{SITE}/gu",exist_ok=True)
     os.makedirs(f"{SITE}/daily",exist_ok=True)
     card_meta, card_relative = _daily_media_meta(today)
-    overlay = None
-    if probe_path:
-        from blog.acquisition_probe import build_treatment_overlay
-        overlay = build_treatment_overlay(json.loads(Path(probe_path).read_text(encoding="utf-8")))
     source_dated=f"{SRC}/daily/{today}.html"
     source_latest=f"{SRC}/daily/latest.html"
     if os.path.exists(source_dated) and os.path.exists(source_latest):

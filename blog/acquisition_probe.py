@@ -485,6 +485,8 @@ def build_treatment_overlay(probe: dict) -> dict[str, dict]:
                "evaluation_date": (start + timedelta(days=28)).isoformat()}
     if any(probe.get(field) != value for field, value in windows.items()):
         raise ValueError("preregistered inclusive date windows were changed")
+    if probe.get("guardrail_dates") != [(start + timedelta(days=days)).isoformat() for days in (7, 14)]:
+        raise ValueError("preregistered guardrail schedule was changed")
     overlay = {}
     owners = set()
     canonicals = set()
@@ -578,15 +580,20 @@ def validate_probe_cohort(cohort: dict, site_dir: str | Path, base_url: str) -> 
             "status": "PASS" if not failures else "FAIL", "checked_owners": len(identities), "failures": failures}
 
 
-def restore_probe_cohort(cohort_path: str | Path, site_dir: str | Path, base_url: str,
-                         intents: list[SearchIntent], *, today: str) -> list[SearchIntent]:
-    """Daily build hook: restore 16 frozen payloads and their exact D0 registry fields."""
+def prepare_probe_cohort_restore(cohort_path: str | Path, site_dir: str | Path, base_url: str,
+                                intents: list[SearchIntent], *, today: str,
+                                probe: dict | None = None) -> tuple[list[SearchIntent], list[tuple[Path, bytes]]]:
+    """Validate frozen owners and bind restoration bytes without changing output."""
     from blog.seo_geo_audit import _local_path
 
     cohort = json.loads(Path(cohort_path).read_text(encoding="utf-8"))
     if date.fromisoformat(today) < date.fromisoformat(cohort["d0"]):
         raise ValueError("cannot restore a cohort before D0")
     validate_probe_cohort(cohort, site_dir, base_url)  # validates snapshot and schema; live differences are expected here
+    if probe is not None and (cohort.get("probe_id") != probe["probe_id"]
+                              or cohort.get("preregistration_sha256") != hashlib.sha256(
+                                  json.dumps(probe, sort_keys=True).encode()).hexdigest()):
+        raise ValueError("frozen cohort does not match the preregistered probe")
     registry = {intent.intent_id: intent for intent in intents}
     writes = []
     for owner in cohort["owners"]:
@@ -604,6 +611,15 @@ def restore_probe_cohort(cohort_path: str | Path, site_dir: str | Path, base_url
             raise ValueError("frozen owner escapes site root")
         writes.append((target, raw))
         registry[intent.intent_id] = intent
+    result = [registry[intent.intent_id] for intent in intents]
+    validate_registry(result)
+    return result, writes
+
+
+def restore_probe_cohort(cohort_path: str | Path, site_dir: str | Path, base_url: str,
+                         intents: list[SearchIntent], *, today: str) -> list[SearchIntent]:
+    """Daily build hook: restore 16 frozen payloads and their exact D0 registry fields."""
+    result, writes = prepare_probe_cohort_restore(cohort_path, site_dir, base_url, intents, today=today)
     for target, raw in writes:
         fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
         try:
@@ -615,8 +631,6 @@ def restore_probe_cohort(cohort_path: str | Path, site_dir: str | Path, base_url
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-    result = [registry[intent.intent_id] for intent in intents]
-    validate_registry(result)
     return result
 
 

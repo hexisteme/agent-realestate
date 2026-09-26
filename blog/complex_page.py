@@ -574,7 +574,7 @@ def _acquisition_answer(row: dict, asof: str, intent, overlay: dict | None, toda
         f'<p>기준일 {html.escape(asof)}의 국토교통부 RTMS 공개 실거래에서 '
         f'{html.escape(row["name"])} 전용 {row["area_m2"]:g}㎡의 동일평형 거래 중위는 '
         f'{row["molit_recent_eok"]:g}억 원이며, 매매 표본은 {row["molit_n"]}건입니다. '
-        '실제 체결 기록의 요약이며 현재 호가나 향후 가격을 뜻하지 않습니다.</p>'
+        '실제 체결 기록의 요약이며 현재 매물 표시가격이나 향후 가격을 뜻하지 않습니다.</p>'
         f'<p><a href="https://rt.molit.go.kr/">국토교통부 원천 자료</a> · '
         f'<a href="../gu/{quote(row["gu"])}.html">{html.escape(row["gu"])} 구별 비교</a> · '
         '<a href="../methodology.html">동일평형·표본 산식</a></p></section>'

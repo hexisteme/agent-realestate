@@ -174,8 +174,13 @@ def validate_geo_evidence(observation: GeoObservation, query: GeoQuery) -> None:
         response = capture.get("response")
         if not isinstance(response, str) or not response.strip():
             raise ValueError("JSON GEO capture needs a nonempty response string")
+    response_urls = set()
+    for token in re.findall(r'https://[^\s<>"\'`\[\]]+', response):
+        while token.endswith(")") and token.count(")") > token.count("("):
+            token = token[:-1]
+        response_urls.add(unquote(token))
     for url in observation.cited_urls:
-        if url not in response and unquote(url) not in unquote(response):
+        if unquote(url) not in response_urls:
             raise ValueError("a cited URL is absent from the raw evidence")
     if observation.recommended and (observation.recommendation_excerpt not in response
                                     or query.target_url not in observation.recommendation_excerpt):

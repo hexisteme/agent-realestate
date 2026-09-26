@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 import hashlib
+from html.parser import HTMLParser
 from io import BytesIO
 import json
 import os
@@ -97,12 +98,41 @@ def read_media_manifest(helper, data, *, required=False) -> DraftMedia | None:
         raise MediaContractError() from None
 
 
+class _RepresentativeMarkers(HTMLParser):
+    """Interpret marker attributes once, including HTML character references."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.digests: list[str] = []
+        self.in_head = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "head":
+            self.in_head = True
+        if tag != "meta" or not self.in_head:
+            return
+        names = [value for key, value in attrs if key == "name"]
+        if not any(value and value.lower() == "tistory-representative-sha256" for value in names):
+            return
+        contents = [value for key, value in attrs if key == "content"]
+        if (len(names) != 1 or len(contents) != 1 or not isinstance(contents[0], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", contents[0])):
+            raise MediaContractError()
+        self.digests.append(contents[0])
+
+    def handle_endtag(self, tag):
+        if tag == "head":
+            self.in_head = False
+
+
 def _read_media_manifest(helper, data, *, required=False) -> DraftMedia | None:
     helper = Path(helper).resolve()
     sidecar = media_path(helper)
-    head = helper.read_text(encoding="utf-8").split("</head>", 1)[0]
-    declared = re.findall(r'<meta name="tistory-representative-sha256" content="([0-9a-f]{64})">', head)
-    if len(declared) > 1 or ("tistory-representative-sha256" in head and not declared):
+    markers = _RepresentativeMarkers()
+    markers.feed(helper.read_text(encoding="utf-8"))
+    markers.close()
+    declared = markers.digests
+    if len(declared) > 1:
         raise MediaContractError()
     if not sidecar.exists():
         if required or declared:
@@ -155,6 +185,8 @@ def _read_media_manifest(helper, data, *, required=False) -> DraftMedia | None:
             if png.format != "PNG" or png.size != (1200, 630):
                 raise MediaContractError()
             png.verify()
+        with Image.open(BytesIO(content)) as png:
+            png.load()
         return DraftMedia(str(image), record["sha256"], record["alt"], content)
     except MediaContractError:
         raise

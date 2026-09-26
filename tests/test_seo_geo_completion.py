@@ -378,6 +378,98 @@ def test_geo_unstructured_plaintext_is_not_verified_even_without_citations(tmp_p
         validate_geo_evidence(observation, query)
 
 
+@pytest.mark.parametrize("suffix", ["-archived", "/archive", "?archive=1", "#archive", "%2Darchived", ".", ";", "!"])
+def test_geo_response_url_prefix_is_not_exact_citation(tmp_path, suffix):
+    intents = _intents()
+    query = build_geo_queries(intents, _site(tmp_path, intents), BASE, dataset=_dataset())[0]
+    evidence = tmp_path / "capture.json"
+    evidence.write_text(json.dumps({"query": query.query, "response": query.target_url + suffix}))
+    observation = GeoObservation("first", query.query_id, "chatgpt", "search", "2026-09-26T12:00:00Z",
+                                 "ko-KR", str(evidence), hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                                 (query.target_url,), False, False)
+    with pytest.raises(ValueError, match="cited URL is absent"):
+        summarize_geo_panel([query], [observation], "first")
+
+
+@pytest.mark.parametrize("template", ["출처: {}", "[공공데이터]({})", "출처: <{}>"])
+def test_geo_complete_bare_and_markdown_urls_remain_citations(tmp_path, template):
+    intents = _intents()
+    query = build_geo_queries(intents, _site(tmp_path, intents), BASE, dataset=_dataset())[0]
+    evidence = tmp_path / "capture.json"
+    evidence.write_text(json.dumps({"query": query.query, "response": template.format(query.target_url)}))
+    observation = GeoObservation("first", query.query_id, "chatgpt", "search", "2026-09-26T12:00:00Z",
+                                 "ko-KR", str(evidence), hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                                 (query.target_url,), False, False)
+    summary = summarize_geo_panel([query], [observation], "first")
+    assert summary["target_citations"] == 1 and summary["unobserved_cells"] == 2
+
+
+@pytest.mark.parametrize("dates", [None, [], ["2026-11-08"], ["2026-11-09", "2026-11-15"],
+                                  ["2026-11-08", "2026-11-08"], ["2026-11-15", "2026-11-08"]])
+def test_evaluation_rejects_changed_preregistered_guardrail_schedule(tmp_path, dates):
+    probe, intents, _ = _probe(tmp_path)
+    observations = _gsc_export(tmp_path, intents, "2026-11-01", "2026-11-28",
+                               treatment_ids={pair["treatment"]["intent_id"] for pair in probe["pairs"]})
+    guardrails = _guardrails(probe)
+    assert evaluate_acquisition_probe(probe, observations, evaluated_date="2026-11-29",
+                                      guardrails=guardrails[-1:])["status"] == "INCONCLUSIVE"
+    assert evaluate_acquisition_probe(probe, observations, evaluated_date="2026-11-29",
+                                      guardrails=guardrails)["status"] == "WON"
+    if dates is None:
+        probe.pop("guardrail_dates")
+    else:
+        probe["guardrail_dates"] = dates
+    with pytest.raises(ValueError, match="guardrail"):
+        evaluate_acquisition_probe(probe, observations, evaluated_date="2026-11-29", guardrails=guardrails[-1:])
+
+
+@pytest.mark.parametrize("heading", ["<h1 hidden>{}</h1>", '<div aria-hidden="true"><h1>{}</h1></div>',
+                                    '<h1><span style="display: none">{}</span></h1>'])
+def test_audit_hidden_heading_cannot_be_rescued_by_visible_duplicate(tmp_path, heading):
+    intents = _intents()[:1]
+    site = _site(tmp_path, intents)
+    path = site / unquote(intents[0].canonical_path).lstrip("/")
+    text = intents[0].target_query
+    path.write_text(path.read_text().replace(f"<h1>{text}</h1>", heading.format(text) + f"<p>{text}</p>"))
+    result = audit_site(site, intents, BASE)
+    assert "H1_HIDDEN" in result["counts_by_code"]
+
+
+def test_audit_hidden_heading_descendant_cannot_supply_entity(tmp_path):
+    intents = _intents()[-1:]
+    site = _site(tmp_path, intents)
+    path = site / unquote(intents[0].canonical_path).lstrip("/")
+    entity = intents[0].entity_ids[-1]
+    path.write_text(path.read_text().replace(f"<h1>{intents[0].target_query}</h1>",
+                                            f"<h1>관측 <span hidden>{entity}</span></h1><p>관측 {entity}</p>"))
+    assert "H1_ENTITY_MISMATCH" in audit_site(site, intents, BASE)["counts_by_code"]
+
+
+@pytest.mark.parametrize("container", [{"@graph": None}, {"@graph": 1}, {"@graph": {}},
+                                     {"@graph": "invalid"}, None, 1, "invalid", [None]])
+def test_audit_malformed_schema_container_returns_actionable_finding(tmp_path, container):
+    intents = _intents()[:1]
+    site = _site(tmp_path, intents)
+    path = _write_page(site, intents[0], schema=False,
+                       marker=f'<script type="application/ld+json">{json.dumps(container)}</script>')
+    result = audit_site(site, intents, BASE)
+    assert result["status"] == "FAIL" and "SCHEMA_JSON" in result["counts_by_code"]
+    assert all(finding["action"] for finding in result["findings"])
+
+
+@pytest.mark.parametrize("shape", ["object", "list", "graph"])
+def test_audit_valid_schema_objects_and_list_graphs_remain_valid(tmp_path, shape):
+    intents = _intents()[:1]
+    site = _site(tmp_path, intents)
+    path = site / unquote(intents[0].canonical_path).lstrip("/")
+    body = path.read_text()
+    raw = body.split('<script type="application/ld+json">', 1)[1].split("</script>", 1)[0]
+    dataset = json.loads(raw)
+    container = dataset if shape == "object" else [dataset] if shape == "list" else {"@graph": [dataset]}
+    path.write_text(body.replace(raw, json.dumps(container, ensure_ascii=False)))
+    assert audit_site(site, intents, BASE)["status"] == "PASS"
+
+
 @pytest.mark.parametrize("value", [True, -1])
 def test_acquisition_count_types_are_not_booleans_or_negative(value):
     with pytest.raises(ValueError, match="counts"):

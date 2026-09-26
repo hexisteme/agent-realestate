@@ -25,6 +25,7 @@ class ParsedPage(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.titles: list[str] = []
         self.h1s: list[str] = []
+        self.visible_h1s: list[str] = []
         self.descriptions: list[str] = []
         self.canonicals: list[str] = []
         self.robots: list[str] = []
@@ -36,6 +37,7 @@ class ParsedPage(HTMLParser):
         self.landmarks: Counter = Counter()
         self._stack: list[tuple[str, bool]] = []
         self._capture: tuple[str, list[str]] | None = None
+        self._visible_heading: list[str] = []
         self.feed(body)
         self.close()
 
@@ -66,12 +68,16 @@ class ParsedPage(HTMLParser):
         if (tag == "h1" or tag == "title" and any(state[0] == "head" for state in self._stack)
                 or tag == "script" and values.get("type") == "application/ld+json"):
             self._capture = (tag, [])
+            if tag == "h1":
+                self._visible_heading = []
 
     def handle_endtag(self, tag: str) -> None:
         if self._capture and self._capture[0] == tag:
             value = "".join(self._capture[1])
             destination = self.schema_raw if tag == "script" else self.h1s if tag == "h1" else self.titles
             destination.append(value if tag == "script" else _text(value))
+            if tag == "h1":
+                self.visible_h1s.append(_text("".join(self._visible_heading)))
             self._capture = None
         for index in range(len(self._stack) - 1, -1, -1):
             if self._stack[index][0] == tag:
@@ -83,6 +89,8 @@ class ParsedPage(HTMLParser):
             self._capture[1].append(value)
         if not any(state[1] for state in self._stack):
             self.visible.append(value)
+            if self._capture and self._capture[0] == "h1":
+                self._visible_heading.append(value)
 
     @property
     def visible_text(self) -> str:
@@ -148,10 +156,10 @@ def audit_site(site_dir: str | Path, intents: list[SearchIntent], base_url: str)
             fail("DESCRIPTION_MISMATCH", "Description differs from its registry owner.", "Use the registry description once in head.")
         if len(page.h1s) != 1 or not page.h1s[0]:
             fail("H1_COUNT", f"Found {len(page.h1s)} H1 elements.", "Render one visible entity-specific H1.")
-        if page.h1s and page.h1s[0] not in page.visible_text:
+        if page.h1s and (not page.visible_h1s[0] or page.h1s[0] != page.visible_h1s[0]):
             fail("H1_HIDDEN", "H1 is not visible.", "Remove hiding from the canonical answer heading.")
         heading_entity = intent.entity_ids[-1] if intent.entity_type != "daily" else "서울"
-        if page.h1s and heading_entity not in page.h1s[0]:
+        if page.h1s and heading_entity not in page.visible_h1s[0]:
             fail("H1_ENTITY_MISMATCH", "Heading does not identify its canonical entity.", "Show the actual district/complex in the answer heading.")
         if page.landmarks["main"] != 1 or page.landmarks["article"] != 1:
             fail("LANDMARKS", "Expected one main and one article.", "Wrap the canonical answer in main/article landmarks.")
@@ -169,7 +177,11 @@ def audit_site(site_dir: str | Path, intents: list[SearchIntent], base_url: str)
         for raw in page.schema_raw:
             try:
                 value = json.loads(raw)
+                if not isinstance(value, (dict, list)):
+                    raise ValueError("JSON-LD must be an object or list")
                 nodes = value if isinstance(value, list) else value.get("@graph", [value])
+                if not isinstance(nodes, list) or any(not isinstance(node, dict) for node in nodes):
+                    raise ValueError("JSON-LD graph must be a list of objects")
                 datasets.extend(node for node in nodes if isinstance(node, dict) and node.get("@type") == "Dataset")
                 for node in nodes:
                     if not isinstance(node, dict) or node.get("@type") != "FAQPage":
@@ -179,8 +191,8 @@ def audit_site(site_dir: str | Path, intents: list[SearchIntent], base_url: str)
                         texts = (question.get("name", ""), answer.get("text", ""))
                         if any(not text or ParsedPage(text).visible_text not in page.visible_text for text in texts):
                             fail("SCHEMA_FAQ_HIDDEN", "FAQ schema contains a question/answer absent from the page.", "Use only exact visible FAQ questions and answers.")
-            except (ValueError, AttributeError):
-                fail("SCHEMA_JSON", "JSON-LD is not parseable.", "Serialize schema through json.dumps.")
+            except (ValueError, AttributeError, TypeError):
+                fail("SCHEMA_JSON", "JSON-LD has invalid JSON or container types.", "Serialize schema as an object or list of objects; use a list for @graph.")
         if len(datasets) != 1:
             fail("DATASET_SCHEMA_COUNT", f"Found {len(datasets)} Dataset nodes.", "Render one Dataset backed by visible data.")
         else:

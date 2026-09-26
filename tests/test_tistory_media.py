@@ -1,6 +1,8 @@
 """Real helper/PNG media binding regressions."""
 import hashlib
 import json
+import struct
+import zlib
 from types import SimpleNamespace
 
 import pytest
@@ -140,3 +142,96 @@ def test_periodic_legacy_helper_does_not_require_media(media):
     periodic = helper.with_name("2026-09-26-periodic-tistory-draft.html")
     write_helper(periodic, DraftPayload(**data), "2026-09-26")
     assert read_media_manifest(periodic, data) is None
+
+
+def test_crc_valid_but_undecodable_png_is_rejected_before_upload(media):
+    helper, data, image = media
+    def chunk(kind, body):
+        return struct.pack("!I", len(body)) + kind + body + struct.pack("!I", zlib.crc32(kind + body))
+    content = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1200, 630, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", b"not-a-zlib-stream") + chunk(b"IEND", b""))
+    image.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    record = json.loads(media_path(helper).read_text())
+    helper.write_text(helper.read_text().replace(record["sha256"], digest))
+    change_record(helper, sha256=digest)
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
+
+
+@pytest.mark.parametrize("marker", ['<meta name="tistory-representative-sha256" content="bad">',
+                                    '<meta name="tistory-representative-sha256">',
+                                    "<meta name='tistory-representative-sha256' content='bad'>"])
+def test_valid_marker_cannot_hide_malformed_duplicate(media, marker):
+    helper, data, _ = media
+    helper.write_text(helper.read_text().replace("</head>", marker + "</head>"))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
+
+
+@pytest.mark.parametrize("marker", [
+    '<meta name="tistory-representative-sha&#50;56" content="bad">',
+    '<meta name="tistory-representative-sha&#x32;56" content="bad">',
+    '<meta name=tistory-representative-sha&#50;56 content=bad>',
+    "<META CONTENT='bad' NAME='tistory-representative-sha&#x32;56' />",
+    '<meta\nname = "tistory-representative-sha&#50;56"\ncontent = "bad">',
+    '<meta name="tistory-representative-sha256" name="other" content="bad">',
+    '<meta name="other" name="tistory-representative-sha&#50;56" content="bad">',
+])
+def test_html_equivalent_duplicate_marker_is_rejected(media, marker):
+    helper, data, image = media
+    assert read_media_manifest(helper, data, required=True).image_bytes == image.read_bytes()
+    helper.write_text(helper.read_text().replace("</head>", marker + "</head>"))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
+
+
+@pytest.mark.parametrize("marker", [
+    '<meta name="tistory-representative-sha&#50;56" content="bad">',
+    '<meta name="tistory-representative-sha&#x32;56" content="bad">',
+    '<meta name=tistory-representative-sha&#50;56 content=bad>',
+])
+def test_encoded_marker_without_sidecar_is_not_optional_legacy(media, marker):
+    helper, data, _ = media
+    write_helper(helper, DraftPayload(**data), "2026-09-26")
+    media_path(helper).unlink()
+    helper.write_text(helper.read_text().replace("</head>", marker + "</head>"))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data)
+
+
+@pytest.mark.parametrize("name", ['"tistory-representative-sha&#50;56"',
+                                 "'tistory-representative-sha&#x32;56'", "tistory-representative-sha&#50;56"])
+def test_single_equivalent_marker_binds_the_same_verified_png(media, name):
+    helper, data, image = media
+    source = helper.read_text()
+    source = source.replace('name="tistory-representative-sha256"', "name=" + name)
+    helper.write_text(source)
+    assert read_media_manifest(helper, data, required=True).image_bytes == image.read_bytes()
+
+
+def test_duplicate_content_attributes_do_not_choose_a_favorable_hash(media):
+    helper, data, _ = media
+    digest = json.loads(media_path(helper).read_text())["sha256"]
+    helper.write_text(helper.read_text().replace(f'content="{digest}"', f'content="bad" content="{digest}"'))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
+
+
+def test_single_encoded_marker_still_requires_matching_manifest_hash(media):
+    helper, data, _ = media
+    digest = json.loads(media_path(helper).read_text())["sha256"]
+    source = helper.read_text().replace('name="tistory-representative-sha256"',
+                                        'name="tistory-representative-sha&#50;56"')
+    helper.write_text(source.replace(f'content="{digest}"', f'content="{"0" * 64}"'))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
+
+
+def test_two_valid_same_hash_markers_are_still_ambiguous(media):
+    helper, data, _ = media
+    digest = json.loads(media_path(helper).read_text())["sha256"]
+    marker = f'<meta name="tistory-representative-sha&#50;56" content="{digest}">'
+    helper.write_text(helper.read_text().replace("</head>", marker + "</head>"))
+    with pytest.raises(MediaContractError):
+        read_media_manifest(helper, data, required=True)
