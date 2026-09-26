@@ -75,6 +75,179 @@ def _inventory(fresh=True, complete=True):
     }
 
 
+def _answer_first_ds():
+    """합성 관측: 회전율 15/10/6/5%, 범위 하단 1/3/5/6%는 독립 literal 기대값."""
+    rows = [
+        _row("강남", "합성회전넷", turnover_pct=5, molit_n=25),
+        _row("강남", "합성회전둘", turnover_pct=10, molit_n=50),
+        _row("강남", "합성회전셋", turnover_pct=6, molit_n=30),
+        _row("강남", "합성회전하나", turnover_pct=15, molit_n=75),
+        _row("서초", "합성하단넷", molit_pos_52w=6, molit_n=16),
+        _row("서초", "합성하단둘", molit_pos_52w=3, molit_n=13),
+        _row("서초", "합성하단셋", molit_pos_52w=5, molit_n=15),
+        _row("서초", "합성하단하나", molit_pos_52w=1, molit_n=11),
+        _row("강남", "합성상단", molit_pos_52w=100, molit_trend_dir="▲", molit_trend_pct=5),
+        _row("강남", "합성전세", jeonse_n=8, jeonse_ratio_complex_pct=80, gap_eok=2),
+        _row("강남", "합성제외유형", product_type="주상복합", turnover_pct=99, molit_pos_52w=0),
+        _row("강남", "합성제외면적", area_m2=35, turnover_pct=98, molit_pos_52w=0),
+        _row("강남", "합성제외표본", molit_n=9, turnover_pct=97, molit_pos_52w=0),
+    ]
+    gus = ("강남", "강동", "강북", "강서", "관악", "광진", "구로", "금천", "노원", "도봉", "동대문",
+           "동작", "마포", "서대문", "서초", "성동", "성북", "송파", "양천", "영등포", "용산", "은평",
+           "종로", "중구", "중랑")
+    rows += [_area_row(gu=gu, name=f"합성평형{gu}", complex_no=f"synthetic-{i}")
+             for i, gu in enumerate(gus)]
+    return {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04"}
+
+
+def _visible_digest_text(body):
+    class VisibleText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+            self.hidden = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {"script", "style"}:
+                self.hidden += 1
+
+        def handle_endtag(self, tag):
+            if tag in {"script", "style"}:
+                self.hidden -= 1
+
+        def handle_data(self, data):
+            if not self.hidden:
+                self.parts.append(data)
+
+    parser = VisibleText()
+    parser.feed(body)
+    return " ".join(" ".join(parser.parts).split())
+
+
+def _assert_answer_first(body, surface):
+    """Catch missing/reordered summaries, wrong selected rows/metrics, and premature final CTA."""
+    text = _visible_digest_text(body)
+    question = "서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?"
+    tv_heading = "12개월 회전율 상위 관측"
+    lo_heading = "52주 범위 하단 근접 관측"
+    briefing = "30초 브리핑" if surface == "tistory_html" else "이 페이지에서만 알 수 있는 것"
+    assert question in text
+    assert text.index(question) < text.index(tv_heading) < text.index(lo_heading) < text.index(briefing)
+    tv = text.split(tv_heading, 1)[1].split(lo_heading, 1)[0]
+    lo = text.split(lo_heading, 1)[1].split(briefing, 1)[0]
+    for section, names, metrics, counts in (
+        (tv, ("합성회전하나", "합성회전둘", "합성회전셋"),
+         ("회전율 15%", "회전율 10%", "회전율 6%"), ("75", "50", "30")),
+        (lo, ("합성하단하나", "합성하단둘", "합성하단셋"),
+         ("52주 범위 위치 1%", "52주 범위 위치 3%", "52주 범위 위치 5%"), ("11", "13", "15")),
+    ):
+        assert "3개 관측" in section
+        assert section.index(names[0]) < section.index(names[1]) < section.index(names[2])
+        for name, metric, count in zip(names, metrics, counts):
+            row = section.split(name, 1)[1].split("건", 1)[0] + "건"
+            assert metric in row
+            assert f"12개월 표본 {count}건" in row
+    assert "합성회전넷" not in tv
+    assert "합성하단넷" not in lo
+    assert not any(name in tv + lo for name in ("합성제외유형", "합성제외면적", "합성제외표본"))
+    detail = text.index("12개월 범위 상단 근접")
+    gu_heading = "서울 25개 구 요약" if surface == "tistory_html" else "구별 요약 (25개 구)"
+    gu = text.index(gu_heading)
+    disclaimer = text.index("투자자문·매수권유가 아닙니다")
+    cta = text.index("인터랙티브 탐색기 열기")
+    assert text.index(briefing) < detail < gu < text.index("게이트:") < disclaimer < cta
+    assert gu < text.index("방법론 전문") < cta
+    assert "59㎡·84㎡ 실거래 중위 관측" in text
+    assert "전세가율 상위" in text and "회전율 상위" in text
+    assert "국토부 RTMS" in text and "표본수" in text
+    for unsupported in ("주간 거래량", "저평가", "대출 규제 영향", "10년 이력", "대지지분"):
+        assert unsupported not in text
+    final_link = re.search(r'<a href="([^"]+)"[^>]*>[^<]*인터랙티브 탐색기 열기[^<]*</a>', body)
+    assert final_link
+    query = parse_qs(urlsplit(html_lib.unescape(final_link.group(1))).query)
+    assert query["utm_campaign"] == ["realestate-daily"]
+    assert query["utm_content"] == ["daily:2026-09-05"]
+    assert query["utm_source"] == ["tistory" if surface == "tistory_html" else "owned_daily"]
+    assert query["utm_medium"] == ["referral" if surface == "tistory_html" else "internal"]
+
+
+@pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
+def test_answer_first_uses_observed_top_three_before_details_and_final_cta(surface):
+    digest = build_daily_digest(_answer_first_ds(), "2026-09-05", "2026-09-04")
+    assert set(digest) == {"title", "tags", "tistory_html", "site_html", "summary"}
+    _assert_answer_first(digest[surface], surface)
+
+
+@pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
+@pytest.mark.parametrize("available", [0, 1, 2])
+def test_answer_first_reports_only_available_observations(surface, available):
+    rows = [_row("강남", f"합성소수{i}", turnover_pct=10-i, molit_pos_52w=i+1) for i in range(available)]
+    digest = build_daily_digest({"complexes": rows, "count": len(rows)}, "2026-09-05", "2026-09-04")
+    text = _visible_digest_text(digest[surface])
+    assert "12개월 회전율 상위 관측" in text
+    assert "52주 범위 하단 근접 관측" in text
+    answer = text.split("12개월 회전율 상위 관측", 1)[1].split("오늘의 숫자", 1)[0]
+    if available:
+        assert answer.count(f"{available}개 관측") == 2
+        assert "3개 관측" not in answer
+        for i in range(available):
+            assert answer.count(f"합성소수{i}") == 2
+    else:
+        assert answer.count("기준 충족 관측 없음") == 2
+
+
+@pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
+@pytest.mark.parametrize("present_group", ["turnover", "bottom"])
+def test_answer_first_empty_group_does_not_borrow_other_groups_candidates(surface, present_group):
+    row = _row("강남", "합성한쪽", **({"turnover_pct": 15} if present_group == "turnover" else {"molit_pos_52w": 1}))
+    digest = build_daily_digest({"complexes": [row], "count": 1}, "2026-09-05", "2026-09-04")
+    text = _visible_digest_text(digest[surface])
+    tv = text.split("12개월 회전율 상위 관측", 1)[1].split("52주 범위 하단 근접 관측", 1)[0]
+    lo = text.split("52주 범위 하단 근접 관측", 1)[1].split("회전율은", 1)[0]
+    present, absent = (tv, lo) if present_group == "turnover" else (lo, tv)
+    assert "1개 관측" in present and "합성한쪽" in present
+    assert "0개 관측" in absent and "기준 충족 관측 없음" in absent
+    assert "합성한쪽" not in absent
+
+
+@pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
+def test_answer_first_complex_name_stays_literal_text(surface):
+    name = '합성&"관측<표본>'
+    row = _row("강남", name, turnover_pct=15, molit_pos_52w=1)
+    digest = build_daily_digest({"complexes": [row], "count": 1}, "2026-09-05", "2026-09-04")
+    text = _visible_digest_text(digest[surface])
+    answer = text.split("12개월 회전율 상위 관측", 1)[1].split("회전율은", 1)[0]
+    assert answer.count(name) == 2
+
+
+def test_answer_first_survives_detail_budget_degradation():
+    ds = _answer_first_ds()
+    ds["listing_inventory"] = _inventory()
+    # Fill repeated tables, never the required summary; literal candidates still lead both groups.
+    ds["complexes"] += [_area_row(gu="강남", name=f"합성반복상세{i}", complex_no=f"detail-{i}",
+                                   molit_pos_52w=100, turnover_pct=4, jeonse_n=8,
+                                   jeonse_ratio_complex_pct=70, gap_eok=3) for i in range(8)]
+    ds["count"] = len(ds["complexes"])
+    digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    assert "아래 반복 상세 표는 각 최대 1개" in digest["tistory_html"]
+    assert len(digest["tistory_html"].encode("utf-8")) <= 28000
+    _assert_answer_first(digest["tistory_html"], "tistory_html")
+
+
+def test_answer_first_final_files_roundtrip_through_actual_daily_output(tmp_path):
+    from pathlib import Path
+    from blog.run_daily import write_digest_outputs
+    from blog.tistory_contract import parse_helper
+    digest = build_daily_digest(_answer_first_ds(), "2026-09-05", "2026-09-04")
+    paths = write_digest_outputs(digest, "2026-09-05", str(tmp_path), ds=None)
+    parsed = parse_helper(paths["draft"])
+    assert parsed == {"title": digest["title"], "tags": digest["tags"], "body": digest["tistory_html"]}
+    _assert_answer_first(parsed["body"], "tistory_html")
+    dated = Path(paths["dated"]).read_text(encoding="utf-8")
+    assert dated == Path(paths["latest"]).read_text(encoding="utf-8") == digest["site_html"]
+    _assert_answer_first(dated, "site_html")
+
+
 # ── 게이트: _select_ranked ───────────────────────────────────────────────
 
 def test_select_ranked_excludes_jusang_narrow_and_low_n():
@@ -399,7 +572,8 @@ def test_tistory_budget_shrinks_only_optional_detail_rows_and_preserves_required
 @pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
 def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface):
     sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
-    rows = [_area_row(name=f"평형관측긴단지이름{i}", complex_no=str(i)) for i in range(8)]
+    rows = [_area_row(name=f"평형관측긴단지이름{i}", complex_no=str(i),
+                      turnover_pct=15-i, molit_pos_52w=i+1) for i in range(8)]
     digest = build_daily_digest({"complexes": rows, "count": len(rows)}, "2026-09-05", "2026-09-04")
     document = digest[surface]
     if surface == "tistory_html":
@@ -413,6 +587,9 @@ def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface):
             page.route("**/*", lambda route: route.abort())
             page.set_content(document, wait_until="domcontentloaded")
             assert page.evaluate("document.documentElement.scrollWidth") <= 390
+            assert page.get_by_text("서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?", exact=True).is_visible()
+            assert page.get_by_text("12개월 회전율 상위 관측", exact=True).is_visible()
+            assert page.get_by_text("52주 범위 하단 근접 관측", exact=True).is_visible()
             budget_links = page.locator('a[href*="explorer.html?seg="]')
             assert budget_links.count() == 4
             for link in budget_links.all():

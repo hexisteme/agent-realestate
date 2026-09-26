@@ -443,10 +443,34 @@ def _pos_txt_tistory(r: dict) -> str:
     return f"{v:g}%"
 
 
+def _render_ranked_summary(sel: dict) -> str:
+    """선택된 회전율·범위 하단 관측을 최대 세 개씩 먼저 답한다."""
+    parts = [
+        '<p style="font-size:15px;margin:12px 0">'
+        '<b>서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?</b></p>',
+    ]
+    for key, heading in (("tv", "12개월 회전율 상위 관측"), ("lo", "52주 범위 하단 근접 관측")):
+        rows = sel[key][:3]
+        parts.append(f'<p><b>{heading}</b> ({len(rows)}개 관측 · 최대 3개)</p>')
+        if not rows:
+            parts.append(f'<p style="{_MUT}">기준 충족 관측 없음</p>')
+        for r in rows:
+            metric = (f'회전율 {r["turnover_pct"]:g}%' if key == "tv"
+                      else f'52주 범위 위치 {_pos_txt(r)}')
+            parts.append(
+                f'<p style="margin:5px 0"><b>{html.escape(r["name"])}</b>({html.escape(r["gu"])}) · '
+                f'{metric} · 12개월 표본 {r["molit_n"]}건</p>'
+            )
+    parts.append(f'<p style="{_MUT}">회전율은 12개월 거래건수÷세대수×100(%), '
+                 '52주 위치는 관측 범위 안의 위치입니다. 아래 표에서 체결 중위·전세·표본 기준을 함께 확인하세요.</p>')
+    return "".join(parts)
+
+
 def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchIntent,
                     band_rows=None, macro_html="", inventory=None, area_rows=None,
                     detail_limit=None, inventory_limit=8, area_limit=4) -> str:
     # 본문 예산에서 선택 상세 행만 줄인다. 핵심 요약·25개 구·출처와 고지는 보존한다.
+    ranked_summary = _render_ranked_summary(sel)
     if detail_limit is not None:
         sel = {key: rows[:detail_limit] for key, rows in sel.items()}
     td_c = "border:1px solid #e2e8f0;padding:4px 5px"
@@ -487,6 +511,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
     band_tr = "".join(f'<tr><td style="{td_c}">{b["band"]}</td><td style="{td_c}">{b["n"]}</td>'
                       f'<td style="{td_c}">{_eok(b["median"])}</td><td style="{td_c}"><span style="color:#dc2626">▲{b["hi"]}</span>·<span style="color:#2563eb">▼{b["lo"]}</span></td></tr>' for b in (band_rows or []))
     parts = [
+        ranked_summary,
         briefing_card,
         *([macro_html] if macro_html else []),   # 거시 지표 스트립(2026-09-07 S2) — 컨텍스트 없으면 생략
         f'<p style="{h2_c}">오늘의 숫자 <span style="{_MUT}">— 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
@@ -518,8 +543,8 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
         f'기준일 {asof}, n=표본수. 국토부 RTMS 공공데이터 및 네이버 단지 목록 스냅샷.</p>',
         f'<p style="{_MUT}">{be.DISCLAIMER} {be._takedown()}</p>',
         f'<p style="{_MUT}">작성: {html.escape(AUTHOR_LABEL)}</p>',
-        cta_card,
         f'<p><a href="{BASE_URL}/">전체 탐색기·인덱스</a> · <a href="{BASE_URL}/methodology.html">방법론 전문</a></p>',
+        cta_card,
     ]
     return "".join(parts)
 
@@ -585,6 +610,7 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <h1>{intent.title}</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
 <p class=meta>작성: {html.escape(AUTHOR_LABEL)} · <a href="../methodology.html">관측·신원 검증 방법론</a></p>
+{_render_ranked_summary(sel)}
 {render_lead_block(leads)}
 {macro_html}
 {_render_inventory_site(inventory)}
@@ -613,8 +639,6 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <h2>구별 요약 (25개 구)</h2>
 <div class=tblwrap><table><tr><th>구</th><th>단지 수</th><th>구 중위(억)</th><th>추세</th></tr>{gu_tr}</table></div>
 
-{_render_site_cta(counts['n_total'], intent)}
-
 <div class=foot>
 게이트: 상단/하단·전세가율·회전율 표는 아파트·전용 40㎡ 이상·매매표본 10건 이상만 대상(전세가율은 추가로 전세표본 5건 이상·95% 이하,
 회전율은 회전율 값 존재). 3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음").
@@ -625,6 +649,7 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <a href="../methodology.html">방법론 전문</a> · <a href="../explorer.html">탐색기</a> ·
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
 </div>
+{_render_site_cta(counts['n_total'], intent)}
 </article>
 </main>
 </body></html>"""
