@@ -16,6 +16,7 @@ import json
 import statistics as st
 from urllib.parse import quote, urlsplit
 
+from blog.brand_identity import AUTHOR_LABEL, BRAND_NAME, creator_schema
 import blog.build_explorer as be
 from blog.community_participation import render_complex_card
 from blog.fact_lead import build_fact_leads, render_lead_block
@@ -168,7 +169,7 @@ def _header_block(row: dict, asof: str) -> str:
     return (
         f'<div class="crumb"><a href="../index.html">홈</a> › '
         f'<a href="../gu/{quote(gu)}.html">{gu} 허브</a> › {name}</div>'
-        f"<h1>{name}</h1>"
+        f"<h1>{name} 실거래</h1>"
         f'<p class="meta">{gu}'
         + (f" · 전용 {area:g}㎡ ({py:g}평)" if area is not None else "")
         + (f" · {units:,}세대" if units else "")
@@ -510,7 +511,7 @@ def _peers_card(row: dict, peers: list[dict]) -> str:
         if passes_complex_page_gate(p):
             href = f"../complex/{quote(p_slug)}.html"
         else:
-            href = f'../gu/{quote(p["gu"])}.html#{quote(be.slugify_complex_name(p["name"]))}'
+            href = f'../gu/{quote(p["gu"])}.html#{be.slugify_complex_name(p["name"])}'
         trs.append(
             f'<tr><td><a href="{href}">{p["name"]}</a></td>'
             f'<td class=r>{p["area_m2"]:g}㎡</td>'
@@ -555,8 +556,34 @@ def _foot_block(asof: str) -> str:
     )
 
 
+def _acquisition_answer(row: dict, asof: str, intent, overlay: dict | None, today: str) -> str:
+    """Opt-in factual treatment; no generated investment judgment or projected uplift."""
+    if not overlay or intent.intent_id not in overlay:
+        return ""
+    from datetime import date
+
+    treatment = overlay[intent.intent_id]
+    if (treatment.get("canonical_path") != intent.canonical_path or treatment.get("kind") != "factual-answer"
+            or not treatment.get("probe_id") or not passes_complex_page_gate(row)):
+        raise ValueError("invalid acquisition treatment owner/evidence gate")
+    if date.fromisoformat(today) < date.fromisoformat(treatment["d0"]):
+        return ""
+    return (
+        f'<section class="lead" data-acquisition-probe="{html.escape(treatment["probe_id"], quote=True)}">'
+        f'<h2>{html.escape(intent.target_query)}는 어디서 확인하나요?</h2>'
+        f'<p>기준일 {html.escape(asof)}의 국토교통부 RTMS 공개 실거래에서 '
+        f'{html.escape(row["name"])} 전용 {row["area_m2"]:g}㎡의 동일평형 거래 중위는 '
+        f'{row["molit_recent_eok"]:g}억 원이며, 매매 표본은 {row["molit_n"]}건입니다. '
+        '실제 체결 기록의 요약이며 현재 호가나 향후 가격을 뜻하지 않습니다.</p>'
+        f'<p><a href="https://rt.molit.go.kr/">국토교통부 원천 자료</a> · '
+        f'<a href="../gu/{quote(row["gu"])}.html">{html.escape(row["gu"])} 구별 비교</a> · '
+        '<a href="../methodology.html">동일평형·표본 산식</a></p></section>'
+    )
+
+
 def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None, asof: str, today: str,
-                         ds: dict | None = None, prev_ds: dict | None = None) -> str:
+                         ds: dict | None = None, prev_ds: dict | None = None,
+                         acquisition_overlay: dict | None = None) -> str:
     """단지 개별 페이지(전체 HTML) — row 는 dataset.json 의 그 단지 행(+ 선택적으로 build_site 가
     주입하는 '_gu_median_eok': 구 대비% 계산용, render_complex_page 자체는 구 전체 표본을 받지
     않으므로 호출측이 미리 계산해 얹는다). monthly=None 이면 월별 차트 카드만 안내문으로 대체.
@@ -574,7 +601,7 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
     breadcrumb_ld = {
         "@context": "https://schema.org", "@type": "BreadcrumbList",
         "itemListElement": [
-            {"@type": "ListItem", "position": 1, "name": "서울 부동산 데이터 스냅샷", "item": f"{BASE_URL}/"},
+            {"@type": "ListItem", "position": 1, "name": BRAND_NAME, "item": f"{BASE_URL}/"},
             {"@type": "ListItem", "position": 2, "name": gu, "item": f"{BASE_URL}/gu/{quote(gu)}.html"},
             {"@type": "ListItem", "position": 3, "name": name, "item": f"{BASE_URL}/complex/{quote(slug)}.html"},
         ]}
@@ -588,12 +615,13 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
         "name": f"{name}({gu}) 아파트 공공 실거래 {today}",
         "description": f"{name} 전용{area_txt} 12개월 국토부 공공 실거래 중위·분포·추세·월별 중위.",
         "dateModified": today, "license": "https://creativecommons.org/licenses/by-nc/4.0/",
-        "creator": {"@type": "Organization", "name": "agent_realestate (개인 연구)"},
+        "creator": creator_schema(),
         "isAccessibleForFree": True, "keywords": ["부동산", "실거래", "공공데이터", "서울", gu, name],
         "variableMeasured": var_measured}
 
     body = (
         _header_block(row, asof)
+        + _acquisition_answer(row, asof, intent, acquisition_overlay, today)
         + '<div class="layout"><div class="main">'
         + _hero_card(row)
         + lead_html
@@ -612,19 +640,20 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
 
     out = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{intent.title}</title>
-<meta name=description content="{intent.description}">
+<title>{html.escape(intent.title)}</title>
+<meta name=description content="{html.escape(intent.description, quote=True)}">
 {canonical_tag(BASE_URL, intent)}
 <script type="application/ld+json">{json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
 <script type="application/ld+json">{json.dumps(dataset_ld, ensure_ascii=False)}</script>
 <style>{_CSS}</style>
 {ga4_snippet()}
 </head><body>
-<div class=wrap>
+<main class=wrap id=main-content><article>
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
 <a href="../daily/latest.html">오늘의 변화</a><a href="../methodology.html">방법론</a></nav>
 {body}
-</div>
+<p class=meta>작성 주체: {AUTHOR_LABEL} · 페이지 갱신 {today} · <a href="../methodology.html">출처·계산 방법·정정 안내</a></p>
+</article></main>
 </body></html>"""
     assert_wording_ok(out, f"complex_page:{gu}/{name}")
     return out

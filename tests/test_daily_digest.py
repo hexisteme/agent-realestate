@@ -2,8 +2,10 @@
 대상: blog.daily_digest.build_daily_digest / _select_ranked / _gu_summary_rows, blog.tistory_draft.write_digest_draft.
 """
 import importlib
+import html as html_lib
+from html.parser import HTMLParser
 import re
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import pytest
 
@@ -123,7 +125,7 @@ def test_gated_out_rows_never_appear_in_either_html():
 def test_tistory_html_byte_budget_and_tag_whitelist():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     tb = len(d["tistory_html"].encode("utf-8"))
-    assert tb <= 30000
+    assert tb <= 28000  # native 대표이미지 메타 2,000B를 30KB에서 예약
     tags_found = {m.lower() for m in re.findall(r"</?([a-zA-Z][a-zA-Z0-9]*)", d["tistory_html"])}
     assert tags_found <= _ALLOWED_TAGS, f"허용 외 태그 발견: {tags_found - _ALLOWED_TAGS}"
 
@@ -160,6 +162,34 @@ def test_complex_name_links_to_gu_hub_anchor():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     expected = f'{BASE_URL}/gu/{quote("강남")}.html#{slugify_complex_name("강남좋은아파트")}'
     assert expected in d["tistory_html"]
+
+
+@pytest.mark.parametrize("name", ["앵커 검증", "앵커&검증", '앵커"검증', "앵커%20검증"])
+def test_daily_gu_fragment_decodes_to_an_actual_rendered_hub_id(name):
+    """Catch single-encoded URLs targeting literal percent-encoded HTML ids."""
+    from blog.gu_hub import render_gu_hub
+    class HubIds(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.values = set()
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == "tr" and values.get("id"):
+                self.values.add(values["id"])
+
+    row = _row("노원", name, molit_pos_52w=100)
+    ds = {"complexes": [row], "count": 1, "data_asof": "2026-09-04"}
+    hub = render_gu_hub("노원", [row], "2026-09-04", "2026-09-05", ds=ds)
+    ids = HubIds()
+    ids.feed(hub)
+    digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    for surface in ("tistory_html", "site_html"):
+        links = re.findall(r'<a href="([^"]+)"', digest[surface])
+        fragments = [urlsplit(html_lib.unescape(link)).fragment for link in links
+                     if "/gu/" in link and urlsplit(link).fragment]
+        assert fragments
+        assert all(unquote(fragment) in ids.values for fragment in fragments)
 
 
 def test_complex_page_gate_switches_digest_links_to_complex_page():
@@ -283,4 +313,112 @@ def test_tistory_micro_budget_anchors():
     assert "예산대별 바로가기" in html or "가격대별 요약" in html
 
 
+def test_budget_links_open_exact_price_segment_and_keep_daily_attribution():
+    digest = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
+    for surface, source in (("tistory_html", "tistory"), ("site_html", "owned_daily")):
+        body = digest[surface]
+        attribution = []
+        for label in ("10억 미만", "10~15억", "15~20억", "20억 이상"):
+            match = re.search(r'<a href="([^"]+)"[^>]*>' + re.escape(label) + r'</a>', body)
+            assert match, f"{label} must be a real link"
+            query = parse_qs(urlsplit(html_lib.unescape(match.group(1))).query)
+            assert query["seg"] == [label]
+            assert query["utm_source"] == [source]
+            assert query["utm_medium"] == ["referral" if source == "tistory" else "internal"]
+            attribution.append((query["utm_campaign"][0], query["utm_content"][0]))
+        assert len(set(attribution)) == 1
 
+
+def _area_row(gu="노원", name="평형관측단지", **changes):
+    row = _row(gu, name, kapt_verified=True,
+               kapt_area_units={"le60": 200, "60_85": 100, "85_135": 0, "gt135": 0},
+               spread_flag="", med59_eok=8.0, med84_eok=10.0, n59=5, n84=7)
+    row.update(changes)
+    return row
+
+
+def test_both_daily_surfaces_show_eligible_area_observations_with_source_and_samples():
+    rows = [_area_row(), _area_row(name="신원불일치제외", spread_flag="ambiguous_name"),
+            _area_row(name="작은표본제외", n84=4)]
+    ds = {"complexes": rows, "count": 3, "data_asof": "2026-09-04"}
+    digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    for surface in ("tistory_html", "site_html"):
+        body = digest[surface]
+        assert "59㎡·84㎡ 실거래 중위 관측" in body
+        assert "평형관측단지" in body
+        assert "8억" in body and "10억" in body
+        assert "n=5" in body and "n=7" in body
+        assert "국토부 수집 스냅샷 · 기준일 2026-09-04" in body
+        assert "각 ±3.5㎡" in body
+        assert "신원불일치제외" not in body
+        assert "작은표본제외" not in body
+    assert "<main class=wrap>" in digest["site_html"]
+    assert "<article>" in digest["site_html"]
+    assert '<section id="area-tracks"' in digest["site_html"]
+    assert '<th scope="col">59㎡대 중위·n</th>' in digest["site_html"]
+
+
+def test_tistory_partial_area_table_has_all_rows_on_owned_daily():
+    rows = [_area_row(name=f"평형단지{i:02}", complex_no=str(i)) for i in range(8)]
+    ds = {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04"}
+    digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    assert "기준 충족 8단지 중 구·단지명 가나다순 4개" in digest["tistory_html"]
+    assert "#area-tracks" in digest["tistory_html"]
+    assert "평형단지07" not in digest["tistory_html"]
+    assert "평형단지07" in digest["site_html"]
+
+
+def test_tistory_budget_shrinks_only_optional_detail_rows_and_preserves_required_summary():
+    from blog.daily_digest import _render_tistory
+    from blog.search_intent import daily_intent
+    rows = [_area_row(gu=f"구{i:02}", name=f"평형단지{i:02}", complex_no=str(i),
+                      molit_pos_52w=100, molit_trend_dir="▲", molit_trend_pct=5,
+                      turnover_pct=15, jeonse_n=8, jeonse_ratio_complex_pct=80, gap_eok=2)
+            for i in range(25)]
+    ds = {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04"}
+    ds["listing_inventory"] = _inventory()
+    counts = blog.daily_digest._today_counts(ds)
+    sel = _select_ranked(ds)
+    leads = blog.daily_digest.build_fact_leads(ds, "seoul")
+    intent = daily_intent("2026-09-05", "관측", "관측")
+    full = _render_tistory("2026-09-05", "2026-09-04", counts, sel, _gu_summary_rows(ds), leads, intent,
+                           band_rows=blog.daily_digest._band_summary_rows(ds), area_rows=rows,
+                           inventory=ds["listing_inventory"])
+    assert len(full.encode("utf-8")) > 30000
+    digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    body = digest["tistory_html"]
+    assert len(body.encode("utf-8")) <= 28000
+    assert "아래 반복 상세 표는 각 최대" in body
+    for required in ("30초 브리핑", "오늘의 숫자", "가격대별 요약", "서울 25개 구 요약", "국토부 RTMS",
+                     "게이트:", "표본수", "방법론 전문", "59㎡·84㎡ 실거래 중위 관측"):
+        assert required in body
+    for i in range(25):
+        assert f"<b>구{i:02}</b>" in body
+
+
+@pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
+def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface):
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
+    rows = [_area_row(name=f"평형관측긴단지이름{i}", complex_no=str(i)) for i in range(8)]
+    digest = build_daily_digest({"complexes": rows, "count": len(rows)}, "2026-09-05", "2026-09-04")
+    document = digest[surface]
+    if surface == "tistory_html":
+        document = ('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">'
+                    '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+                    '<body style="margin:0;padding:14px;font:14px/1.5 sans-serif">' + document + '</body></html>')
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": 844})
+            page.route("**/*", lambda route: route.abort())
+            page.set_content(document, wait_until="domcontentloaded")
+            assert page.evaluate("document.documentElement.scrollWidth") <= 390
+            budget_links = page.locator('a[href*="explorer.html?seg="]')
+            assert budget_links.count() == 4
+            for link in budget_links.all():
+                assert link.bounding_box()["height"] >= 44
+            if surface == "site_html":
+                assert page.locator("#area-tracks tbody tr").count() == 8
+                assert page.locator("main article").count() == 1
+        finally:
+            browser.close()

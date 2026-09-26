@@ -6,9 +6,10 @@ build_explorer.select_gated_medians 를 오름차순 정렬 반환으로 고쳤�
 test_select_gated_medians_returns_sorted_list / test_p25_never_exceeds_p75_regardless_of_input_order 가 그 회귀를 고정한다.
 """
 from __future__ import annotations
+import html
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -29,7 +30,8 @@ def _row(gu: str, name: str, **kw) -> dict:
 
 
 def _cells_of(html_out: str, slug: str) -> list[str]:
-    m = re.search(rf'<tr id="{re.escape(slug)}">(.*?)</tr>', html_out, re.DOTALL)
+    dom_id = html.escape(unquote(slug), quote=True)
+    m = re.search(rf'<tr id="{re.escape(dom_id)}">(.*?)</tr>', html_out, re.DOTALL)
     assert m, f"row id={slug} not found"
     return re.findall(r"<td>(.*?)</td>", m.group(1), re.DOTALL)
 

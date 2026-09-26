@@ -11,6 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+blog = ["Pillow>=10.4,<13"]
 
 [project.scripts]
 agent-realestate = "agent_realestate.cli:main"

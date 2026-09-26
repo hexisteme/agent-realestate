@@ -7,12 +7,14 @@ never creates a page that the evidence gates would reject.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
+import html
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 
 _ENTITY_TYPES = {"daily", "district", "complex"}
@@ -50,6 +52,11 @@ class SearchIntent:
             raise ValueError("entity_ids must identify the canonical owner")
         if not self.canonical_path.startswith("/") or "?" in self.canonical_path or "#" in self.canonical_path:
             raise ValueError("canonical_path must be a query-free absolute path")
+        decoded = unquote(self.canonical_path)
+        if decoded.startswith("//") or any(part in {".", ".."} for part in decoded.split("/")) or "\\" in decoded:
+            raise ValueError("canonical_path cannot escape its public site root")
+        if date.fromisoformat(self.observed_at).isoformat() != self.observed_at:
+            raise ValueError("observed_at must be YYYY-MM-DD")
         if not self.answer_claim_ids or len(set(self.answer_claim_ids)) != len(self.answer_claim_ids):
             raise ValueError("answer_claim_ids must be non-empty and unique")
         if not _CAMPAIGN_RE.fullmatch(self.campaign_id):
@@ -128,11 +135,14 @@ def build_intent_registry(ds: dict, today: str, *, daily_title: str | None = Non
 
 
 def canonical_url(base_url: str, intent: SearchIntent) -> str:
+    base = urlsplit(base_url)
+    if base.scheme != "https" or not base.netloc or base.query or base.fragment or base.username or base.password:
+        raise ValueError("canonical base_url must be an absolute HTTPS site root")
     return base_url.rstrip("/") + intent.canonical_path
 
 
 def canonical_tag(base_url: str, intent: SearchIntent) -> str:
-    return f'<link rel="canonical" href="{canonical_url(base_url, intent)}">'
+    return f'<link rel="canonical" href="{html.escape(canonical_url(base_url, intent), quote=True)}">'
 
 
 def write_intent_registry(path: str | os.PathLike[str], intents: list[SearchIntent]) -> str:

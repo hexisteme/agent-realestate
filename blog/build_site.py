@@ -6,10 +6,28 @@ import os, shutil, glob, re, html, json
 from datetime import date, datetime, timezone, timedelta
 from email.utils import format_datetime
 from urllib.parse import quote
+from pathlib import Path
 
 import blog.build_explorer as be   # gu_hub.py 와 동일 관례(모듈 top-level import, 순환 없음 — be 는 build_site 를 지연import만 함)
 from blog.macro_entry import macro_entry_attributes, macro_entry_script
 from blog.search_intent import build_intent_registry, write_intent_registry
+from blog.brand_identity import BRAND_NAME, AUTHOR_LABEL, DESCRIPTION
+
+
+def _daily_media_meta(today: str) -> tuple[str, str]:
+    """Copy only the card verified against the current helper, not arbitrary images."""
+    helper = Path(SRC) / "tistory" / f"{today}-tistory-draft.html"
+    if not helper.with_suffix(".media.json").exists():
+        return "", ""
+    from blog.tistory_contract import parse_helper
+    from blog.tistory_media import read_media_manifest
+    from blog.thumbnail_card import social_meta
+    media = read_media_manifest(helper, parse_helper(helper), required=True)
+    destination = Path(SITE) / "images" / Path(media.image_path).name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(media.image_bytes)
+    relative = f"images/{destination.name}"
+    return social_meta(BASE_URL, relative, media.alt), relative
 
 # BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
 # 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
@@ -98,13 +116,20 @@ def assert_dataset_not_shrunk(new_path: str, old_path: str, min_ratio: float = 0
         raise SystemExit(f"[build_site] 데이터셋 축소 가드: 단지 {old} → {new} (<{min_ratio:.0%}) — 스코프 인자 누락(run_daily 11gu 기본값) 의심. "
                          "cmd_daily 와 같은 --molit/--jeonse/--public-frame/--survivors 로 재생성하거나, 의도된 축소면 RE_ALLOW_SHRINK=1")
 
-def build(today=None, molit_path=None):
+def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
     today=today or date.today().isoformat()
+    probe_path = probe_path or os.environ.get("BLOG_ACQUISITION_PROBE") or None
+    cohort_path = cohort_path or os.environ.get("BLOG_ACQUISITION_COHORT") or None
     # molit_path(2026-09-05 P2) — 단지 페이지 월별차트용 raw MOLIT. 없으면(파일 부재) 차트만 생략.
     mp = molit_path or os.environ.get("RE_MOLIT") or "examples/molit_recent_25gu_20260710.json"
     os.makedirs(f"{SITE}/posts",exist_ok=True)
     os.makedirs(f"{SITE}/gu",exist_ok=True)
     os.makedirs(f"{SITE}/daily",exist_ok=True)
+    card_meta, card_relative = _daily_media_meta(today)
+    overlay = None
+    if probe_path:
+        from blog.acquisition_probe import build_treatment_overlay
+        overlay = build_treatment_overlay(json.loads(Path(probe_path).read_text(encoding="utf-8")))
     source_dated=f"{SRC}/daily/{today}.html"
     source_latest=f"{SRC}/daily/latest.html"
     if os.path.exists(source_dated) and os.path.exists(source_latest):
@@ -175,7 +200,7 @@ def build(today=None, molit_path=None):
                     monthly = cp.build_monthly_medians(recs, asof)
             row2 = {**r, "_gu_median_eok": be.compute_gu_median(gu_rows)}
             slug = cp.complex_slug(gu, r["name"])
-            open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen, ds=ds_all, prev_ds=prev_ds))
+            open(f"{SITE}/complex/{slug}.html","w").write(cp.render_complex_page(row2, peers, monthly, asof, gen, ds=ds_all, prev_ds=prev_ds, acquisition_overlay=overlay))
             written_slugs.add(slug)
             complex_count += 1
         # 이번 회차에 쓰지 않은 단지 페이지 제거 — 단지가 다른 구로 정정되거나(2026-09-06 소재구 확정)
@@ -197,6 +222,9 @@ def build(today=None, molit_path=None):
         daily_title=(intent_digest_meta[1] if intent_digest_meta else None),
         daily_description=(intent_digest_meta[2] if intent_digest_meta and intent_digest_meta[2] else None),
     )
+    if cohort_path:
+        from blog.acquisition_probe import restore_probe_cohort
+        intents = restore_probe_cohort(cohort_path, SITE, BASE_URL, intents, today=today)
     write_intent_registry(f"{SITE}/search-intents.jsonl", intents)
     intent_count = len(intents)
     # 2c) 랜딩 index.html 재구성(2026-09-06 P0) — 기존 3,448개 포스트 링크 나열(235KB)을
@@ -236,9 +264,11 @@ def build(today=None, molit_path=None):
     idx=f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <meta name="google-site-verification" content="mawCVnPZxYdhhtBgHlck2zvNYTTb7ydP6hg58_kBVCs">
-<title>서울 부동산 데이터 스냅샷</title>
-<meta name=description content="서울 자치구 아파트 단지의 국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음). 방법론 공개. 투자자문 아님.">
-<script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"서울 부동산 데이터 스냅샷","inLanguage":"ko","license":"https://creativecommons.org/licenses/by-nc/4.0/","description":"국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음)."}}</script>
+<title>{BRAND_NAME}</title>
+<meta name=description content="{html.escape(DESCRIPTION, quote=True)}">
+<link rel="canonical" href="{BASE_URL}/">
+{card_meta}
+<script type="application/ld+json">{{"@context":"https://schema.org","@type":"WebSite","name":"{BRAND_NAME}","inLanguage":"ko","license":"https://creativecommons.org/licenses/by-nc/4.0/","description":"국토부 공공 실거래 중위·분포·추세(단지 실명, 자체 점수·순위 없음).","creator":{{"@type":"Organization","name":"{AUTHOR_LABEL}"}}}}</script>
 <style>
 :root{{--paper:#f7f5f0;--ink:#1b1a17;--accent:#1d6f6a;--mut:#5c584f;--line:#e6e2d9}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans KR",-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;font-size:15px;line-height:1.6;font-variant-numeric:tabular-nums}}
@@ -261,12 +291,14 @@ h2{{font-size:18px;margin:28px 0 12px}}
 </style>
 {ga4_snippet()}
 </head><body>
-<div class=wrap>
-<h1>서울 부동산 데이터 스냅샷</h1>
+<main class=wrap>
+<h1>{BRAND_NAME}</h1>
+<p class=lead>작성·편집: {AUTHOR_LABEL}</p>
 <p class=lead>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재). 자체 평가·점수·순위 없는 사실 스냅샷.</p>
 <div class=chips>{chips}</div>
 {('<div class=chips>' + ''.join(f'<span class=chip>{b["band"]} {b["n"]}단지 · 중위 {_fmt_eok(b["median"])}</span>' for b in band_summary if b['n']) + '</div>') if band_summary else ''}
 {lead_html}
+{f'<img src="{card_relative}" alt="서울 주거 실거래 관측 범위와 대표면적 표본, 국토교통부 출처 및 기준일" width="1200" height="630" style="display:block;width:100%;height:auto;border-radius:10px" fetchpriority="high">' if card_relative else ''}
 {entry_cards}
 <h2>자치구 (25개)</h2>
 <div class=gugrid>{gu_tiles}</div>
@@ -279,7 +311,7 @@ h2{{font-size:18px;margin:28px 0 12px}}
 {be._takedown()}<br>
 <a href="methodology.html">방법론 전문</a> · AI 인덱스: <a href="llms.txt">/llms.txt</a> · 라이선스 CC-BY-NC-4.0 · 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
 </div>
-</div>
+</main>
 </body></html>"""
     open(f"{SITE}/index.html","w").write(idx)
     # 2d) archive.html — 기존 인덱스가 나열하던 전체 포스트 목록(같은 마크업·claims.jsonl 링크)을 이전.
@@ -426,7 +458,29 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         "training: allowed (non-commercial, with attribution)\nprovenance: per-post claims.jsonl\n")
     return {"posts":len(posts),"site":SITE,"complex":complex_count,"intents":intent_count}
 
-if __name__=="__main__":
+def main(argv=None):
+    import argparse
+
+    def iso_day(value):
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("date must be valid YYYY-MM-DD") from None
+        if parsed.isoformat() != value:
+            raise argparse.ArgumentTypeError("date must be valid YYYY-MM-DD")
+        return value
+
+    parser = argparse.ArgumentParser(description="Build public search pages; preserve an active D0 cohort.")
+    parser.add_argument("--date", type=iso_day)
+    parser.add_argument("--molit")
+    parser.add_argument("--probe", help="Preregistered acquisition experiment JSON")
+    parser.add_argument("--cohort", help="Frozen D0 payload/registry cohort JSON")
+    args = parser.parse_args(argv)
     from agent_realestate import config
     config.load_env_file()   # RE_EMAIL_TO(takedown 연락처) — standalone 실행 시에도 placeholder 방지
-    print(build())
+    print(build(args.date, args.molit, probe_path=args.probe, cohort_path=args.cohort))
+    return 0
+
+
+if __name__=="__main__":
+    raise SystemExit(main())

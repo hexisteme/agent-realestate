@@ -44,11 +44,22 @@ def _replace_digest_page(path: str, content: str) -> None:
         raise
 
 
-def write_digest_outputs(digest: dict, today: str, outdir: str) -> dict[str, str]:
+def write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None = None) -> dict[str, str]:
     """Write and then verify the helper + dated/latest static output contract."""
     required = {"title", "tags", "tistory_html", "site_html", "summary"}
     if set(digest) != required or any(not isinstance(digest[key], str) or not digest[key] for key in required):
         raise ValueError("daily digest output contract is incomplete")
+
+    card = None
+    if ds is not None:
+        from blog.thumbnail_card import build_daily_card, social_meta
+        from blog.build_site import BASE_URL
+        card = build_daily_card(ds, Path(outdir) / "images", today=today)
+        relative = f"images/{Path(card.path).name}"
+        if digest["site_html"].count("</head>") != 1:
+            raise ValueError("daily page has no unique metadata injection point")
+        digest = dict(digest)
+        digest["site_html"] = digest["site_html"].replace("</head>", social_meta(BASE_URL, relative, card.alt) + "\n</head>", 1)
 
     draft = td.write_digest_draft(digest, today, outdir)
     dated = f"{outdir}/daily/{today}.html"
@@ -64,7 +75,12 @@ def write_digest_outputs(digest: dict, today: str, outdir: str) -> dict[str, str
         raise ValueError("dated daily page no longer matches the digest payload")
     if Path(latest).read_text(encoding="utf-8") != digest["site_html"]:
         raise ValueError("latest daily page no longer matches the dated daily page")
-    return {"draft": draft, "dated": dated, "latest": latest}
+    outputs = {"draft": draft, "dated": dated, "latest": latest}
+    if card is not None:
+        from blog.tistory_media import write_media_manifest
+        outputs["image"] = card.path
+        outputs["media"] = write_media_manifest(draft, parsed, card)
+    return outputs
 
 
 def _latest_or(pattern: str, fallback: str) -> str:
@@ -241,7 +257,7 @@ def main():
             print(f"거시 지표 수집 건너뜀: {type(e).__name__}")
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
         digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx)
-        outputs = write_digest_outputs(digest, today, a.out)
+        outputs = write_digest_outputs(digest, today, a.out, ds=ds)
         print(f"티스토리 원고: {outputs['draft']}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
         print(f"일간 다이제스트: {outputs['dated']} · {outputs['latest']}")
         naver = nt.write_naver_teaser(summaries, today, a.asof, outdir=a.out)

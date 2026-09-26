@@ -4,7 +4,9 @@ A모델 무점수: '중위 desc' 정렬은 사실 정렬일 뿐 순위·추천�
 다이제스트(daily_digest.py)의 구별 요약과 동일 표본으로 맞춘다(단일소스: build_explorer 게이트).
 """
 from __future__ import annotations
-from urllib.parse import quote
+import html
+from blog.brand_identity import AUTHOR_LABEL, BRAND_NAME, creator_schema
+from urllib.parse import quote, unquote
 
 import blog.build_explorer as be
 import blog.complex_page as cp
@@ -155,7 +157,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     srt = sorted(rows, key=lambda r: (r.get("molit_recent_eok") is None, -(r.get("molit_recent_eok") or 0), r["name"]))
     trs = []
     for r in srt:
-        slug = be.slugify_complex_name(r["name"])
+        slug = html.escape(unquote(be.slugify_complex_name(r["name"])), quote=True)
         cmp_pct = (round((r["molit_recent_eok"] / gu_med - 1) * 100, 1)
                    if (r.get("molit_recent_eok") is not None and gu_med) else None)
         iqr = (f'{r["molit_p25_eok"]:g}–{r["molit_p75_eok"]:g}억'
@@ -187,7 +189,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     breadcrumb_ld = {
         "@context": "https://schema.org", "@type": "BreadcrumbList",
         "itemListElement": [
-            {"@type": "ListItem", "position": 1, "name": "서울 부동산 데이터 스냅샷", "item": f"{BASE_URL}/"},
+            {"@type": "ListItem", "position": 1, "name": BRAND_NAME, "item": f"{BASE_URL}/"},
             {"@type": "ListItem", "position": 2, "name": f"{gu}", "item": f"{BASE_URL}/gu/{quote(gu)}.html"},
         ]}
     dataset_ld = {
@@ -195,21 +197,21 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
         "name": f"서울 {gu} 아파트 공공 실거래 구허브 {today}",
         "description": f"{gu} 감시 단지 {n}개의 국토부 공공 실거래 중위·분포·추세 구 단위 집계.",
         "dateModified": today, "license": "https://creativecommons.org/licenses/by-nc/4.0/",
-        "creator": {"@type": "Organization", "name": "agent_realestate (개인 연구)"},
+        "creator": creator_schema(),
         "isAccessibleForFree": True, "keywords": ["부동산", "실거래", "공공데이터", "서울", gu]}
 
     import json as _json
     out = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{intent.title}</title>
-<meta name=description content="{intent.description}">
+<title>{html.escape(intent.title)}</title>
+<meta name=description content="{html.escape(intent.description, quote=True)}">
 {canonical_tag(BASE_URL, intent)}
 <script type="application/ld+json">{_json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
 <script type="application/ld+json">{_json.dumps(dataset_ld, ensure_ascii=False)}</script>
 <style>{_CSS}</style>
 {ga4_snippet()}
 </head><body>
-<div class=wrap>
+<main class=wrap id=main-content><article>
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
 <a href="../daily/latest.html">오늘의 변화</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › {gu}</div>
@@ -230,10 +232,11 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
 10건 미만·비아파트·40㎡ 미만은 —). 회전율=12개월 거래건수÷세대수×100(%). 기준일 {asof}. 가격·거래는 국토부 RTMS 공공데이터,
 매물 노출 건수는 별도 관측시각의 네이버 법정동별 단지 목록 집계이며 생활 맥락은 단지 페이지의 출처·확인 상태를 따름.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
+작성 주체: {AUTHOR_LABEL} · 페이지 갱신 {today}<br>
 <a href="../methodology.html">방법론 전문</a> · {weekly_link}
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
 </div>
-</div>
+</article></main>
 </body></html>"""
     assert_wording_ok(out, f"gu_hub:{gu}")
     return out

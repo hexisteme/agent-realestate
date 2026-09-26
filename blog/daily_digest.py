@@ -11,6 +11,8 @@ from urllib.parse import quote
 import blog.build_explorer as be
 import blog.complex_page as cp
 from blog.acquisition_probe import campaign_url, cta_event_attributes
+from blog.area_tracks import select_area_tracks
+from blog.brand_identity import AUTHOR_LABEL, creator_schema
 from blog.build_site import BASE_URL, ga4_snippet
 from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.macro_entry import macro_entry_attributes
@@ -20,6 +22,7 @@ from blog.wording_guard import assert_wording_ok
 
 _HI_POS = 99   # 12개월 범위 상단 근접 임계(52주 위치 %)
 _LO_POS = 6    # 12개월 범위 하단 근접 임계
+_TISTORY_TEXT_BUDGET = 28000  # native 대표이미지 메타용 2,000B를 총 30KB에서 예약
 
 _SITE_CSS = (
     "*{box-sizing:border-box}body{margin:0;background:#f7f5f0;color:#1b1a17;"
@@ -45,6 +48,11 @@ _SITE_CSS = (
     "th{color:#5c584f;font-weight:500;font-size:12px;border-bottom:1px solid #cfc9bc}"
     "td:first-child,th:first-child{text-align:left;white-space:normal}"
     "tbody tr:hover{background:#faf9f6}"
+    ".budgetlinks{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}"
+    ".budgetlinks a{display:inline-flex;align-items:center;min-height:44px;padding:5px 10px;"
+    "border:1px solid #cfc9bc;border-radius:6px;background:#fff;font-weight:600}"
+    "a:focus-visible,[tabindex]:focus-visible{outline:3px solid #1d6f6a;outline-offset:3px}"
+    ".area-tracks caption{text-align:left;padding:8px 9px;color:#5c584f;font-size:12px}"
     ".foot{font-size:12px;color:#8a857a;margin-top:18px;line-height:1.6}"
     "@media(max-width:760px){.wrap{padding:14px 14px 40px}.tiles{gap:8px}"
     ".tile{flex:1 1 45%;padding:10px 12px}table{font-size:12px}th,td{padding:6px 7px}}"
@@ -162,7 +170,7 @@ def _inventory_notice(inventory: dict | None) -> str:
     return "관측 후 36시간을 초과해 현재 합계와 증감은 공개하지 않습니다."
 
 
-def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
+def _render_inventory_tistory(inventory: dict | None, today: str, limit: int = 8) -> str:
     if not inventory or not inventory.get("fresh"):
         return (f'<p><b>구별 네이버 표시 매물</b></p><p style="{_MUT}">'
                 f'{html.escape(_inventory_notice(inventory))}</p>')
@@ -176,7 +184,7 @@ def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
             -(abs(_inventory_delta(inventory, item[0], period)) if comparable else item[1].get("total_article_count", 0)),
             item[0],
         ),
-    )[:8]
+    )[:limit]
     label = "7일 Δ" if period == "7d" else "1일 Δ"
     inv_td = "border:1px solid #e2e8f0;padding:4px 5px"
     inv_th = "border:1px solid #e2e8f0;padding:4px 5px;background:#f8fafc"
@@ -199,7 +207,7 @@ def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
         f'<table style="{_TBL}"><tr><td style="{inv_th}"><b>구</b></td><td style="{inv_th}"><b>전체</b></td>'
         f'<td style="{inv_th}"><b>{label}</b></td><td style="{inv_th}"><b>매매</b></td>'
         f'<td style="{inv_th}"><b>전세</b></td></tr>{trs}</table>'
-        f'<p style="{_MUT}">절대 증감이 큰 8개 구만 표시합니다. 25개 구 전체 1일·7일 표는 '
+        f'<p style="{_MUT}">{"절대 증감" if comparable else "표시 매물 수"}이 큰 {len(rows)}개 구만 표시합니다. 25개 구 전체 1일·7일 표는 '
         f'<a href="{BASE_URL}/daily/{today}.html">사이트 일간 페이지</a>에서 확인할 수 있습니다. '
         '네이버 법정동별 단지 목록의 표시 건수 합계이며 전체는 매매·전세·월세·단기임대를 더한 값입니다. '
         '한 주택 수나 수요를 뜻하지 않고 중개사 중복 노출이 있을 수 있습니다.</p>'
@@ -344,6 +352,75 @@ def _render_site_cta(total_count: int, intent: SearchIntent) -> str:
     )
 
 
+def _render_budget_links(intent: SearchIntent, surface: str) -> str:
+    """실거래 중위 가격대의 explorer seg 프리셋. 안정적 intent 귀속은 유지한다."""
+    links = []
+    owned = surface == "owned_daily"
+    style = ("display:inline-block;box-sizing:border-box;min-height:44px;line-height:26px;"
+             "padding:8px 6px;border:1px solid #cbd5e1;"
+             "background:#f1f5f9;font-weight:bold;text-decoration:none")
+    for _, label in be.PRICE_SEGMENTS:
+        href = campaign_url(
+            f"{BASE_URL}/explorer.html?seg={quote(label)}", source=surface,
+            medium="internal" if owned else "referral",
+            campaign_id=intent.campaign_id, content_id=intent.intent_id,
+        )
+        attrs = cta_event_attributes(intent, surface) if owned else f'style="{style}"'
+        links.append(f'<a href="{html.escape(href, quote=True)}" {attrs}>{html.escape(label)}</a>')
+    if owned:
+        return '<nav class="budgetlinks" aria-label="실거래 가격대별 탐색">' + "".join(links) + "</nav>"
+    return f'<p style="{_MUT};margin:4px 0 8px">🎯 <b>예산대별 바로가기:</b><br>{" · ".join(links)}</p>'
+
+
+def _area_track_note(asof: str) -> str:
+    return (f"[사실] 국토부 수집 스냅샷 · 기준일 {asof} · 전용 59㎡·84㎡ 각 ±3.5㎡ · "
+            "각 n≥5 · 단지 신원 확인. 중위는 체결 총액(억), n은 거래 표본수이며 면적대·거래 기간 차이가 있습니다.")
+
+
+def _render_area_tracks_tistory(area_rows: list[dict], asof: str, today: str, limit: int = 4) -> str:
+    heading = '<p style="font-size:14px;font-weight:bold;margin:16px 0 6px">59㎡·84㎡ 실거래 중위 관측</p>'
+    note = f'<p style="{_MUT}">{html.escape(_area_track_note(asof))}</p>'
+    if not area_rows:
+        return heading + note + f'<p style="{_MUT}">양쪽 평형의 표본·신원 기준 충족 단지 없음</p>'
+    td = "border:1px solid #e2e8f0;padding:4px 5px"
+    rows = []
+    for r in area_rows[:limit]:
+        href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
+        rows.append(
+            f'<tr><td style="{td}"><a href="{html.escape(href, quote=True)}">{html.escape(r["name"])}</a>'
+            f'({html.escape(r["gu"])})</td><td style="{td}">{_eok(r["med59_eok"])} · n={r["n59"]}</td>'
+            f'<td style="{td}">{_eok(r["med84_eok"])} · n={r["n84"]}</td></tr>'
+        )
+    headers = "".join(f'<td style="{td};background:#f8fafc"><b>{v}</b></td>'
+                      for v in ("단지(구)", "59㎡대 중위·n", "84㎡대 중위·n"))
+    shown = min(limit, len(area_rows))
+    return (heading + note + f'<table style="{_TBL}"><tr>{headers}</tr>{"".join(rows)}</table>'
+            f'<p style="{_MUT}">기준 충족 {len(area_rows)}단지 중 구·단지명 가나다순 {shown}개를 표시합니다. '
+            f'<a href="{BASE_URL}/daily/{today}.html#area-tracks">59㎡·84㎡ 전체 표</a></p>')
+
+
+def _render_area_tracks_site(area_rows: list[dict], asof: str) -> str:
+    rows = []
+    for r in area_rows:
+        href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
+        rows.append(
+            f'<tr><th scope="row"><a href="{html.escape(href, quote=True)}">{html.escape(r["name"])}</a> '
+            f'<span class="mut">({html.escape(r["gu"])})</span></th><td>{_eok(r["med59_eok"])} '
+            f'<span class="mut">n={r["n59"]}</span></td><td>{_eok(r["med84_eok"])} '
+            f'<span class="mut">n={r["n84"]}</span></td></tr>'
+        )
+    table = ('<p class="mut">양쪽 평형의 표본·신원 기준 충족 단지 없음</p>' if not rows else
+             '<div class="tblwrap" tabindex="0" role="region" aria-label="59㎡·84㎡ 실거래 관측 표">'
+             f'<table><caption>기준 충족 {len(rows)}단지 · 구·단지명 가나다순</caption><thead><tr>'
+             '<th scope="col">단지(구)</th><th scope="col">59㎡대 중위·n</th>'
+             f'<th scope="col">84㎡대 중위·n</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    return ('<section id="area-tracks" class="area-tracks" aria-labelledby="area-tracks-heading">'
+            '<h2 id="area-tracks-heading">59㎡·84㎡ 실거래 중위 관측</h2>'
+            f'<p class="mut">{html.escape(_area_track_note(asof))} '
+            '<a href="https://rt.molit.go.kr/">국토부 실거래 공개시스템</a> · '
+            '<a href="../methodology.html">표본·신원 방법론</a></p>' + table + '</section>')
+
+
 def _trend_txt_tistory(r: dict) -> str:
     d, p = r.get("molit_trend_dir"), r.get("molit_trend_pct")
     if p is None:
@@ -367,7 +444,11 @@ def _pos_txt_tistory(r: dict) -> str:
 
 
 def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchIntent,
-                    band_rows=None, macro_html="", inventory=None) -> str:
+                    band_rows=None, macro_html="", inventory=None, area_rows=None,
+                    detail_limit=None, inventory_limit=8, area_limit=4) -> str:
+    # 본문 예산에서 선택 상세 행만 줄인다. 핵심 요약·25개 구·출처와 고지는 보존한다.
+    if detail_limit is not None:
+        sel = {key: rows[:detail_limit] for key, rows in sel.items()}
     td_c = "border:1px solid #e2e8f0;padding:4px 5px"
     th_c = "border:1px solid #e2e8f0;padding:4px 5px;background:#f8fafc"
     h2_c = "font-size:14px;font-weight:bold;color:#0f172a;border-left:3px solid #0d9488;padding-left:6px;margin:16px 0 6px"
@@ -412,18 +493,21 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
         f'<span style="color:#dc2626;font-weight:bold">상승 {counts["up"]}</span> · '
         f'<span style="color:#2563eb;font-weight:bold">하락 {counts["down"]}</span> · 보합 {counts["flat"]}(국토부 실거래 사실)</span></p>',
         *([ f'<p style="{h2_c}">가격대별 요약 <span style="{_MUT}">(12개월 중위 구간·사실)</span></p>',
-            f'<p style="{_MUT};margin:4px 0 8px 0;">🎯 <b>예산대별 바로가기:</b> <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">10억 미만</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">10~15억</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">15~20억</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">20억 이상</span></p>',
+            _render_budget_links(intent, "tistory"),
             f'<table style="{_TBL}"><tr><td style="{th_c}"><b>가격대</b></td><td style="{th_c}"><b>단지 수</b></td>'
-            f'<td style="{th_c}"><b>중위(억)</b></td><td style="{th_c}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
+             f'<td style="{th_c}"><b>중위(억)</b></td><td style="{th_c}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
+        _render_area_tracks_tistory(area_rows or [], asof, today, area_limit),
+        *([f'<p style="{_MUT}">아래 반복 상세 표는 각 최대 {detail_limit}개만 표시합니다. '
+           f'<a href="{BASE_URL}/daily/{today}.html">전체 상세 표</a></p>'] if detail_limit is not None else []),
         f'<p style="{h2_c}">12개월 범위 상단 근접 <span style="{_MUT}">(52주 위치 99% 이상)</span></p>',
         table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], hi_rows) if hi_rows else none_p,
         f'<p style="{h2_c}">12개월 범위 하단 근접 <span style="{_MUT}">(52주 위치 6% 이하)</span></p>',
         table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], lo_rows) if lo_rows else none_p,
-        f'<p style="{h2_c}">전세가율 상위 5 <span style="{_MUT}">(매매-전세 갭 구간)</span></p>',
+        f'<p style="{h2_c}">전세가율 상위 {len(sel["jr"])} <span style="{_MUT}">(매매-전세 갭 구간)</span></p>',
         table(["단지(구)", "중위(억)", "전세가율", "매매-전세 갭"], jr_rows) if jr_rows else none_p,
-        f'<p style="{h2_c}">회전율 상위 5 <span style="{_MUT}">(12개월 거래 활발 단지)</span></p>',
+        f'<p style="{h2_c}">회전율 상위 {len(sel["tv"])} <span style="{_MUT}">(12개월 거래 활발 단지)</span></p>',
         table(["단지(구)", "중위(억)", "회전율", "12개월 거래"], tv_rows) if tv_rows else none_p,
-        _render_inventory_tistory(inventory, today),
+        _render_inventory_tistory(inventory, today, inventory_limit),
         f'<p style="{h2_c}">서울 25개 구 요약</p>',
         f'<table style="{_TBL}"><tr><td style="{th_c}"><b>구</b></td><td style="{th_c}"><b>단지 수</b></td>'
         f'<td style="{th_c}"><b>구 중위(억)</b></td><td style="{th_c}"><b>추세</b></td></tr>{gu_tr}</table>',
@@ -433,6 +517,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
         f'회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위. '
         f'기준일 {asof}, n=표본수. 국토부 RTMS 공공데이터 및 네이버 단지 목록 스냅샷.</p>',
         f'<p style="{_MUT}">{be.DISCLAIMER} {be._takedown()}</p>',
+        f'<p style="{_MUT}">작성: {html.escape(AUTHOR_LABEL)}</p>',
         cta_card,
         f'<p><a href="{BASE_URL}/">전체 탐색기·인덱스</a> · <a href="{BASE_URL}/methodology.html">방법론 전문</a></p>',
     ]
@@ -440,7 +525,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
 
 
 def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
-                 band_rows=None, macro_html="", inventory=None) -> str:
+                 band_rows=None, macro_html="", inventory=None, area_rows=None) -> str:
     def name_cell(r):
         href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
@@ -466,6 +551,7 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
     band_tr = "".join(f'<tr><td>{b["band"]}</td><td>{b["n"]}</td><td>{_eok(b["median"])}</td>'
                       f'<td><span class=up>▲{b["hi"]}</span>·<span class=down>▼{b["lo"]}</span></td></tr>' for b in (band_rows or []))
     band_sec = (f'<h2>가격대별 요약 <span class=mut>(12개월 중위 구간·사실)</span></h2>'
+                f'{_render_budget_links(intent, "owned_daily")}'
                 f'<div class=tblwrap><table><tr><th>가격대</th><th>단지 수</th><th>중위(억)</th><th>52주 상단·하단</th></tr>{band_tr}</table></div>') if band_rows else ''
     jsonld_bc = {
         "@context": "https://schema.org", "@type": "BreadcrumbList",
@@ -478,7 +564,7 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
         "name": intent.title, "dateModified": today, "datePublished": today,
         "description": f"발행 {counts['n_total']}단지 국토부 공공 실거래 12개월 범위 상단/하단 근접·전세가율·회전율 사실 요약.",
         "license": "https://creativecommons.org/licenses/by-nc/4.0/",
-        "creator": {"@type": "Organization", "name": "agent_realestate (개인 연구)"},
+        "creator": creator_schema(),
         "isAccessibleForFree": True, "keywords": ["부동산", "실거래", "공공데이터", "서울", "오늘의변화"]}
 
     return f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
@@ -491,12 +577,14 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <style>{_SITE_CSS}</style>
 {ga4_snippet()}
 </head><body>
-<div class=wrap>
+<main class=wrap>
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
 <a href="../daily/latest.html">오늘의 변화</a><a href="../macro.html" {macro_entry_attributes("daily", "macro")}>거시 지표</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › 오늘의 변화</div>
+<article>
 <h1>{intent.title}</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
+<p class=meta>작성: {html.escape(AUTHOR_LABEL)} · <a href="../methodology.html">관측·신원 검증 방법론</a></p>
 {render_lead_block(leads)}
 {macro_html}
 {_render_inventory_site(inventory)}
@@ -509,6 +597,7 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <div class=tile><span class=k>보합</span><span class=v>—{counts['flat']}</span></div>
 </div>
 {band_sec}
+{_render_area_tracks_site(area_rows or [], asof)}
 <h2>12개월 범위 상단 근접 <span class=mut>(52주 위치 99% 이상)</span></h2>
 <div class=tblwrap>{table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], hi_rows) if hi_rows else none_p}</div>
 
@@ -536,15 +625,18 @@ def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
 <a href="../methodology.html">방법론 전문</a> · <a href="../explorer.html">탐색기</a> ·
 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a>
 </div>
-</div>
+</article>
+</main>
 </body></html>"""
 
 
 def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = None, macro: dict | None = None) -> dict:
     """다이제스트 산출 — {"title","tags","tistory_html","site_html","summary"}.
-    tistory_html 은 30,000바이트 예산을 넘거나 금칙어가 섞이면 ValueError 로 발행을 막는다.
+    tistory_html 은 대표이미지 메타 2,000B를 예약한 28,000바이트 본문 예산을 넘거나 금칙어가 섞이면 ValueError 로 발행을 막는다.
     prev_ds(선택, 2026-09-06) = 직전 스냅샷 — 사실 리드(FactLead)의 패턴 재현 판정(§7 D)에만 쓰인다.
-    macro(선택, 2026-09-07) = blog.macro_context.build_macro_context 결과 — 리드 다음에 거시 지표 스트립을 넣는다. None 이면 생략."""
+    macro(선택, 2026-09-07) = blog.macro_context.build_macro_context 결과 — 리드 다음에 거시 지표 스트립을 넣는다. None 이면 생략.
+    28KB 초과 시 거시 스트립을 먼저 생략하고 반복 상세표·매물표·59/84표의 행만 순차 축약한다.
+    핵심 요약·오늘의 숫자·가격대/25구 요약·표본 기준·출처·고지는 축약하지 않는다."""
     sel = _select_ranked(ds)
     gu_rows = _gu_summary_rows(ds)
     counts = _today_counts(ds)
@@ -561,22 +653,35 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     intent = daily_intent(today, title, description)
 
     band_rows = _band_summary_rows(ds)   # 가격대 4밴드 요약(2026-09-07)
+    area_rows = select_area_tracks(ds)["rows"]
     inventory = ds.get("listing_inventory")
     tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
-                                    macro_html=(macro or {}).get("tistory_html", ""), inventory=inventory)
+                                  macro_html=(macro or {}).get("tistory_html", ""), inventory=inventory,
+                                  area_rows=area_rows)
     site_html = _render_site(today, asof, counts, sel, gu_rows, intent, leads, band_rows=band_rows,
-                             macro_html=(macro or {}).get("site_html", ""), inventory=inventory)
+                            macro_html=(macro or {}).get("site_html", ""), inventory=inventory,
+                            area_rows=area_rows)
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")
     assert_wording_ok(site_html, "daily_digest:site_html")
 
     tb = len(tistory_html.encode("utf-8"))
-    if tb > 30000 and macro:                                   # 거시 스트립은 선택 섹션(2026-09-07) — 예산 초과면 먼저 뺀다(사이트는 유지)
+    if tb > _TISTORY_TEXT_BUDGET and macro:                     # 거시 스트립은 선택 섹션 — 예산 초과면 먼저 뺀다(사이트는 유지)
         tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
-                                       inventory=inventory)
+                                      inventory=inventory, area_rows=area_rows)
         tb = len(tistory_html.encode("utf-8"))
-    if tb > 30000:
-        raise ValueError(f"[daily_digest] tistory_html {tb}B > 30000B 예산 초과 — 섹션을 줄이세요")
+    for detail_limit, inventory_limit, area_limit in ((3, 4, 4), (2, 2, 3), (1, 1, 1)):
+        if tb <= _TISTORY_TEXT_BUDGET:
+            break
+        tistory_html = _render_tistory(
+            today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
+            inventory=inventory, area_rows=area_rows, detail_limit=detail_limit,
+            inventory_limit=inventory_limit, area_limit=area_limit,
+        )
+        tb = len(tistory_html.encode("utf-8"))
+    if tb > _TISTORY_TEXT_BUDGET:
+        raise ValueError(f"[daily_digest] tistory_html {tb}B > {_TISTORY_TEXT_BUDGET}B 예산 초과 "
+                         "(대표이미지용 2000B 예약) — 선택 행 축약 후에도 필수 본문이 초과했습니다")
 
     return {"title": title, "tags": tags, "tistory_html": tistory_html,
             "site_html": site_html, "summary": summary}

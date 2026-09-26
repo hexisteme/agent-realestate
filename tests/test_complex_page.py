@@ -235,7 +235,7 @@ def test_peers_link_to_complex_page_when_gated_else_hub_anchor():
     peer_unpaged = _row("노원", "페이지없음", molit_n=5, area_m2=60.0, molit_recent_eok=6.1)
     out = cp.render_complex_page(row, [peer_paged, peer_unpaged], None, "2026-08-31", "2026-09-05")
     assert f'../complex/{quote(cp.complex_slug("노원", "페이지있음"))}.html' in out
-    assert f'../gu/{quote("노원")}.html#{quote(be.slugify_complex_name("페이지없음"))}' in out
+    assert f'../gu/{quote("노원")}.html#{be.slugify_complex_name("페이지없음")}' in out
 
 
 # ── 탐색기 프리셋 딥링크(deliverable 3) ──────────────────────────────────

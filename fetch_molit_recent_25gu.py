@@ -4,10 +4,10 @@ fetch_molit_recent_11gu.py 의 25구 확장 복제 (WS-1): 25구 default · 구 
 지역은 RE_DISTRICTS env(쉼표 구 이름, lawd 자동 해석)로 override 가능."""
 from __future__ import annotations  # cron python(/usr/bin/python3=3.9.6)에서 PEP604 `str | None` 런타임 평가 회피
 import os, json, time, socket, urllib.parse, urllib.request
-import xml.etree.ElementTree as ET
 from datetime import date
 from agent_realestate import config; config.load_env_file()
 from agent_realestate.collectors.lawd import lawd_for_district
+from blog.molit_transactions import parse_molit_trade_response, validate_molit_trade_cache
 
 # ★DNS 자가회복(11gu 버전과 동일): 시스템 getaddrinfo 고장 시에도 수집 지속. 정상 시 오버헤드 0.
 _real_gai = socket.getaddrinfo
@@ -42,7 +42,7 @@ def _gai(host, *a, **k):
 socket.getaddrinfo = _gai
 
 K = os.environ["MOLIT_API_KEY"]
-EP = "http://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
+EP = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
 _DEFAULT_DISTRICTS = ("종로,중구,용산,성동,광진,동대문,중랑,성북,강북,도봉,노원,은평,서대문,"
                       "마포,양천,강서,구로,금천,영등포,동작,관악,서초,강남,송파,강동")
 LAWD = {}
@@ -67,31 +67,30 @@ def _rolling_months(n=12):
 MONTHS = _rolling_months()
 OUT = "examples/molit_recent_25gu_20260710.json"
 
-def _t(it, tag):
-    e = it.find(tag); return (e.text or "").strip() if e is not None else ""
-
-def fetch(lawd, ym):
+def fetch_batch(lawd, ym):
+    """Strict rows plus collection receipt; failure stays None, never success-zero."""
     qs = urllib.parse.urlencode({"serviceKey": K, "LAWD_CD": lawd, "DEAL_YMD": ym, "numOfRows": 4000, "pageNo": 1})
     for _ in range(2):   # 최초 + 1회 재시도
         try:
             with urllib.request.urlopen(f"{EP}?{qs}", timeout=40) as r:
-                root = ET.fromstring(r.read().decode("utf-8")); break
+                return parse_molit_trade_response(r.read(), lawd, ym)
         except Exception:
             time.sleep(1.5)
-    else:
-        return None
-    out = []
-    for it in root.iter("item"):
-        amt = _t(it, "dealAmount").replace(",", "")
-        if not amt: continue
-        out.append({"apt": _t(it, "aptNm"), "area": float(_t(it, "excluUseAr") or 0),
-                    "price": int(amt)*10_000, "ym": ym})
-    return out
+    return None
+
+def fetch(lawd, ym):
+    """Keep the historical list-or-None caller contract."""
+    batch = fetch_batch(lawd, ym)
+    return batch["rows"] if batch is not None else None
 
 def main():
     cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
-    agg = {k: v for k, v in cache.items() if k != "_done"}
-    fetched = cache.get("_done", []) if isinstance(cache.get("_done"), list) else []
+    validate_molit_trade_cache(cache)
+    selected_lawd, window_months = set(LAWD.values()), set(MONTHS)
+    agg = {lawd: [row for row in rows if row["ym"] in window_months]
+           for lawd, rows in cache.items() if lawd in selected_lawd}
+    fetched = [key for key in cache.get("_done", [])
+               if key.split("|", 1)[0] in selected_lawd and key.split("|", 1)[1] in window_months]
     done = set(fetched)
     pending = sum(1 for lawd in LAWD.values() for ym in MONTHS if f"{lawd}|{ym}" not in done)
     print(f"수집 대상 {len(LAWD)}구 × {len(MONTHS)}개월 = {len(LAWD)*len(MONTHS)}건 (미완료 {pending}). 시작…", flush=True)

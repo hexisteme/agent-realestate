@@ -40,6 +40,7 @@ from blog.tistory_delivery import payload_digest, read_delivery, write_delivery 
 from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
+from blog.tistory_media import MediaContractError, read_media_manifest  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -343,6 +344,10 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         data = _parse_helper(path) if path else {"title": "", "body": "", "tags": ""}
     except DraftContractError:
         return "ERR:draft contract invalid"
+    try:
+        media = read_media_manifest(path, data) if path else None
+    except MediaContractError:
+        return "ERR:representative image contract invalid"
     if mode == "publish" and needs_review(outroot, path, data, kind):
         return f"AWAIT_REVIEW:{name} — 첫 결산 원고의 사람 승인 필요"
     import fcntl
@@ -354,11 +359,80 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             return "SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중"
         # 마커·원격 대조·클릭을 하나의 잠금으로 묶는다.
         return _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind,
-                               explicit=bool(date), probe_relogin=probe_relogin)
+                               explicit=bool(date), probe_relogin=probe_relogin, media=media)
+
+
+def pasted_anchors_present(page, anchors) -> bool:
+    """Require every expected text anchor in the actual editor iframe."""
+    return page.evaluate("""(anchors) => {
+        const frame = document.getElementById('editor-tistory_ifr');
+        const doc = frame && frame.contentDocument;
+        if (!doc || !anchors.length) return false;
+        const text = (doc.body.innerText || '').replace(/\\s+/g, ' ');
+        return anchors.every(anchor => anchor.length > 0 && text.includes(anchor));
+    }""", anchors)
+
+
+def attach_representative_card(page, media) -> None:
+    """Select verified bytes in the observed publish-dialog representative input.
+
+    A local digest binds the upload bytes; it does not authenticate remote reencoding.
+    Selection alone is insufficient: a loaded preview must appear in this container.
+    """
+    try:
+        container = page.locator(".inner_box").filter(has=page.locator(".txt_thumb", has_text="대표이미지 추가"))
+        upload = container.locator('input.inp_g[type="file"][accept="image/*"]')
+        if container.count() != 1 or upload.count() != 1:
+            raise MediaContractError()
+        previous_sources = container.evaluate("""box => {
+            const sources = [...box.querySelectorAll('img')].map(i => i.currentSrc || i.src);
+            for (const node of [box, ...box.querySelectorAll('*')]) {
+                const match = /^url\\(["']?(.*?)["']?\\)$/.exec(getComputedStyle(node).backgroundImage);
+                if (match) sources.push(match[1]);
+            }
+            return sources;
+        }""")
+        upload.set_input_files({"name": os.path.basename(media.image_path),
+                                "mimeType": "image/png", "buffer": media.image_bytes})
+        page.evaluate("""async (previousSources) => {
+            const previous = new Set(previousSources);
+            const currentBox = () => {
+                const inputs = [...document.querySelectorAll('input.inp_g[type="file"][accept="image/*"]')]
+                    .filter(input => input.closest('.inner_box'));
+                return inputs.length === 1 ? inputs[0].closest('.inner_box') : null;
+            };
+            const loaded = async () => {
+                // Reacquire on every poll: React may replace the selected input's container.
+                const box = currentBox();
+                if (!box) return false;
+                if ([...box.querySelectorAll('img')].some(i =>
+                    i.complete && i.naturalWidth > 0 && !previous.has(i.currentSrc || i.src))) return true;
+                for (const node of [box, ...box.querySelectorAll('*')]) {
+                    const background = getComputedStyle(node).backgroundImage;
+                    const match = /^url\\(["']?(.*?)["']?\\)$/.exec(background);
+                    if (!match || previous.has(match[1])) continue;
+                    const image = new Image(); image.src = match[1];
+                    const decoded = image.complete && image.naturalWidth > 0 || await new Promise(resolve => {
+                        image.onload = () => resolve(image.naturalWidth > 0);
+                        image.onerror = () => resolve(false);
+                        setTimeout(() => resolve(false), 250);
+                    });
+                    if (decoded && box === currentBox() && box.contains(node)
+                        && getComputedStyle(node).backgroundImage === background) return true;
+                }
+                return false;
+            };
+            const deadline = Date.now() + 5000;
+            do { if (await loaded()) return; await new Promise(r => setTimeout(r, 100)); }
+            while (Date.now() < deadline);
+            throw new Error('representative preview unavailable');
+        }""", previous_sources)
+    except Exception:
+        raise MediaContractError() from None
 
 
 def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit,
-                    probe_relogin=False):
+                    probe_relogin=False, media=None):
     title, body, tags = data["title"], data["body"], data["tags"]
     target_url = resolve_editor_url(post_id)
     tracked = mode == "publish" and not post_id
@@ -506,12 +580,7 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 anchors = [runs[0][:40], runs[len(runs) // 2][:40], runs[-1][-40:]]
             else:
                 anchors = [" ".join(_h.unescape(_r.sub(r"<[^>]+>", " ", body)).split())[:40]]
-            pasted_ok = page.evaluate(
-                """(anchors) => { const ifr = document.getElementById('editor-tistory_ifr');
-                    const d = ifr && (ifr.contentDocument || ifr.contentWindow.document);
-                    if (!d) return false;
-                    const t = (d.body.innerText || '').replace(/\\s+/g, ' ');
-                    return anchors.some(a => t.indexOf(a) > -1); }""", anchors)
+            pasted_ok = pasted_anchors_present(page, anchors)
             if not pasted_ok:
                 return f"[{name}] ERR:paste_content_mismatch | {' '.join(log)}"
             log.append("PASTE_VERIFIED")
@@ -525,10 +594,14 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                     log.append("TAGS_FAIL")
 
             if mode == "inject":
+                if media is not None:
+                    log.append("REPRESENTATIVE_PENDING_PUBLISH_DIALOG")
                 return f"[{name}] INJECT_OK | {' '.join(log)}"
 
             # 6) 발행/저장
             if mode == "draft":
+                if media is not None:
+                    log.append("REPRESENTATIVE_PENDING_PUBLISH_DIALOG")
                 page.evaluate(
                     "(function(){var s=[].slice.call(document.querySelectorAll('button,a'))"
                     ".filter(function(x){return (x.textContent||'').trim()==='임시저장';})[0];"
@@ -540,6 +613,12 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             # publish: 완료 → 공개 → 발행 (confirm 들은 on(dialog) 자동수락)
             page.evaluate("document.getElementById('publish-layer-btn').click()")
             page.wait_for_timeout(1200)
+            if media is not None:
+                try:
+                    attach_representative_card(page, media)
+                except Exception:
+                    return f"[{name}] ERR:representative_image_upload | {' '.join(log)}"
+                log.append(f"REPRESENTATIVE_PREVIEW_VERIFIED:LOCAL_SHA256:{media.sha256[:16]}")
             page.evaluate(
                 "var r=document.getElementById('open20'); if(r){r.click();r.checked=true;"
                 "r.dispatchEvent(new Event('change',{bubbles:true}));}")

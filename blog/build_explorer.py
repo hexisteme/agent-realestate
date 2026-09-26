@@ -1111,7 +1111,7 @@ h1{font-size:18px;margin:0 0 4px}.disc{font-size:12px;color:var(--mut)}
 .panel h3:first-child{margin-top:0}
 .chip{display:inline-block;padding:4px 10px;margin:3px 4px 3px 0;border:1px solid var(--bd);border-radius:14px;background:#fff;cursor:pointer;font-size:13px}
 .chip.on{background:var(--ac);color:#fff;border-color:var(--ac)}
-.results{padding:14px 18px}
+.results{padding:14px 18px;min-width:0}
 .row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px}
 input[type=search]{width:100%;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;font-size:14px}
 input[type=number]{width:70px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px}
@@ -1242,17 +1242,18 @@ const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;"
 // 자체를 report/blog 에서 직접 열면 미주입) 항상 존재 확인 후 호출. 쿼리 원문·개인정보는 절대 전송하지 않는다.
 function track(name,params){if(typeof gtag==='function')gtag('event',name,params);}
 
-// 프리셋 딥링크(2026-09-05 P2) — ?gu=&band=&sort=&dir=&q= 를 첫 render() 전에 S 에 반영.
+// 프리셋 딥링크 — ?gu=&band=&seg=&sort=&dir=&q= 를 첫 render() 전에 S 에 반영.
 // 허브/단지페이지/다이제스트가 이 쿼리로 explorer.html 을 가리키면 그 필터가 이미 걸린 채로 뜬다.
 function applyPreset(){
   const p=new URLSearchParams(location.search);
   const gu=p.get("gu"); if(gu) S.gu.add(gu);
   const band=p.get("band"); if(band) S.area.add(band);
+  const seg=p.get("seg"); if(seg&&SEG_ORDER.includes(seg)) S.seg.add(seg);
   const q=p.get("q"); if(q) S.q=q;
   const sort=p.get("sort"); if(sort&&COLS.some(c=>c.k===sort)) S.sort=sort;
   const dir=p.get("dir"); if(dir==="1"||dir==="-1") S.dir=+dir;
   const qs=location.search.slice(1);
-  if(qs) track('explorer_preset',{params:qs.slice(0,120)});
+  if(qs) track('explorer_preset',{gu:gu||'',band:band||'',seg:S.seg.size?seg:'',has_search:!!q});
 }
 // 단지 개별 페이지 링크 클릭(2026-09-06 P0) — 표 자체엔 아직 그런 링크가 없을 수 있어(다른 워커 작업
 // 병행) tbody 위임으로 걸어둔다: 나중에 어떤 셀이 /complex/*.html 링크를 내더라도 자동으로 잡힌다.
@@ -1268,6 +1269,7 @@ function copyStateLink(btn){
   const p=new URLSearchParams();
   if(S.gu.size) p.set("gu",[...S.gu][0]);
   if(S.area.size) p.set("band",[...S.area][0]);
+  if(S.seg.size) p.set("seg",[...S.seg][0]);
   if(S.q) p.set("q",S.q);
   p.set("sort",S.sort); p.set("dir",S.dir);
   const url=location.origin+location.pathname+"?"+p.toString();

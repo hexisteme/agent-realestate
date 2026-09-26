@@ -27,3 +27,11 @@ def test_write_out_emits_the_same_explorer_html_to_disk(tmp_path):
     for ev in EVENT_NAMES:
         assert ev in written
     assert "국토부 실거래 사실(F)" in written
+
+
+def test_budget_preset_is_allowlisted_and_survives_share_link():
+    assert 'const seg=p.get("seg"); if(seg&&SEG_ORDER.includes(seg)) S.seg.add(seg);' in EXPLORER_HTML
+    assert 'if(S.seg.size) p.set("seg",[...S.seg][0]);' in EXPLORER_HTML
+    # Preset analytics must never send the visitor's raw free-text query.
+    assert "params:qs.slice" not in EXPLORER_HTML
+    assert "has_search:!!q" in EXPLORER_HTML
