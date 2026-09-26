@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import blog.build_explorer as be   # gu_hub.py 와 동일 관례(모듈 top-level import, 순환 없음 — be 는 build_site 를 지연import만 함)
 from blog.macro_entry import macro_entry_attributes, macro_entry_script
+from blog.search_intent import build_intent_registry, write_intent_registry
 
 # BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
 # 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
@@ -104,6 +105,11 @@ def build(today=None, molit_path=None):
     os.makedirs(f"{SITE}/posts",exist_ok=True)
     os.makedirs(f"{SITE}/gu",exist_ok=True)
     os.makedirs(f"{SITE}/daily",exist_ok=True)
+    source_dated=f"{SRC}/daily/{today}.html"
+    source_latest=f"{SRC}/daily/latest.html"
+    if os.path.exists(source_dated) and os.path.exists(source_latest):
+        if open(source_dated, encoding="utf-8").read() != open(source_latest, encoding="utf-8").read():
+            raise SystemExit("[build_site] 일간 산출물 불일치: dated page와 latest.html이 다릅니다")
     # 1) 포스트·claims·llms.txt 복사
     for f in glob.glob(f"{SRC}/posts/*"): shutil.copy(f,f"{SITE}/posts/")
     # 1b) 레거시 포스트 GA4 주입(2026-09-05) — P1 이전 생성분 1,659개가 태그 없이 그대로 복사되던 계측 구멍. 파일별 멱등.
@@ -134,6 +140,8 @@ def build(today=None, molit_path=None):
     # 2a) 구 허브 25개(2026-09-05 P1) — dataset.json 에서 직접 렌더(gu_hub.render_gu_hub), site/gu/ 로.
     gu_list=[]
     complex_count=0   # 2a-2 에서 채움(P2) — ds_path 없으면 0 유지
+    intent_count=0
+    intent_date=today
     ds_all=None        # 인덱스 재구성(2026-09-06 P0)이 아래 if 밖에서도 참조 — 없으면 None 유지
     ds_path=f"{SITE}/dataset.json"
     if os.path.exists(ds_path):
@@ -145,6 +153,7 @@ def build(today=None, molit_path=None):
         for r in ds_all["complexes"]: by_gu.setdefault(r["gu"],[]).append(r)
         asof=ds_all.get("data_asof",today)
         gen=ds_all.get("generated",today)   # 포스트 파일명(posts/{gen}-{gu}.html)과 일치시켜야 허브 링크가 안 깨짐
+        intent_date=gen
         for gu in sorted(by_gu):
             open(f"{SITE}/gu/{gu}.html","w").write(gh.render_gu_hub(gu,by_gu[gu],asof,gen,ds=ds_all,prev_ds=prev_ds,weekly_post_href=_latest_gu_post_href(posts,gu)))
             gu_list.append(gu)
@@ -179,6 +188,17 @@ def build(today=None, molit_path=None):
     # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
     digest_latest=f"{SITE}/daily/latest.html"
     digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None
+    # 검색의도 소유권은 latest 별칭이 아니라 dataset.generated 와 같은 날짜의 정본만 등록한다.
+    # 오래된 latest가 남아 있어도 새 날짜 intent가 생기는 조립 오류를 막는다.
+    intent_digest=f"{SITE}/daily/{intent_date}.html"
+    intent_digest_meta=_post_meta(intent_digest) if os.path.exists(intent_digest) else None
+    intents = build_intent_registry(
+        ds_all or {"complexes": []}, intent_date,
+        daily_title=(intent_digest_meta[1] if intent_digest_meta else None),
+        daily_description=(intent_digest_meta[2] if intent_digest_meta and intent_digest_meta[2] else None),
+    )
+    write_intent_registry(f"{SITE}/search-intents.jsonl", intents)
+    intent_count = len(intents)
     # 2c) 랜딩 index.html 재구성(2026-09-06 P0) — 기존 3,448개 포스트 링크 나열(235KB)을
     #   헤더+리드+엔트리카드+25구 타일+최근 리포트+아카이브 링크+푸터로 대체(예산 <60KB). 전체 목록은
     #   archive.html 로 이전(claims.jsonl 링크 포함, 기존 items 마크업 그대로).
@@ -404,7 +424,7 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         "# AI usage policy\nlicense: CC-BY-NC-4.0\nattribution: required\n"
         "content: named public MOLIT transaction medians & distributions (no scores, no private prices)\n"
         "training: allowed (non-commercial, with attribution)\nprovenance: per-post claims.jsonl\n")
-    return {"posts":len(posts),"site":SITE,"complex":complex_count}
+    return {"posts":len(posts),"site":SITE,"complex":complex_count,"intents":intent_count}
 
 if __name__=="__main__":
     from agent_realestate import config

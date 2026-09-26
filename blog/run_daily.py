@@ -13,6 +13,7 @@ cron: `5 7 * * *  agent-realestate daily` (cli.cmd_daily 가 호출).
 """
 from __future__ import annotations
 import os, glob, argparse
+import tempfile
 from datetime import date, datetime
 from collections import defaultdict
 from pathlib import Path
@@ -21,6 +22,49 @@ import blog.build_explorer as be
 import blog.tistory_draft as td
 import blog.naver_teaser as nt
 import blog.daily_digest as dd
+from blog.tistory_contract import parse_helper
+
+
+def _replace_digest_page(path: str, content: str) -> None:
+    """Replace one generated daily page without exposing a partial HTML file."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, destination)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
+def write_digest_outputs(digest: dict, today: str, outdir: str) -> dict[str, str]:
+    """Write and then verify the helper + dated/latest static output contract."""
+    required = {"title", "tags", "tistory_html", "site_html", "summary"}
+    if set(digest) != required or any(not isinstance(digest[key], str) or not digest[key] for key in required):
+        raise ValueError("daily digest output contract is incomplete")
+
+    draft = td.write_digest_draft(digest, today, outdir)
+    dated = f"{outdir}/daily/{today}.html"
+    latest = f"{outdir}/daily/latest.html"
+    _replace_digest_page(dated, digest["site_html"])
+    _replace_digest_page(latest, digest["site_html"])
+
+    parsed = parse_helper(draft)
+    expected = {"title": digest["title"], "tags": digest["tags"], "body": digest["tistory_html"]}
+    if parsed != expected:
+        raise ValueError("Tistory helper no longer matches the digest payload")
+    if Path(dated).read_text(encoding="utf-8") != digest["site_html"]:
+        raise ValueError("dated daily page no longer matches the digest payload")
+    if Path(latest).read_text(encoding="utf-8") != digest["site_html"]:
+        raise ValueError("latest daily page no longer matches the dated daily page")
+    return {"draft": draft, "dated": dated, "latest": latest}
 
 
 def _latest_or(pattern: str, fallback: str) -> str:
@@ -197,12 +241,9 @@ def main():
             print(f"거시 지표 수집 건너뜀: {type(e).__name__}")
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
         digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx)
-        draft = td.write_digest_draft(digest, today, a.out)
-        print(f"티스토리 원고: {draft}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
-        os.makedirs(f"{a.out}/daily", exist_ok=True)
-        open(f"{a.out}/daily/{today}.html", "w").write(digest["site_html"])
-        open(f"{a.out}/daily/latest.html", "w").write(digest["site_html"])
-        print(f"일간 다이제스트: {a.out}/daily/{today}.html · {a.out}/daily/latest.html")
+        outputs = write_digest_outputs(digest, today, a.out)
+        print(f"티스토리 원고: {outputs['draft']}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
+        print(f"일간 다이제스트: {outputs['dated']} · {outputs['latest']}")
         naver = nt.write_naver_teaser(summaries, today, a.asof, outdir=a.out)
         print(f"네이버 티저: {naver}  (티스토리 발행 후 URL 입력 → 본문 복사 → 네이버 등록)")
         # 주간결산/월간결산(2026-09-07) — 일요일/월 마지막 일요일에만 posts/{today}-{주간|월간}결산.html + periodic 티스토리 원고.

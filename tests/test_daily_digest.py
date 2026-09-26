@@ -101,6 +101,13 @@ def test_build_daily_digest_return_shape_and_title():
     assert "오늘의 서울 아파트 핵심 요약 (30초 브리핑)" in d["tistory_html"]
     assert "서울 아파트 인터랙티브 탐색기 열기" in d["tistory_html"]
     assert "매일 아침 자동 업데이트" in d["tistory_html"]
+    assert f"<h1>{d['title']}</h1>" in d["site_html"]
+    assert '<link rel="canonical" href="https://hexisteme.github.io/seoul-re-snapshot/daily/2026-09-05.html">' in d["site_html"]
+    assert "서울 아파트 7단지 전체 직접 필터·비교하기" in d["tistory_html"]
+    assert "utm_source=tistory" in d["tistory_html"]
+    assert "utm_source=owned_daily" in d["site_html"]
+    assert "acquisition_cta_click" in d["site_html"]
+    assert "1,759단지" not in d["tistory_html"]
 
 
 def test_gated_out_rows_never_appear_in_either_html():
@@ -274,7 +281,6 @@ def test_tistory_micro_budget_anchors():
     assert "15~20억" in html
     assert "20억 이상" in html
     assert "예산대별 바로가기" in html or "가격대별 요약" in html
-
 
 
 

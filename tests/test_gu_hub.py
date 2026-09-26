@@ -124,6 +124,7 @@ def test_ga4_snippet_present_with_custom_measurement_id(monkeypatch):
     rows = [_row("강남", "단지", molit_recent_eok=10.0)]
     out = render_gu_hub("강남", rows, "2026-09-04", "2026-09-05")
     assert "G-TESTHUB1" in out and "gtag" in out
+    assert '<link rel="canonical" href="https://hexisteme.github.io/seoul-re-snapshot/gu/' in out
 
 
 def test_gu_hub_shows_separate_inventory_deltas_and_context_coverage():

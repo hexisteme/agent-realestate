@@ -22,7 +22,9 @@ AppleScript 가 각 단계 JS 파일을 UTF-8로 읽어 execute(따옴표 이스
 으로 -1712 방지. 사전조건(1회): Chrome '보기→개발자→Apple Events의 JavaScript 허용' ON + 로그인.
 """
 from __future__ import annotations
-import os, re, json, glob, html, tempfile, subprocess, argparse
+import os, json, glob, tempfile, subprocess, argparse
+
+from blog.tistory_contract import DraftContractError, parse_helper
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")  # 드롭다운 항목 텍스트 부분일치
@@ -30,14 +32,8 @@ DRAFT_GLOB = "report/blog/tistory/*-tistory-draft.html"
 
 
 def _parse_helper(path: str) -> dict:
-    """복사-헬퍼 페이지의 textarea(id=t/g/b)에서 제목·태그·본문 HTML 을 복원."""
-    src = open(path, encoding="utf-8").read()
-
-    def field(fid: str) -> str:
-        m = re.search(rf'<textarea id={fid}[^>]*>(.*?)</textarea>', src, re.DOTALL)
-        return html.unescape(m.group(1)) if m else ""
-
-    return {"title": field("t").strip(), "tags": field("g").strip(), "body": field("b").strip()}
+    """Back-compatible public parser name, now backed by the strict shared contract."""
+    return parse_helper(path)
 
 
 def _latest_draft(outroot: str) -> str | None:
@@ -179,9 +175,10 @@ def publish(outroot: str = ".", mode: str = "draft", date: str | None = None) ->
         path = _latest_draft(outroot)
     if not path or not os.path.isfile(path):
         return f"ERR:no draft helper found ({path})"
-    data = _parse_helper(path)
-    if not data["body"]:
-        return f"ERR:empty body parsed from {path}"
+    try:
+        data = _parse_helper(path)
+    except DraftContractError:
+        return f"ERR:draft contract invalid ({path})"
 
     paths = [_write(js) for js in _steps_for(mode, data["title"], data["body"], data["tags"])]
     af = tempfile.NamedTemporaryFile("w", suffix=".applescript", delete=False, encoding="utf-8")

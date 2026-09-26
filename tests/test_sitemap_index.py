@@ -7,7 +7,10 @@ import json
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
 
+import pytest
+
 import blog.build_site as build_site
+from blog.search_intent import read_intent_registry
 
 NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 
@@ -103,6 +106,16 @@ def test_sitemap_complex_has_only_gated_complexes(tmp_path, monkeypatch):
     assert any(quote("노원-노원게이트통과") in loc for loc in locs)
 
 
+def test_search_intent_registry_matches_generated_daily_district_and_complex_surfaces(tmp_path, monkeypatch):
+    site_dir, result = _build_fixture(tmp_path, monkeypatch)
+    intents = read_intent_registry(site_dir / "search-intents.jsonl")
+    assert result["intents"] == len(intents) == 6  # daily 1 + district 3 + gated complex 2
+    assert {intent.entity_type for intent in intents} == {"daily", "district", "complex"}
+    assert len({intent.query_family for intent in intents}) == len(intents)
+    assert len({intent.canonical_path for intent in intents}) == len(intents)
+    assert all("강남표본미달" not in intent.target_query for intent in intents)
+
+
 def test_sitemap_posts_matches_copied_post_files(tmp_path, monkeypatch):
     site_dir, result = _build_fixture(tmp_path, monkeypatch)
     assert result["posts"] == 2
@@ -117,3 +130,15 @@ def test_robots_txt_points_at_sitemap_xml_not_a_child_file(tmp_path, monkeypatch
     assert "Sitemap: https://hexisteme.github.io/seoul-re-snapshot/sitemap.xml" in robots
     assert "sitemap-core.xml" not in robots
     assert "sitemap-complex.xml" not in robots
+
+
+def test_build_rejects_dated_latest_digest_mismatch(tmp_path, monkeypatch):
+    site_dir = tmp_path / "site"
+    src_dir = tmp_path / "src"
+    (src_dir / "daily").mkdir(parents=True)
+    (src_dir / "daily" / "2026-09-05.html").write_text("dated", encoding="utf-8")
+    (src_dir / "daily" / "latest.html").write_text("latest", encoding="utf-8")
+    monkeypatch.setattr(build_site, "SITE", str(site_dir))
+    monkeypatch.setattr(build_site, "SRC", str(src_dir))
+    with pytest.raises(SystemExit, match="일간 산출물 불일치"):
+        build_site.build(today="2026-09-05", molit_path=str(tmp_path / "missing.json"))

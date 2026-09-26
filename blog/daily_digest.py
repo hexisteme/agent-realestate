@@ -10,9 +10,11 @@ from urllib.parse import quote
 
 import blog.build_explorer as be
 import blog.complex_page as cp
+from blog.acquisition_probe import campaign_url, cta_event_attributes
 from blog.build_site import BASE_URL, ga4_snippet
 from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.macro_entry import macro_entry_attributes
+from blog.search_intent import SearchIntent, canonical_tag, daily_intent
 from blog.tistory_draft import _TBL, _MUT, TISTORY_TAGS, _TH as _TH, _TD as _TD
 from blog.wording_guard import assert_wording_ok
 
@@ -307,19 +309,38 @@ def _render_briefing_card(leads: list[dict]) -> str:
     )
 
 
-def _render_cta_card() -> str:
+def _render_cta_card(total_count: int, intent: SearchIntent) -> str:
+    href = campaign_url(
+        f"{BASE_URL}/explorer.html", source="tistory", medium="referral",
+        campaign_id=intent.campaign_id, content_id=intent.intent_id,
+    )
     return (
         f'<table style="width:100%;border-collapse:collapse;margin:16px 0 10px;background:#eff6ff;border:1px solid #bfdbfe;">'
         f'<tr><td style="padding:14px;text-align:center;">'
-        f'<p style="margin:0 0 5px;font-size:14px;font-weight:bold;color:#1e40af;">🔍 서울 아파트 1,759단지 전체 직접 필터·비교하기</p>'
+        f'<p style="margin:0 0 5px;font-size:14px;font-weight:bold;color:#1e40af;">🔍 서울 아파트 {total_count:,}단지 전체 직접 필터·비교하기</p>'
         f'<p style="margin:0 0 10px;font-size:12px;color:#475569;">예산대·전세가율·지하철역 거리·학원가 밀집도 인터랙티브 탐색기</p>'
-        f'<p style="margin:0;"><a href="{BASE_URL}/explorer.html" target="_blank" '
+        f'<p style="margin:0;"><a href="{href}" target="_blank" '
         f'style="display:inline-block;padding:7px 16px;background:#2563eb;color:#ffffff;font-size:12.5px;font-weight:bold;text-decoration:none;">'
         f'👉 서울 아파트 인터랙티브 탐색기 열기 (무료)</a></p>'
         f'</td></tr></table>'
         f'<p style="font-size:11.5px;color:#64748b;background:#f8fafc;border:1px solid #e2e8f0;padding:7px 10px;margin:10px 0;">'
         f'🔔 <b>매일 아침 자동 업데이트:</b> 국토부 실거래 데이터와 네이버 매물 스냅샷을 매일 아침 발행합니다. '
         f'블로그를 <b>구독(이웃추가)</b>하시면 매일 아침 시장 흐름을 빠르게 확인하실 수 있습니다.</p>'
+    )
+
+
+def _render_site_cta(total_count: int, intent: SearchIntent) -> str:
+    href = campaign_url(
+        f"{BASE_URL}/explorer.html", source="owned_daily", medium="internal",
+        campaign_id=intent.campaign_id, content_id=intent.intent_id,
+    )
+    attrs = cta_event_attributes(intent, "owned_daily")
+    return (
+        '<div class=notice style="margin-top:24px;text-align:center">'
+        f'<b>서울 아파트 {total_count:,}단지 직접 필터·비교</b><br>'
+        '<span class=mut>예산대·전세가율·지하철 거리·학원가 조건을 직접 선택합니다.</span><br>'
+        f'<a href="{href}" {attrs}>인터랙티브 탐색기 열기 →</a>'
+        '</div>'
     )
 
 
@@ -345,7 +366,8 @@ def _pos_txt_tistory(r: dict) -> str:
     return f"{v:g}%"
 
 
-def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, macro_html="", inventory=None) -> str:
+def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchIntent,
+                    band_rows=None, macro_html="", inventory=None) -> str:
     td_c = "border:1px solid #e2e8f0;padding:4px 5px"
     th_c = "border:1px solid #e2e8f0;padding:4px 5px;background:#f8fafc"
     h2_c = "font-size:14px;font-weight:bold;color:#0f172a;border-left:3px solid #0d9488;padding-left:6px;margin:16px 0 6px"
@@ -380,7 +402,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, ma
 
     none_p = f'<p style="{_MUT}">기준 충족 단지 없음</p>'
     briefing_card = _render_briefing_card(leads)
-    cta_card = _render_cta_card()
+    cta_card = _render_cta_card(counts["n_total"], intent)
     band_tr = "".join(f'<tr><td style="{td_c}">{b["band"]}</td><td style="{td_c}">{b["n"]}</td>'
                       f'<td style="{td_c}">{_eok(b["median"])}</td><td style="{td_c}"><span style="color:#dc2626">▲{b["hi"]}</span>·<span style="color:#2563eb">▼{b["lo"]}</span></td></tr>' for b in (band_rows or []))
     parts = [
@@ -417,7 +439,8 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, ma
     return "".join(parts)
 
 
-def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None, macro_html="", inventory=None) -> str:
+def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
+                 band_rows=None, macro_html="", inventory=None) -> str:
     def name_cell(r):
         href = _complex_url_rel(r) if cp.passes_complex_page_gate(r) else _hub_url_rel(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a> <span class=mut>({r["gu"]})</span>'
@@ -452,7 +475,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
         ]}
     jsonld_ds = {
         "@context": "https://schema.org", "@type": "Dataset",
-        "name": f"서울 아파트 오늘의 변화 {today}", "dateModified": today, "datePublished": today,
+        "name": intent.title, "dateModified": today, "datePublished": today,
         "description": f"발행 {counts['n_total']}단지 국토부 공공 실거래 12개월 범위 상단/하단 근접·전세가율·회전율 사실 요약.",
         "license": "https://creativecommons.org/licenses/by-nc/4.0/",
         "creator": {"@type": "Organization", "name": "agent_realestate (개인 연구)"},
@@ -460,8 +483,9 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 
     return f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{title}</title>
-<meta name=description content="서울 아파트 {counts['n_total']}단지 국토부 공공 실거래 오늘의 변화 — {today} 기준. 자체 점수·순위 없음, 투자자문 아님.">
+<title>{intent.title}</title>
+<meta name=description content="{intent.description}">
+{canonical_tag(BASE_URL, intent)}
 <script type="application/ld+json">{json.dumps(jsonld_bc, ensure_ascii=False)}</script>
 <script type="application/ld+json">{json.dumps(jsonld_ds, ensure_ascii=False)}</script>
 <style>{_SITE_CSS}</style>
@@ -471,7 +495,7 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 <nav class=top><a href="../index.html">구 허브</a><a href="../explorer.html">탐색기</a>
 <a href="../daily/latest.html">오늘의 변화</a><a href="../macro.html" {macro_entry_attributes("daily", "macro")}>거시 지표</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › 오늘의 변화</div>
-<h1>서울 아파트 오늘의 변화</h1>
+<h1>{intent.title}</h1>
 <p class=meta>기준일 {asof} · 발행 {counts['n_total']}단지 · 표본 {counts['n_sample']}건</p>
 {render_lead_block(leads)}
 {macro_html}
@@ -499,6 +523,8 @@ def _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=None
 
 <h2>구별 요약 (25개 구)</h2>
 <div class=tblwrap><table><tr><th>구</th><th>단지 수</th><th>구 중위(억)</th><th>추세</th></tr>{gu_tr}</table></div>
+
+{_render_site_cta(counts['n_total'], intent)}
 
 <div class=foot>
 게이트: 상단/하단·전세가율·회전율 표는 아파트·전용 40㎡ 이상·매매표본 10건 이상만 대상(전세가율은 추가로 전세표본 5건 이상·95% 이하,
@@ -530,12 +556,15 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     summary = (f"{today} 기준 {counts['n_total']}단지 · 표본 {counts['n_sample']}건 · "
                f"상승 {counts['up']}·하락 {counts['down']}·보합 {counts['flat']} · "
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")
+    description = (f"서울 아파트 {counts['n_total']}단지 국토부 공공 실거래 오늘의 변화 — "
+                   f"{today} 기준. 자체 점수·순위 없음, 투자자문 아님.")
+    intent = daily_intent(today, title, description)
 
     band_rows = _band_summary_rows(ds)   # 가격대 4밴드 요약(2026-09-07)
     inventory = ds.get("listing_inventory")
-    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows,
+    tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
                                     macro_html=(macro or {}).get("tistory_html", ""), inventory=inventory)
-    site_html = _render_site(today, asof, counts, sel, gu_rows, title, leads, band_rows=band_rows,
+    site_html = _render_site(today, asof, counts, sel, gu_rows, intent, leads, band_rows=band_rows,
                              macro_html=(macro or {}).get("site_html", ""), inventory=inventory)
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")
@@ -543,7 +572,7 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
 
     tb = len(tistory_html.encode("utf-8"))
     if tb > 30000 and macro:                                   # 거시 스트립은 선택 섹션(2026-09-07) — 예산 초과면 먼저 뺀다(사이트는 유지)
-        tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=band_rows,
+        tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
                                        inventory=inventory)
         tb = len(tistory_html.encode("utf-8"))
     if tb > 30000:

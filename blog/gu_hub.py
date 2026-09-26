@@ -133,6 +133,9 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     계산한다. 생략(None) 시 rows 만으로 합성 ds 를 만들어 구 내부 패밀리만 계산(서울 참조 패밀리는
     자동 스킵 — build_fact_leads 가 '다른 구 표본이 없다'는 사실로 판정, 별도 플래그 불필요)."""
     from blog.build_site import BASE_URL, ga4_snippet  # lazy: build_site 가 본 모듈을 import(순환 예방)
+    from blog.search_intent import canonical_tag, district_intent
+
+    intent = district_intent(gu, len(rows), today)
 
     lead_html = render_lead_block(build_fact_leads(ds or {"complexes": rows}, "gu", gu, prev_ds=prev_ds))
     # 주간 리포트 링크는 호출측이 실존 파일을 줄 때만(2026-09-06 P0 — 구별 일간 포스트 중단으로 ../posts/{today}-{gu}.html 은 비월요일 404).
@@ -198,8 +201,9 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     import json as _json
     out = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{gu} 아파트 공공 실거래 구허브 — {today}</title>
-<meta name=description content="{gu} 감시 단지 {n}개 국토부 공공 실거래 중위·분포·추세 한눈에. 자체 점수·순위 없음, 투자자문 아님.">
+<title>{intent.title}</title>
+<meta name=description content="{intent.description}">
+{canonical_tag(BASE_URL, intent)}
 <script type="application/ld+json">{_json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
 <script type="application/ld+json">{_json.dumps(dataset_ld, ensure_ascii=False)}</script>
 <style>{_CSS}</style>

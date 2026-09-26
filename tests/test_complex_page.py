@@ -141,6 +141,7 @@ def test_render_complex_page_contains_required_blocks_and_wording_ok():
     assert "상계주공2단지" in out
     assert "BreadcrumbList" in out
     assert "Dataset" in out and "variableMeasured" in out
+    assert '<link rel="canonical" href="https://hexisteme.github.io/seoul-re-snapshot/complex/' in out
     assert "gtag" in out                        # GA4(기본 measurement id)
     assert "월별 중위 실거래가" in out              # 월별 차트 카드
     assert "전세와 얼마나 차이" in out

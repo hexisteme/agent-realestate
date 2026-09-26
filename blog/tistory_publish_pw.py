@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blog.tistory_publish import _parse_helper  # noqa: E402
+from blog.tistory_contract import DraftContractError  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
 from blog.tistory_delivery import payload_digest, read_delivery, write_delivery  # noqa: E402
 from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
@@ -338,9 +339,10 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
     day = name[:10] if path else today
     if mode == "publish" and not date and day != today:
         return f"ERR:draft_stale({name}) — 오늘자 draft 없음"
-    data = _parse_helper(path) if path else {"title": "", "body": "", "tags": ""}
-    if mode != "auth" and (not data["title"] or not data["body"]):
-        return "ERR:empty title/body parsed"
+    try:
+        data = _parse_helper(path) if path else {"title": "", "body": "", "tags": ""}
+    except DraftContractError:
+        return "ERR:draft contract invalid"
     if mode == "publish" and needs_review(outroot, path, data, kind):
         return f"AWAIT_REVIEW:{name} — 첫 결산 원고의 사람 승인 필요"
     import fcntl

@@ -563,11 +563,13 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
     ds(선택, 2026-09-06) = 전체 dataset — 주면 사실 리드(FactLead)가 구 중위 대비 패밀리(C3~C6)까지
     계산한다(같은 구 rows 를 ds 에서 뽑아 씀). 생략 시 peers 기반 패밀리(C1·C2)와 자기완결형 C7 만."""
     from blog.build_site import BASE_URL, ga4_snippet  # lazy: build_site 가 본 모듈을 import(순환 예방)
+    from blog.search_intent import canonical_tag, complex_intent
 
     lead_html = render_lead_block(build_fact_leads(ds or {}, "complex", row, peers=peers, prev_ds=prev_ds))
     gu, name = row["gu"], row["name"]
     slug = complex_slug(gu, name)
     area = row.get("area_m2")
+    intent = complex_intent(gu, name, slug, area, today)
 
     breadcrumb_ld = {
         "@context": "https://schema.org", "@type": "BreadcrumbList",
@@ -610,8 +612,9 @@ def render_complex_page(row: dict, peers: list[dict], monthly: list[dict] | None
 
     out = f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>{name} 실거래 — {gu} · {today}</title>
-<meta name=description content="{name}({gu}) 전용{area_txt} 국토부 공공 실거래 12개월 중위·분포·추세·월별 중위. 자체 점수·순위 없음, 투자자문 아님.">
+<title>{intent.title}</title>
+<meta name=description content="{intent.description}">
+{canonical_tag(BASE_URL, intent)}
 <script type="application/ld+json">{json.dumps(breadcrumb_ld, ensure_ascii=False)}</script>
 <script type="application/ld+json">{json.dumps(dataset_ld, ensure_ascii=False)}</script>
 <style>{_CSS}</style>
