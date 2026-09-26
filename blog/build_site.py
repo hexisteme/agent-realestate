@@ -12,6 +12,7 @@ import blog.build_explorer as be   # gu_hub.py 와 동일 관례(모듈 top-leve
 from blog.macro_entry import macro_entry_attributes, macro_entry_script
 from blog.search_intent import build_intent_registry, write_intent_registry
 from blog.brand_identity import BRAND_NAME, AUTHOR_LABEL, DESCRIPTION
+from blog.archive_navigation import repair_archived_navigation
 
 
 def _daily_media_meta(today: str) -> tuple[str, str]:
@@ -210,6 +211,7 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
             if os.path.splitext(os.path.basename(stale))[0] not in written_slugs:
                 os.remove(stale)
                 print(f"  [정리] 옛 단지 페이지 삭제: {os.path.basename(stale)}")
+    archived_navigation = repair_archived_navigation(SITE, BASE_URL)
     # 2b) 최신 일간 다이제스트 메타(랜딩 CTA용) — latest.html 의 <title>/<meta description> 재사용.
     digest_latest=f"{SITE}/daily/latest.html"
     digest_meta=_post_meta(digest_latest) if os.path.exists(digest_latest) else None
@@ -456,7 +458,8 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         "# AI usage policy\nlicense: CC-BY-NC-4.0\nattribution: required\n"
         "content: named public MOLIT transaction medians & distributions (no scores, no private prices)\n"
         "training: allowed (non-commercial, with attribution)\nprovenance: per-post claims.jsonl\n")
-    return {"posts":len(posts),"site":SITE,"complex":complex_count,"intents":intent_count}
+    return {"posts":len(posts),"site":SITE,"complex":complex_count,"intents":intent_count,
+            "archived_navigation": archived_navigation}
 
 def main(argv=None):
     import argparse
