@@ -75,6 +75,8 @@ fi
 #   '로그인 상태 유지') — 만료 시 --login-wait 30 후 skip(비치명, 빈 글 안 만듦).
 # 2026-07-06 자가복구 3종: (1) 카카오 SSO 자동 재로그인, (2) 카카오 keepalive,
 # (3) 발행마커+주간 재시도(plist StartCalendarInterval 배열). 성공 마커는 퍼블리셔가 기록.
+# 2026-09-23: SSO 비밀번호 폼은 macOS Keychain 폴백으로 1회 재인증. Keychain 부재·거부·
+# 계정 선택·추가 인증은 기존 사람 대기로 닫으며 비밀값은 argv·환경·로그에 남기지 않는다.
 # --login-wait 120: 무인 재로그인 실패 시 사람이 창을 볼 기회 — 재시도마다 2분.
 publish_rc=0
 publish_kind() {

@@ -17,6 +17,7 @@ agent-realestate = "agent_realestate.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools]
 packages = [

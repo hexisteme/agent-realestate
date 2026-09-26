@@ -11,9 +11,9 @@ from urllib.parse import quote
 import blog.build_explorer as be
 import blog.complex_page as cp
 from blog.build_site import BASE_URL, ga4_snippet
-from blog.fact_lead import build_fact_leads, render_lead_block, render_lead_lines
+from blog.fact_lead import build_fact_leads, render_lead_block
 from blog.macro_entry import macro_entry_attributes
-from blog.tistory_draft import _TBL, _TH, _TD, _MUT, TISTORY_TAGS
+from blog.tistory_draft import _TBL, _MUT, TISTORY_TAGS, _TH as _TH, _TD as _TD
 from blog.wording_guard import assert_wording_ok
 
 _HI_POS = 99   # 12개월 범위 상단 근접 임계(52주 위치 %)
@@ -176,12 +176,14 @@ def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
         ),
     )[:8]
     label = "7일 Δ" if period == "7d" else "1일 Δ"
+    inv_td = "border:1px solid #e2e8f0;padding:4px 5px"
+    inv_th = "border:1px solid #e2e8f0;padding:4px 5px;background:#f8fafc"
     trs = "".join(
-        f'<tr><td style="{_TD}"><b>{html.escape(gu)}</b></td>'
-        f'<td style="{_TD}">{values.get("total_article_count", 0):,}</td>'
-        f'<td style="{_TD}">{_delta_txt(_inventory_delta(inventory, gu, period))}</td>'
-        f'<td style="{_TD}">{values.get("sale_article_count", 0):,}</td>'
-        f'<td style="{_TD}">{values.get("lease_article_count", 0):,}</td></tr>'
+        f'<tr><td style="{inv_td}"><b>{html.escape(gu)}</b></td>'
+        f'<td style="{inv_td}">{values.get("total_article_count", 0):,}</td>'
+        f'<td style="{inv_td}">{_delta_txt(_inventory_delta(inventory, gu, period))}</td>'
+        f'<td style="{inv_td}">{values.get("sale_article_count", 0):,}</td>'
+        f'<td style="{inv_td}">{values.get("lease_article_count", 0):,}</td></tr>'
         for gu, values in rows
     )
     baseline_note = "" if comparable else " 비교 가능한 같은 방식의 기준 관측은 아직 없습니다."
@@ -192,9 +194,9 @@ def _render_inventory_tistory(inventory: dict | None, today: str) -> str:
         f'전세 {total.get("lease_article_count", 0):,}건 · 월세 {total.get("rent_article_count", 0):,}건 · '
         f'단기 {total.get("short_term_rent_article_count", 0):,}건 · '
         f'물리 단지 {total.get("physical_complex_count", 0):,}곳 · 관측 {observed}.{baseline_note}</p>'
-        f'<table style="{_TBL}"><tr><td style="{_TH}"><b>구</b></td><td style="{_TH}"><b>전체</b></td>'
-        f'<td style="{_TH}"><b>{label}</b></td><td style="{_TH}"><b>매매</b></td>'
-        f'<td style="{_TH}"><b>전세</b></td></tr>{trs}</table>'
+        f'<table style="{_TBL}"><tr><td style="{inv_th}"><b>구</b></td><td style="{inv_th}"><b>전체</b></td>'
+        f'<td style="{inv_th}"><b>{label}</b></td><td style="{inv_th}"><b>매매</b></td>'
+        f'<td style="{inv_th}"><b>전세</b></td></tr>{trs}</table>'
         f'<p style="{_MUT}">절대 증감이 큰 8개 구만 표시합니다. 25개 구 전체 1일·7일 표는 '
         f'<a href="{BASE_URL}/daily/{today}.html">사이트 일간 페이지</a>에서 확인할 수 있습니다. '
         '네이버 법정동별 단지 목록의 표시 건수 합계이며 전체는 매매·전세·월세·단기임대를 더한 값입니다. '
@@ -237,67 +239,179 @@ def _render_inventory_site(inventory: dict | None) -> str:
 """
 
 
+# 마이크로 인텐트(Micro-intent) 키워드 결합 동적 제목 생성기 (2026-09-26)
+def _build_digest_title(today: str, counts: dict, sel: dict) -> str:
+    n_hi, n_lo = len(sel.get("hi", [])), len(sel.get("lo", []))
+    up, down = counts.get("up", 0), counts.get("down", 0)
+
+    top_hi = sel["hi"][0]["name"] if sel.get("hi") else None
+    top_lo = sel["lo"][0]["name"] if sel.get("lo") else None
+    top_jr = None
+    if sel.get("jr") and sel["jr"][0].get("gap_eok") is not None:
+        top_jr = f"{sel['jr'][0]['name']} 갭 {_eok(sel['jr'][0]['gap_eok'])}"
+
+    if down > up and n_lo > 0:
+        lead = f"{top_lo} 등 " if top_lo else ""
+        return f"서울 아파트 실거래가 — {lead}하락 {down}단지 · 1년 저점대 {n_lo}곳 ({today}, {counts['n_total']}단지)"
+    elif down > up and down > 0:
+        lead = f"{top_lo} 등 " if top_lo else ""
+        return f"서울 아파트 실거래가 — {lead}하락 {down}단지 ({today}, {counts['n_total']}단지)"
+    elif up > 0 and n_hi > 0 and top_jr:
+        lead = f"{top_hi} 등 " if top_hi else ""
+        return f"서울 아파트 실거래가 — {lead}상승 {up}단지 · {top_jr} ({today}, {counts['n_total']}단지)"
+    elif up > 0 and n_hi > 0:
+        lead = f"{top_hi} 등 " if top_hi else ""
+        return f"서울 아파트 실거래가 — {lead}상승 {up}단지 · 1년 고점대 {n_hi}곳 ({today}, {counts['n_total']}단지)"
+    elif up > 0 and n_lo > 0:
+        return f"서울 아파트 실거래가 — 상승 {up}단지 · 1년 저점대 {n_lo}곳 ({today}, {counts['n_total']}단지)"
+    elif n_hi > 0:
+        lead = f"{top_hi} " if top_hi else ""
+        return f"서울 아파트 실거래가 — {lead}1년 고점대 {n_hi}곳 ({today}, {counts['n_total']}단지)"
+    elif n_lo > 0:
+        lead = f"{top_lo} " if top_lo else ""
+        return f"서울 아파트 실거래가 — {lead}1년 저점대 {n_lo}곳 ({today}, {counts['n_total']}단지)"
+    return f"서울 아파트 실거래가 — {today} 기준 {counts['n_total']}단지 분석"
+
+
+def _build_digest_tags(sel: dict) -> str:
+    active_gus: list[str] = []
+    for group in (sel.get("hi", []), sel.get("jr", []), sel.get("tv", [])):
+        for r in group:
+            g = r.get("gu")
+            if g:
+                tag = f"{g}구아파트"
+                if tag not in active_gus:
+                    active_gus.append(tag)
+            if len(active_gus) >= 4:
+                break
+        if len(active_gus) >= 4:
+            break
+    base_tags = [t for t in TISTORY_TAGS.split(",") if t]
+    extra_tags = ["오늘의변화", "아파트매물", "전세가율"] + active_gus
+    combined = base_tags + [t for t in extra_tags if t not in base_tags]
+    return ",".join(combined)
+
+
+def _render_briefing_card(leads: list[dict]) -> str:
+    if not leads:
+        return ""
+    core_fams = {"S1", "S4", "S2", "S6"}
+    sorted_leads = sorted(leads, key=lambda ld: (0 if ld.get("family") in core_fams else 1, -ld.get("score", 0)))
+    bullets = "".join(f'<p style="margin:0 0 6px 0;font-size:13.5px;line-height:1.55;color:#1e293b;">• {ld["text"]}</p>' for ld in sorted_leads[:4])
+    return (
+        f'<table style="width:100%;border-collapse:collapse;margin:12px 0 16px 0;background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #0d9488;">'
+        f'<tr><td style="padding:14px 16px;">'
+        f'<p style="margin:0 0 8px 0;font-size:15px;font-weight:bold;color:#0f766e;">📊 오늘의 서울 아파트 핵심 요약 (30초 브리핑)</p>'
+        f'{bullets}'
+        f'</td></tr></table>'
+    )
+
+
+def _render_cta_card() -> str:
+    return (
+        f'<table style="width:100%;border-collapse:collapse;margin:16px 0 10px;background:#eff6ff;border:1px solid #bfdbfe;">'
+        f'<tr><td style="padding:14px;text-align:center;">'
+        f'<p style="margin:0 0 5px;font-size:14px;font-weight:bold;color:#1e40af;">🔍 서울 아파트 1,759단지 전체 직접 필터·비교하기</p>'
+        f'<p style="margin:0 0 10px;font-size:12px;color:#475569;">예산대·전세가율·지하철역 거리·학원가 밀집도 인터랙티브 탐색기</p>'
+        f'<p style="margin:0;"><a href="{BASE_URL}/explorer.html" target="_blank" '
+        f'style="display:inline-block;padding:7px 16px;background:#2563eb;color:#ffffff;font-size:12.5px;font-weight:bold;text-decoration:none;">'
+        f'👉 서울 아파트 인터랙티브 탐색기 열기 (무료)</a></p>'
+        f'</td></tr></table>'
+        f'<p style="font-size:11.5px;color:#64748b;background:#f8fafc;border:1px solid #e2e8f0;padding:7px 10px;margin:10px 0;">'
+        f'🔔 <b>매일 아침 자동 업데이트:</b> 국토부 실거래 데이터와 네이버 매물 스냅샷을 매일 아침 발행합니다. '
+        f'블로그를 <b>구독(이웃추가)</b>하시면 매일 아침 시장 흐름을 빠르게 확인하실 수 있습니다.</p>'
+    )
+
+
+def _trend_txt_tistory(r: dict) -> str:
+    d, p = r.get("molit_trend_dir"), r.get("molit_trend_pct")
+    if p is None:
+        return "—"
+    if d == "▲":
+        return f'<span style="color:#dc2626;font-weight:bold">▲{abs(p):g}%</span>'
+    elif d == "▼":
+        return f'<span style="color:#2563eb;font-weight:bold">▼{abs(p):g}%</span>'
+    return "보합"
+
+
+def _pos_txt_tistory(r: dict) -> str:
+    v = r.get("molit_pos_52w")
+    if v is None:
+        return "—"
+    if v >= 99:
+        return f'<span style="color:#dc2626;font-weight:bold">{v:g}%</span>'
+    elif v <= 6:
+        return f'<span style="color:#2563eb;font-weight:bold">{v:g}%</span>'
+    return f"{v:g}%"
+
+
 def _render_tistory(today, asof, counts, sel, gu_rows, leads, band_rows=None, macro_html="", inventory=None) -> str:
+    td_c = "border:1px solid #e2e8f0;padding:4px 5px"
+    th_c = "border:1px solid #e2e8f0;padding:4px 5px;background:#f8fafc"
+    h2_c = "font-size:14px;font-weight:bold;color:#0f172a;border-left:3px solid #0d9488;padding-left:6px;margin:16px 0 6px"
+
     def name_cell(r):
         href = _complex_url_abs(r) if cp.passes_complex_page_gate(r) else _hub_url_abs(r)
         return (f'<a href="{href}"><b>{r["name"]}</b></a>({r["gu"]})'
                 f'<br><span style="{_MUT}">{r["area_m2"]:g}㎡</span>')
 
     def table(headers, rows):
-        head = "".join(f'<td style="{_TH}"><b>{h}</b></td>' for h in headers)
+        head = "".join(f'<td style="{th_c}"><b>{h}</b></td>' for h in headers)
         return f'<table style="{_TBL}"><tr>{head}</tr>{"".join(rows)}</table>'
 
-    hi_rows = [f'<tr><td style="{_TD}">{name_cell(r)}</td>'
-               f'<td style="{_TD}">{_eok(r["molit_recent_eok"])} n{r["molit_n"]}</td>'
-               f'<td style="{_TD}">{_trend_txt(r)}</td><td style="{_TD}">{_pos_txt(r)}</td></tr>'
+    hi_rows = [f'<tr><td style="{td_c}">{name_cell(r)}</td>'
+               f'<td style="{td_c}">{_eok(r["molit_recent_eok"])} n{r["molit_n"]}</td>'
+               f'<td style="{td_c}">{_trend_txt_tistory(r)}</td><td style="{td_c}">{_pos_txt_tistory(r)}</td></tr>'
                for r in sel["hi"]]
-    lo_rows = [f'<tr><td style="{_TD}">{name_cell(r)}</td>'
-               f'<td style="{_TD}">{_eok(r["molit_recent_eok"])} n{r["molit_n"]}</td>'
-               f'<td style="{_TD}">{_trend_txt(r)}</td><td style="{_TD}">{_pos_txt(r)}</td></tr>'
+    lo_rows = [f'<tr><td style="{td_c}">{name_cell(r)}</td>'
+               f'<td style="{td_c}">{_eok(r["molit_recent_eok"])} n{r["molit_n"]}</td>'
+               f'<td style="{td_c}">{_trend_txt_tistory(r)}</td><td style="{td_c}">{_pos_txt_tistory(r)}</td></tr>'
                for r in sel["lo"]]
-    jr_rows = [f'<tr><td style="{_TD}">{name_cell(r)}</td><td style="{_TD}">{_eok(r["molit_recent_eok"])}</td>'
-               f'<td style="{_TD}">{r["jeonse_ratio_complex_pct"]:g}%</td>'
-               f'<td style="{_TD}">{_eok(r.get("gap_eok"))}</td></tr>' for r in sel["jr"]]
-    tv_rows = [f'<tr><td style="{_TD}">{name_cell(r)}</td><td style="{_TD}">{_eok(r["molit_recent_eok"])}</td>'
-               f'<td style="{_TD}">{r["turnover_pct"]:g}%</td><td style="{_TD}">{r["molit_n"]}건</td></tr>'
+    jr_rows = [f'<tr><td style="{td_c}">{name_cell(r)}</td><td style="{td_c}">{_eok(r["molit_recent_eok"])}</td>'
+               f'<td style="{td_c}">{r["jeonse_ratio_complex_pct"]:g}%</td>'
+               f'<td style="{td_c}">{_eok(r.get("gap_eok"))}</td></tr>' for r in sel["jr"]]
+    tv_rows = [f'<tr><td style="{td_c}">{name_cell(r)}</td><td style="{td_c}">{_eok(r["molit_recent_eok"])}</td>'
+               f'<td style="{td_c}">{r["turnover_pct"]:g}%</td><td style="{td_c}">{r["molit_n"]}건</td></tr>'
                for r in sel["tv"]]
     gu_tr = "".join(
-        f'<tr><td style="{_TD}"><a href="{BASE_URL}/gu/{quote(g["gu"])}.html"><b>{g["gu"]}</b></a></td>'
-        f'<td style="{_TD}">{g["n"]}</td><td style="{_TD}">{_eok(g["gu_median"])}</td>'
-        f'<td style="{_TD}">▲{g["up"]}·▼{g["down"]}</td></tr>' for g in gu_rows)
+        f'<tr><td style="{td_c}"><b>{g["gu"]}</b></td>'
+        f'<td style="{td_c}">{g["n"]}</td><td style="{td_c}">{_eok(g["gu_median"])}</td>'
+        f'<td style="{td_c}"><span style="color:#dc2626">▲{g["up"]}</span>·<span style="color:#2563eb">▼{g["down"]}</span></td></tr>' for g in gu_rows)
 
     none_p = f'<p style="{_MUT}">기준 충족 단지 없음</p>'
-    lead_ps = [f"<p>{line}</p>" for line in render_lead_lines(leads)]
-    band_tr = "".join(f'<tr><td style="{_TD}">{b["band"]}</td><td style="{_TD}">{b["n"]}</td>'
-                      f'<td style="{_TD}">{_eok(b["median"])}</td><td style="{_TD}">▲{b["hi"]}·▼{b["lo"]}</td></tr>' for b in (band_rows or []))
+    briefing_card = _render_briefing_card(leads)
+    cta_card = _render_cta_card()
+    band_tr = "".join(f'<tr><td style="{td_c}">{b["band"]}</td><td style="{td_c}">{b["n"]}</td>'
+                      f'<td style="{td_c}">{_eok(b["median"])}</td><td style="{td_c}"><span style="color:#dc2626">▲{b["hi"]}</span>·<span style="color:#2563eb">▼{b["lo"]}</span></td></tr>' for b in (band_rows or []))
     parts = [
-        *lead_ps,
+        briefing_card,
         *([macro_html] if macro_html else []),   # 거시 지표 스트립(2026-09-07 S2) — 컨텍스트 없으면 생략
-        _render_inventory_tistory(inventory, today),
-        f'<p><b>오늘의 숫자</b> — 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
-        f'상승 {counts["up"]} · 하락 {counts["down"]} · 보합 {counts["flat"]}(국토부 실거래 사실, 자체 점수 없음)</p>',
-        *([ '<p><b>가격대별 요약</b>(12개월 중위 구간·사실)</p>',
-            f'<table style="{_TBL}"><tr><td style="{_TH}"><b>가격대</b></td><td style="{_TH}"><b>단지 수</b></td>'
-            f'<td style="{_TH}"><b>중위(억)</b></td><td style="{_TH}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
-        '<p><b>12개월 범위 상단 근접</b>(52주 위치 99% 이상)</p>',
+        f'<p style="{h2_c}">오늘의 숫자 <span style="{_MUT}">— 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
+        f'<span style="color:#dc2626;font-weight:bold">상승 {counts["up"]}</span> · '
+        f'<span style="color:#2563eb;font-weight:bold">하락 {counts["down"]}</span> · 보합 {counts["flat"]}(국토부 실거래 사실)</span></p>',
+        *([ f'<p style="{h2_c}">가격대별 요약 <span style="{_MUT}">(12개월 중위 구간·사실)</span></p>',
+            f'<p style="{_MUT};margin:4px 0 8px 0;">🎯 <b>예산대별 바로가기:</b> <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">10억 미만</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">10~15억</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">15~20억</span> · <span style="background:#f1f5f9;padding:2px 5px;border:1px solid #cbd5e1;font-weight:bold;">20억 이상</span></p>',
+            f'<table style="{_TBL}"><tr><td style="{th_c}"><b>가격대</b></td><td style="{th_c}"><b>단지 수</b></td>'
+            f'<td style="{th_c}"><b>중위(억)</b></td><td style="{th_c}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
+        f'<p style="{h2_c}">12개월 범위 상단 근접 <span style="{_MUT}">(52주 위치 99% 이상)</span></p>',
         table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], hi_rows) if hi_rows else none_p,
-        '<p><b>12개월 범위 하단 근접</b>(52주 위치 6% 이하)</p>',
+        f'<p style="{h2_c}">12개월 범위 하단 근접 <span style="{_MUT}">(52주 위치 6% 이하)</span></p>',
         table(["단지(구)", "중위(억) n", "3/9개월", "52주 위치"], lo_rows) if lo_rows else none_p,
-        '<p><b>전세가율 상위 5</b></p>',
+        f'<p style="{h2_c}">전세가율 상위 5 <span style="{_MUT}">(매매-전세 갭 구간)</span></p>',
         table(["단지(구)", "중위(억)", "전세가율", "매매-전세 갭"], jr_rows) if jr_rows else none_p,
-        '<p><b>회전율 상위 5</b></p>',
+        f'<p style="{h2_c}">회전율 상위 5 <span style="{_MUT}">(12개월 거래 활발 단지)</span></p>',
         table(["단지(구)", "중위(억)", "회전율", "12개월 거래"], tv_rows) if tv_rows else none_p,
-        '<p><b>구별 요약(25개 구)</b></p>',
-        f'<table style="{_TBL}"><tr><td style="{_TH}"><b>구</b></td><td style="{_TH}"><b>단지 수</b></td>'
-        f'<td style="{_TH}"><b>구 중위(억)</b></td><td style="{_TH}"><b>추세</b></td></tr>{gu_tr}</table>',
-        f'<p style="{_MUT}">게이트: 상단/하단·전세가율·회전율 표는 아파트·전용 40㎡ 이상·매매표본 10건 이상만 대상'
-        f'(전세가율은 추가로 전세표본 5건 이상·95% 이하, 회전율은 회전율 값 존재). '
-        f'3/9개월=최근 3개월 중위 vs 직전 9개월 중위(과거 비교 사실, 전망 아님 — ▲/▼ 옆 %는 "직전 9개월보다 이만큼 높음/낮음"). '
-        f'52주 위치=최근 3개월 체결 중위의 12개월 실거래 최저~최고 레인지 내 위치(%, 예: 74%면 1년 범위에서 74% 지점). '
-        f'회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위의 중위(억). '
-        f'기준일 {asof}, 표본수는 각 셀 n 표기. 가격·거래는 국토부 RTMS 공공데이터, '
-        f'매물 노출 건수는 별도 관측시각의 네이버 법정동별 단지 목록 집계입니다.</p>',
+        _render_inventory_tistory(inventory, today),
+        f'<p style="{h2_c}">서울 25개 구 요약</p>',
+        f'<table style="{_TBL}"><tr><td style="{th_c}"><b>구</b></td><td style="{th_c}"><b>단지 수</b></td>'
+        f'<td style="{th_c}"><b>구 중위(억)</b></td><td style="{th_c}"><b>추세</b></td></tr>{gu_tr}</table>',
+        f'<p style="{_MUT}">* 25개 구 전체 상세 시세는 <a href="{BASE_URL}/">구 허브</a>에서 확인할 수 있습니다.</p>',
+        f'<p style="{_MUT}">게이트: 상단/하단·전세가율·회전율은 전용 40㎡+·매매 10건+ 대상(전세가율은 전세 5건+·95% 이하). '
+        f'3/9개월=최근 3개월 vs 직전 9개월 중위(과거비교 사실, 전망 아님). 52주 위치=최근 3개월 체결 중위의 1년 실거래 레인지 내 %(100%=최고점, 0%=최저점). '
+        f'회전율=12개월 거래건수÷세대수×100(%). 구 중위=게이트 통과 단지 중위. '
+        f'기준일 {asof}, n=표본수. 국토부 RTMS 공공데이터 및 네이버 단지 목록 스냅샷.</p>',
         f'<p style="{_MUT}">{be.DISCLAIMER} {be._takedown()}</p>',
+        cta_card,
         f'<p><a href="{BASE_URL}/">전체 탐색기·인덱스</a> · <a href="{BASE_URL}/methodology.html">방법론 전문</a></p>',
     ]
     return "".join(parts)
@@ -411,8 +525,8 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     n_hi, n_lo = len(sel["hi"]), len(sel["lo"])
     leads = build_fact_leads(ds, "seoul", prev_ds=prev_ds)
 
-    title = f"서울 아파트 오늘의 변화 — {today} · 12개월 범위 상단 {n_hi}곳·하단 {n_lo}곳 · {counts['n_total']}단지"
-    tags = TISTORY_TAGS + ",오늘의변화"
+    title = _build_digest_title(today, counts, sel)
+    tags = _build_digest_tags(sel)
     summary = (f"{today} 기준 {counts['n_total']}단지 · 표본 {counts['n_sample']}건 · "
                f"상승 {counts['up']}·하락 {counts['down']}·보합 {counts['flat']} · "
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")

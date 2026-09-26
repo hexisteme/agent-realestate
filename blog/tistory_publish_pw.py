@@ -23,9 +23,12 @@ mode: inject(주입+카테고리, 발행 안함) | draft(임시저장) | publish
 첫 실행은 headful 로 뜨고 미로그인이면 로그인 대기(카카오 캡차는 사람 1회).
 """
 from __future__ import annotations
+import argparse
 import datetime
 import glob
-import os, re, sys, argparse
+import os
+import re
+import sys
 from urllib.parse import urlsplit
 
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
@@ -33,8 +36,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blog.tistory_publish import _parse_helper  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
 from blog.tistory_delivery import payload_digest, read_delivery, write_delivery  # noqa: E402
+from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
-from blog.tistory_sso import select_kakao_account  # noqa: E402
+from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -116,7 +120,8 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
     티스토리는 세션(__T_) 이 죽으면 auth/login 으로 리다이렉트만 하고 카카오 SSO 를 자동
     개시하지 않는다 — '카카오계정으로 로그인' 클릭이 필요. 카카오 웹세션이 살아있으면
     (또는 간편로그인 저장계정이 있으면) 비밀번호 없이 SSO 왕복이 완주된다.
-    비밀번호 폼이 뜨면(카카오도 만료) 사람 몫 — False 반환."""
+    비밀번호 폼이 뜨면 macOS Keychain 자격증명을 한 번만 제출한다. Keychain 부재·거부·폼
+    변경은 False 로 닫혀 기존 사람 로그인 대기로 넘어간다."""
     try:
         stage = _auth_stage(page.url)
         log.append(f"AUTH_STAGE:{stage}")
@@ -129,10 +134,13 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
                 return false;
             }""")
             if not clicked:
-                log.append("SSO_NO_BTN"); return False
+                log.append("SSO_NO_BTN")
+                return False
         elif stage not in {"KAKAO_LOGIN", "KAKAO_ACCOUNT", "KAKAO_SSO"}:
-            log.append("SSO_NO_LOGIN_ROUTE"); return False
+            log.append("SSO_NO_LOGIN_ROUTE")
+            return False
         clicked_account = False
+        keychain_submitted = False
         last_state = "WAIT"
         for _ in range(20):
             page.wait_for_timeout(1000)
@@ -147,11 +155,31 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
                     clicked_account = True
                     log.append("SSO_ACCOUNT_CLICKED")
                 if state == "PW_FORM":
-                    log.append("SSO_PW_FORM"); return False
+                    if keychain_submitted:
+                        continue
+                    log.append("SSO_PW_FORM")
+                    credentials = read_kakao_credentials(log)
+                    if credentials is None:
+                        return False
+                    submitted = submit_kakao_credentials(
+                        page, credentials.login_id, credentials.password,
+                        allow_password_only=clicked_account)
+                    del credentials
+                    if submitted != "SUBMITTED":
+                        log.append(f"KEYCHAIN_{submitted}")
+                        return False
+                    keychain_submitted = True
+                    log.append("KEYCHAIN_LOGIN_SUBMITTED")
+                    continue
                 if state == "ACCOUNT_SELECTION":
-                    log.append("SSO_ACCOUNT_SELECTION_REQUIRED"); return False
+                    log.append("SSO_ACCOUNT_SELECTION_REQUIRED")
+                    return False
         if last_state == "LAYOUT_UNRECOGNIZED":
             log.append("SSO_LAYOUT_UNRECOGNIZED")
+        if _auth_stage(page.url) != "TISTORY_PAGE":
+            if keychain_submitted:
+                log.append("KEYCHAIN_LOGIN_NOT_CONFIRMED")
+            return False
         page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("#post-title-inp", timeout=15000)
         log.append("AUTO_RELOGIN_OK")
@@ -465,7 +493,8 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 return f"[{name}] ERR:paste_basic_empty({basic_len}) | {' '.join(log)}"
             # 본문 무결성 대조: 붙은 내용이 우리가 주입한 body 인지 앵커 3점으로 확인 —
             # 클립보드 레이스로 임의 내용이 실명 블로그에 공개발행되는 사고 차단 (2026-07-06 리뷰).
-            import html as _h, re as _r
+            import html as _h
+            import re as _r
             # 앵커는 태그 사이 '단일 텍스트런' 내부에서만 추출 — 태그→공백 평탄화로 뽑으면
             # innerText 의 인라인 무공백 결합('…</b>(' 등)과 어긋나 앵커가 구조적으로 죽는다
             # (2026-07-07 리뷰 실측: 구 방식 앵커1 영구 실패).
@@ -556,7 +585,7 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
 
 
 def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> None:
-    """발행 실패(주로 세션 만료) 시 텔레그램 알림 + 재로그인 명령.
+    """발행 실패(주로 세션 만료) 시 텔레그램 알림 + Keychain 복구 명령.
     cron 로그인셸(-lc)엔 토큰이 없어 config.load_env_file 로 .env 를 직접 주입 후 전송.
     미설정/전송실패는 비치명(무음). 재시도 스케줄 도입으로 nag-once/day (2026-07-06)."""
     try:
@@ -571,8 +600,10 @@ def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> Non
         sent = send_message(
             f"❌ <b>티스토리 자동발행 실패</b> — {today}\n"
             f"<code>{detail[:300]}</code>\n"
-            f"재로그인: <code>cd /Volumes/EXT_SSD/bot/agent_realestate &amp;&amp; "
-            f"python3 blog/tistory_publish_pw.py --mode publish --login-wait 600</code>")
+            f"Keychain 재설정: <code>cd /Volumes/EXT_SSD/bot/agent_realestate &amp;&amp; "
+            f"python3 -m blog.tistory_keychain setup</code>\n"
+            f"인증검증: <code>python3 blog/tistory_publish_pw.py --mode auth "
+            f"--probe-relogin --login-wait 600</code>")
         if sent:
             open(alert_marker, "w", encoding="utf-8").write(today)
     except Exception as e:

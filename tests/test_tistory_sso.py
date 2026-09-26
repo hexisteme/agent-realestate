@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from blog.tistory_sso import select_kakao_account
+from blog.tistory_sso import select_kakao_account, submit_kakao_credentials
 
 
 LOGIN_URL = "https://accounts.kakao.com/login/simple/"
@@ -172,6 +172,80 @@ def test_changed_origin_is_rechecked_in_browser_before_click(page):
     stale_page.evaluate = page.evaluate
     assert select_kakao_account(stale_page) == "LAYOUT_UNRECOGNIZED"
     assert clicks(page) == []
+
+
+def test_keychain_credentials_fill_full_login_form_and_submit_once(page):
+    page.set_content("""
+        <form id="login"><input name="loginId"><input name="password" type="password">
+        <button type="submit">로그인</button></form>
+        <script>window.submits = 0; document.getElementById('login').onsubmit = event => {
+          event.preventDefault(); window.submits += 1;
+        };</script>
+    """)
+
+    result = submit_kakao_credentials(page, "synthetic-login", "synthetic-password")
+
+    assert result == "SUBMITTED"
+    assert page.locator("input[name=loginId]").input_value() == "synthetic-login"
+    assert page.locator("input[name=password]").input_value() == "synthetic-password"
+    assert page.evaluate("window.submits") == 1
+
+
+def test_keychain_credentials_support_saved_account_password_only(page):
+    page.set_content("""
+        <form id="login"><input name="password" type="password">
+        <button type="submit">로그인</button></form>
+        <script>window.submits = 0; document.getElementById('login').onsubmit = event => {
+          event.preventDefault(); window.submits += 1;
+        };</script>
+    """)
+
+    assert submit_kakao_credentials(
+        page, "unused", "synthetic-password", allow_password_only=True,
+    ) == "SUBMITTED"
+    assert page.locator("input[name=password]").input_value() == "synthetic-password"
+    assert page.evaluate("window.submits") == 1
+
+
+def test_password_only_form_requires_this_flow_to_select_the_account(page):
+    page.set_content("""
+        <form id="login"><input name="password" type="password">
+        <button type="submit">로그인</button></form>
+        <script>window.submits = 0; document.getElementById('login').onsubmit = event => {
+          event.preventDefault(); window.submits += 1;
+        };</script>
+    """)
+
+    assert submit_kakao_credentials(page, "unused", "synthetic-password") == "ACCOUNT_UNCONFIRMED"
+    assert page.locator("input[name=password]").input_value() == ""
+    assert page.evaluate("window.submits") == 0
+
+
+def test_keychain_credentials_reject_foreign_origin_before_dom_access():
+    page = Mock(url="https://accounts.kakao.com.evil.invalid/login/")
+
+    assert submit_kakao_credentials(page, "synthetic-login", "synthetic-password") == "LAYOUT_UNRECOGNIZED"
+    page.evaluate.assert_not_called()
+
+
+def test_actual_document_origin_is_rechecked_atomically_before_secret_input(page):
+    page.goto("https://example.invalid/login/")
+    page.set_content("""
+        <form id="foreign"><input name="loginId"><input name="password" type="password">
+        <button type="submit">submit</button></form>
+        <script>window.submits = 0; document.getElementById('foreign').onsubmit = event => {
+          event.preventDefault(); window.submits += 1;
+        };</script>
+    """)
+    stale_page = Mock(url=LOGIN_URL)
+    stale_page.evaluate = page.evaluate
+
+    result = submit_kakao_credentials(stale_page, "synthetic-login", "synthetic-password")
+
+    assert result == "LAYOUT_UNRECOGNIZED"
+    assert page.locator("input[name=loginId]").input_value() == ""
+    assert page.locator("input[name=password]").input_value() == ""
+    assert page.evaluate("window.submits") == 0
 
 
 def observe_editor_route(page):

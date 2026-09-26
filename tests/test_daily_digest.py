@@ -1,21 +1,27 @@
 """일간 다이제스트 단위테스트(2026-09-05 P1) — 게이트·바이트예산·태그화이트리스트·금칙어·슬러그링크 회귀방지.
 대상: blog.daily_digest.build_daily_digest / _select_ranked / _gu_summary_rows, blog.tistory_draft.write_digest_draft.
 """
-from __future__ import annotations
+import importlib
 import re
 from urllib.parse import quote
 
 import pytest
 
 import blog.complex_page as cp
-from blog.build_site import BASE_URL
+import blog.daily_digest
 from blog.build_explorer import slugify_complex_name
-from blog.daily_digest import build_daily_digest, _select_ranked, _gu_summary_rows
-from blog.wording_guard import FORBIDDEN_WORDS
+from blog.build_site import BASE_URL
+from blog.daily_digest import build_daily_digest, _gu_summary_rows, _select_ranked
 from blog.tistory_draft import TISTORY_TAGS, write_digest_draft
 from blog.tistory_publish import _parse_helper
+from blog.wording_guard import FORBIDDEN_WORDS
 
 _ALLOWED_TAGS = {"p", "b", "br", "a", "span", "table", "tr", "td"}
+
+
+@pytest.fixture(autouse=True)
+def _reload_daily_digest_module():
+    importlib.reload(blog.daily_digest)
 
 
 def _row(gu: str, name: str, **kw) -> dict:
@@ -88,8 +94,13 @@ def test_gu_summary_rows_one_per_distinct_gu_sorted():
 def test_build_daily_digest_return_shape_and_title():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     assert set(d.keys()) == {"title", "tags", "tistory_html", "site_html", "summary"}
-    assert d["title"] == "서울 아파트 오늘의 변화 — 2026-09-05 · 12개월 범위 상단 1곳·하단 1곳 · 7단지"
-    assert d["tags"] == TISTORY_TAGS + ",오늘의변화"
+    assert d["title"] == "서울 아파트 실거래가 — 강남좋은아파트 등 상승 1단지 · 강남전세단지 갭 2억 (2026-09-05, 7단지)"
+    assert all(t in d["tags"] for t in TISTORY_TAGS.split(","))
+    assert "강남구아파트" in d["tags"]
+    assert "서초구아파트" in d["tags"]
+    assert "오늘의 서울 아파트 핵심 요약 (30초 브리핑)" in d["tistory_html"]
+    assert "서울 아파트 인터랙티브 탐색기 열기" in d["tistory_html"]
+    assert "매일 아침 자동 업데이트" in d["tistory_html"]
 
 
 def test_gated_out_rows_never_appear_in_either_html():
@@ -200,3 +211,70 @@ def test_band_summary_rows_and_tables_present():
     assert by["10억 미만"]["n"] == 1
     out = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     assert "가격대별 요약" in out["tistory_html"] and "가격대별 요약" in out["site_html"]
+
+
+# ── 정보 아키텍처 및 시각적 위계 검증 ────────────────────────────────────
+
+def test_tistory_information_hierarchy_order():
+    ds = _sample_ds()
+    ds["listing_inventory"] = _inventory()
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    html = d["tistory_html"]
+
+    idx_briefing = html.find("30초 브리핑")
+    idx_today_num = html.find("오늘의 숫자")
+    idx_hi = html.find("12개월 범위 상단 근접")
+    idx_inventory = html.find("네이버 표시 매물")
+    idx_gu = html.find("서울 25개 구 요약")
+    idx_cta = html.find("인터랙티브 탐색기 열기")
+
+    assert -1 < idx_briefing < idx_today_num < idx_hi, "실거래 핵심 정보가 최상단에 우선 배치되어야 합니다."
+    assert idx_hi < idx_inventory < idx_gu < idx_cta, "매물 재고 및 25개 구, CTA가 올바른 순서로 배치되어야 합니다."
+
+
+def test_tistory_visual_accent_colors():
+    ds = _sample_ds()
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    html = d["tistory_html"]
+    # 상승/하락에 시각적 컬러(red/blue 계열) 스타일이 적용되어 있어야 함
+    assert 'color:#dc2626' in html or 'color:#c43d2f' in html, "상승 지표에 시각적 레드 강조가 적용되어야 합니다."
+    # 카카오 태그 화이트리스트 준수 검증
+    tags_found = {m.lower() for m in re.findall(r"</?([a-zA-Z][a-zA-Z0-9]*)", html)}
+    assert tags_found <= _ALLOWED_TAGS
+
+
+def test_build_digest_title_downside_market():
+    from blog.daily_digest import _build_digest_title
+    counts = {"n_total": 1000, "up": 100, "down": 450, "flat": 50}
+    sel = {"hi": [], "lo": [{"name": "하락단지", "gu": "노원"}]}
+    title = _build_digest_title("2026-09-26", counts, sel)
+    assert "하락 450단지" in title
+    assert "1년 저점대 1곳" in title
+
+
+def test_build_digest_title_micro_intent():
+    from blog.daily_digest import _build_digest_title
+    ds = _sample_ds()
+    sel = _select_ranked(ds)
+    counts = {"n_total": 7, "up": 1, "down": 1, "flat": 0}
+    title = _build_digest_title("2026-09-05", counts, sel)
+    # 대표 고점 단지(강남좋은아파트) 및 갭단지(강남전세단지 갭 2억) 실명이 제목에 반영되어야 함
+    assert "강남좋은아파트" in title
+    assert "강남전세단지" in title
+    assert "갭 2억" in title
+
+
+def test_tistory_micro_budget_anchors():
+    ds = _sample_ds()
+    d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
+    html = d["tistory_html"]
+    # 예산대별 빠른 점프 앵커/인디케이터가 포함되어 있어야 함
+    assert "10억 미만" in html
+    assert "10~15억" in html
+    assert "15~20억" in html
+    assert "20억 이상" in html
+    assert "예산대별 바로가기" in html or "가격대별 요약" in html
+
+
+
+

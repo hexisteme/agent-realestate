@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from blog import tistory_publish_pw as pub
+from blog.tistory_keychain import KakaoCredentials
 
 
 class LoginPage:
@@ -38,18 +39,94 @@ def test_delayed_sso_clicks_account_once_and_returns_to_original_edit(monkeypatc
     assert log[-1] == "AUTO_RELOGIN_OK"
 
 
-@pytest.mark.parametrize("state, expected", [
-    ("PW_FORM", "SSO_PW_FORM"),
-    ("ACCOUNT_SELECTION", "SSO_ACCOUNT_SELECTION_REQUIRED"),
-])
-def test_real_human_login_requirements_stop_auto_clicks(monkeypatch, state, expected):
+def test_missing_keychain_still_requires_human_login(monkeypatch):
     page = LoginPage(["https://accounts.kakao.com/login/simple/"])
-    choose = Mock(return_value=state)
+    choose = Mock(return_value="PW_FORM")
     monkeypatch.setattr(pub, "select_kakao_account", choose)
+    monkeypatch.setattr(
+        pub,
+        "read_kakao_credentials",
+        lambda log: log.append("KEYCHAIN_CREDENTIALS_MISSING"),
+    )
     log = []
     assert not pub._relogin_via_kakao_sso(page, log)
     page.goto.assert_not_called()
-    assert choose.call_count == 1 and log[-1] == expected
+    assert choose.call_count == 1
+    assert log[-2:] == ["SSO_PW_FORM", "KEYCHAIN_CREDENTIALS_MISSING"]
+
+
+def test_multiple_accounts_still_require_human_choice(monkeypatch):
+    page = LoginPage(["https://accounts.kakao.com/login/simple/"])
+    monkeypatch.setattr(pub, "select_kakao_account", Mock(return_value="ACCOUNT_SELECTION"))
+    read = Mock(side_effect=AssertionError("Keychain must not choose an identity"))
+    monkeypatch.setattr(pub, "read_kakao_credentials", read)
+    log = []
+
+    assert not pub._relogin_via_kakao_sso(page, log)
+    assert log[-1] == "SSO_ACCOUNT_SELECTION_REQUIRED"
+    read.assert_not_called()
+
+
+def test_password_form_uses_keychain_once_and_completes_sso(monkeypatch):
+    page = LoginPage([
+        "https://accounts.kakao.com/login/",
+        "https://floker.tistory.com/manage/",
+    ])
+    choose = Mock(return_value="PW_FORM")
+    submit = Mock(return_value="SUBMITTED")
+    monkeypatch.setattr(pub, "select_kakao_account", choose)
+    monkeypatch.setattr(pub, "submit_kakao_credentials", submit)
+    monkeypatch.setattr(
+        pub,
+        "read_kakao_credentials",
+        Mock(return_value=KakaoCredentials("synthetic-login", "synthetic-password")),
+    )
+    log = []
+
+    assert pub._relogin_via_kakao_sso(page, log)
+    submit.assert_called_once_with(
+        page, "synthetic-login", "synthetic-password", allow_password_only=False)
+    assert "KEYCHAIN_LOGIN_SUBMITTED" in log
+    assert log[-1] == "AUTO_RELOGIN_OK"
+    assert "synthetic-login" not in " ".join(log)
+    assert "synthetic-password" not in " ".join(log)
+
+
+def test_password_only_permission_requires_saved_account_click_in_same_flow(monkeypatch):
+    page = LoginPage([
+        "https://accounts.kakao.com/login/simple/",
+        "https://accounts.kakao.com/login/",
+        "https://floker.tistory.com/manage/",
+    ])
+    choose = Mock(side_effect=["TILE_CLICKED", "PW_FORM"])
+    submit = Mock(return_value="SUBMITTED")
+    monkeypatch.setattr(pub, "select_kakao_account", choose)
+    monkeypatch.setattr(pub, "submit_kakao_credentials", submit)
+    monkeypatch.setattr(
+        pub,
+        "read_kakao_credentials",
+        Mock(return_value=KakaoCredentials("synthetic-login", "synthetic-password")),
+    )
+
+    assert pub._relogin_via_kakao_sso(page, [])
+    submit.assert_called_once_with(
+        page, "synthetic-login", "synthetic-password", allow_password_only=True)
+
+
+def test_rejected_keychain_login_is_not_retried_or_leaked(monkeypatch):
+    page = LoginPage(["https://accounts.kakao.com/login/"] * 21)
+    monkeypatch.setattr(pub, "select_kakao_account", Mock(return_value="PW_FORM"))
+    credentials = Mock(return_value=KakaoCredentials("synthetic-login", "synthetic-password"))
+    submit = Mock(return_value="SUBMITTED")
+    monkeypatch.setattr(pub, "read_kakao_credentials", credentials)
+    monkeypatch.setattr(pub, "submit_kakao_credentials", submit)
+    log = []
+
+    assert not pub._relogin_via_kakao_sso(page, log)
+    credentials.assert_called_once()
+    submit.assert_called_once()
+    assert log[-1] == "KEYCHAIN_LOGIN_NOT_CONFIRMED"
+    assert "synthetic-" not in " ".join(log)
 
 
 def test_unknown_layout_is_distinct_and_does_not_log_exception_payload(monkeypatch):

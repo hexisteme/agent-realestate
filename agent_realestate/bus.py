@@ -143,7 +143,8 @@ def register() -> Path:
         "agent": AGENT_NAME,
         "cwd": str(EXT_ROOT),
         "cli": _resolve_cli(),
-        "headless_claude": "claude -p {prompt} --output-format json --permission-mode acceptEdits",
+        # 2026-09-06 좌석 전환: 값만 codex 로(필드명은 registry 스키마 유지). Claude Pro 는 배급제 판정 레그.
+        "headless_claude": "codex exec --skip-git-repo-check -s workspace-write {prompt} < /dev/null",
         "capabilities": CAPABILITIES,
         "input_contract": "tasks/<task_id>.json (Task v1)",
         "output_contract": "results/<task_id>.json (Result v1)",
