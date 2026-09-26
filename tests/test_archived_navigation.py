@@ -223,34 +223,35 @@ def test_duplicate_href_is_not_rewritten_as_if_attribute_ownership_were_clear(tm
 
 
 def test_actual_build_runs_repair_before_cohort_restore_dispatch(tmp_path, monkeypatch):
-    """Ordering fixture, not proof of real D0 manifest authorization or 16-owner hashes."""
+    """Real preflight fixture; restore observer is not a full frozen-restore test."""
     from blog import acquisition_probe, build_site
+    from test_site_build_cli import build_tree, _frozen_build_cohort
 
-    source, site = tmp_path / "source", tmp_path / "site"
-    (source / "posts").mkdir(parents=True)
-    (source / "daily").mkdir()
+    source, site = build_tree.__wrapped__(tmp_path, monkeypatch)
+    cohort_path, _, dataset, _ = _frozen_build_cohort((source, site), tmp_path)
+    (source / "daily").mkdir(exist_ok=True)
     frozen = '<html><a href="../complex/노원-표본미달단지.html">frozen D0 text</a></html>'
     archived = source / "posts" / "2026-09-05.html"
     archived.write_text(frozen)
-    (source / "dataset.json").write_text(json.dumps({"complexes": [_row()], "count": 1,
-                                                   "data_asof": "2026-09-26", "generated": "2026-09-26"}))
+    dataset["complexes"].append(_row())
+    dataset["count"] = len(dataset["complexes"])
+    (source / "dataset.json").write_text(json.dumps(dataset))
     monkeypatch.setattr(build_site, "SITE", str(site))
     monkeypatch.setattr(build_site, "SRC", str(source))
-    monkeypatch.setattr(build_site, "BASE_URL", BASE)
     monkeypatch.setattr(build_site, "GA4_MEASUREMENT_ID", "")
     monkeypatch.delenv("BLOG_ACQUISITION_PROBE", raising=False)
     monkeypatch.delenv("BLOG_ACQUISITION_COHORT", raising=False)
 
     def frozen_restore_boundary(_cohort, site_dir, _base_url, intents, *, today):
         destination = site / "posts" / "2026-09-05.html"
-        assert str(site) == site_dir and today == "2026-09-26"
+        assert str(site) == site_dir and today == "2026-11-02"
         assert _Links(destination.read_text()).links == [f'../gu/{quote("노원")}.html#{quote("표본미달단지")}']
         destination.write_bytes(frozen.encode())
         return intents
 
     monkeypatch.setattr(acquisition_probe, "restore_probe_cohort", frozen_restore_boundary)
-    receipt = build_site.build("2026-09-26", molit_path=str(tmp_path / "absent.json"),
-                               cohort_path=str(tmp_path / "synthetic-ordering-cohort.json"))
+    receipt = build_site.build("2026-11-02", molit_path=str(tmp_path / "absent.json"),
+                               cohort_path=cohort_path)
     assert (site / "posts" / archived.name).read_bytes() == frozen.encode()
     assert receipt["archived_navigation"]["changed_links"] == 1
 

@@ -450,8 +450,8 @@ def test_audit_hidden_heading_descendant_cannot_supply_entity(tmp_path):
 def test_audit_malformed_schema_container_returns_actionable_finding(tmp_path, container):
     intents = _intents()[:1]
     site = _site(tmp_path, intents)
-    path = _write_page(site, intents[0], schema=False,
-                       marker=f'<script type="application/ld+json">{json.dumps(container)}</script>')
+    _write_page(site, intents[0], schema=False,
+                marker=f'<script type="application/ld+json">{json.dumps(container)}</script>')
     result = audit_site(site, intents, BASE)
     assert result["status"] == "FAIL" and "SCHEMA_JSON" in result["counts_by_code"]
     assert all(finding["action"] for finding in result["findings"])
