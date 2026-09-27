@@ -45,19 +45,55 @@ def _replace_digest_page(path: str, content: str) -> None:
 
 
 def write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None = None) -> dict[str, str]:
-    """Write and then verify the helper + dated/latest static output contract."""
+    """일간 출력 검증 뒤 새 PNG만 마지막에 확정하고 기존 이미지 바이트를 보존한다."""
     required = {"title", "tags", "tistory_html", "site_html", "summary"}
     if set(digest) != required or any(not isinstance(digest[key], str) or not digest[key] for key in required):
         raise ValueError("daily digest output contract is incomplete")
+    if ds is None:
+        return _write_digest_outputs(digest, today, outdir, ds=None)
+    if digest["site_html"].count("</head>") != 1:
+        raise ValueError("daily page has no unique metadata injection point")
+
+    output_dir = Path(outdir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".daily-digest-", dir=output_dir.resolve()) as temporary:
+        staged = _write_digest_outputs(digest, today, temporary, ds=ds)
+        outputs = {key: str(output_dir / Path(path).relative_to(temporary)) for key, path in staged.items()}
+        image = output_dir.resolve() / Path(staged["image"]).relative_to(temporary)
+        image = image.parent.resolve() / image.name
+        outputs["image"] = str(image)
+        helper_images = Path(outputs["draft"]).parent.resolve().parent / "images"
+        if helper_images.resolve() != image.parent.resolve():
+            raise ValueError("daily helper image layout does not match the accepted card")
+        content = Path(staged["image"]).read_bytes()
+        if os.path.lexists(image) and (image.is_symlink() or not image.is_file() or image.read_bytes() != content):
+            raise ValueError("existing daily image does not match the accepted card")
+
+        for key, path in outputs.items():
+            if key != "image":
+                destination = Path(path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged[key], destination)
+        image.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(staged["image"], image)
+        except FileExistsError:
+            if image.is_symlink() or not image.is_file() or image.read_bytes() != content:
+                raise ValueError("existing daily image does not match the accepted card") from None
+        return outputs
+
+
+def _write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None) -> dict[str, str]:
+    """일간 helper·정적 페이지·media를 같은 출력 디렉터리에서 작성하고 검증한다."""
 
     card = None
     if ds is not None:
+        if digest["site_html"].count("</head>") != 1:
+            raise ValueError("daily page has no unique metadata injection point")
         from blog.thumbnail_card import build_daily_card, social_meta
         from blog.build_site import BASE_URL
         card = build_daily_card(ds, Path(outdir) / "images", today=today)
         relative = f"images/{Path(card.path).name}"
-        if digest["site_html"].count("</head>") != 1:
-            raise ValueError("daily page has no unique metadata injection point")
         digest = dict(digest)
         digest["site_html"] = digest["site_html"].replace("</head>", social_meta(BASE_URL, relative, card.alt) + "\n</head>", 1)
 
