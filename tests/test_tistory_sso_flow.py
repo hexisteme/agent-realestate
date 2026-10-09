@@ -7,6 +7,14 @@ from blog import tistory_publish_pw as pub
 from blog.tistory_keychain import KakaoCredentials
 
 
+@pytest.fixture(autouse=True)
+def no_operator_account(monkeypatch):
+    """운영 .env 의 계정 고정값이 SSO 흐름 테스트에 새어 들지 않게 한다."""
+    from agent_realestate import config
+    monkeypatch.delenv("TISTORY_KAKAO_ACCOUNT", raising=False)
+    monkeypatch.setattr(config, "read_env_value", Mock(return_value=None), raising=False)
+
+
 class LoginPage:
     def __init__(self, transitions):
         self.url = "https://www.tistory.com/auth/login"
@@ -26,7 +34,7 @@ def test_delayed_sso_clicks_account_once_and_returns_to_original_edit(monkeypatc
     page = LoginPage(["https://accounts.kakao.com/login/simple/"] * 3
                      + ["https://floker.tistory.com/manage/"])
     calls = []
-    def choose(page, *, already_clicked):
+    def choose(page, *, already_clicked, expected_account=None):
         calls.append(already_clicked)
         return "WAIT" if already_clicked else "TILE_CLICKED"
     monkeypatch.setattr(pub, "select_kakao_account", choose)
@@ -65,6 +73,51 @@ def test_multiple_accounts_still_require_human_choice(monkeypatch):
     assert not pub._relogin_via_kakao_sso(page, log)
     assert log[-1] == "SSO_ACCOUNT_SELECTION_REQUIRED"
     read.assert_not_called()
+
+
+def test_configured_blog_account_is_pinned_for_selection(monkeypatch):
+    page = LoginPage(["https://accounts.kakao.com/login/simple/",
+                      "https://floker.tistory.com/manage/"])
+    monkeypatch.setattr(pub, "_expected_kakao_account", lambda: "owner@example.invalid")
+    choose = Mock(return_value="TILE_CLICKED")
+    monkeypatch.setattr(pub, "select_kakao_account", choose)
+    log = []
+
+    assert pub._relogin_via_kakao_sso(page, log)
+    assert choose.call_args.kwargs == {"already_clicked": False,
+                                       "expected_account": "owner@example.invalid"}
+    assert "SSO_ACCOUNT_PINNED" in log and "owner@example.invalid" not in " ".join(log)
+
+
+def test_missing_pinned_account_requires_human_without_keychain(monkeypatch):
+    page = LoginPage(["https://accounts.kakao.com/login/simple/"])
+    monkeypatch.setattr(pub, "_expected_kakao_account", lambda: "owner@example.invalid")
+    monkeypatch.setattr(pub, "select_kakao_account", Mock(return_value="EXPECTED_ACCOUNT_MISSING"))
+    read = Mock(side_effect=AssertionError("Keychain must not choose an identity"))
+    monkeypatch.setattr(pub, "read_kakao_credentials", read)
+    log = []
+
+    assert not pub._relogin_via_kakao_sso(page, log)
+    assert log[-1] == "SSO_EXPECTED_ACCOUNT_MISSING"
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize("environ, file_value, expected", [
+    ({"TISTORY_KAKAO_ACCOUNT": " env@example.invalid "}, "file@example.invalid", "env@example.invalid"),
+    ({}, "file@example.invalid", "file@example.invalid"),
+    ({}, None, None),
+    ({"TISTORY_KAKAO_ACCOUNT": "  "}, "file@example.invalid", None),
+])
+def test_expected_account_comes_from_env_then_dotenv_without_mutating_environ(
+        monkeypatch, environ, file_value, expected):
+    from agent_realestate import config
+    monkeypatch.delenv("TISTORY_KAKAO_ACCOUNT", raising=False)
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(config, "read_env_value", Mock(return_value=file_value))
+
+    assert pub._expected_kakao_account() == expected
+    assert pub.os.environ.get("TISTORY_KAKAO_ACCOUNT") == environ.get("TISTORY_KAKAO_ACCOUNT")
 
 
 def test_password_form_uses_keychain_once_and_completes_sso(monkeypatch):

@@ -21,17 +21,24 @@ def _is_kakao_login_route(url: str) -> bool:
         return False
 
 
-def select_kakao_account(page, *, already_clicked: bool = False) -> str:
+def select_kakao_account(
+    page, *, already_clicked: bool = False, expected_account: str | None = None,
+) -> str:
     """비밀번호 입력이나 계정 선택이 필요하면 동작 없이 고정 상태만 반환한다.
 
-    계정의 표시명·주소·인증 URL은 읽거나 반환하지 않는다. 호출자는
+    계정의 표시명·주소·인증 URL은 반환하지 않는다. 호출자는
     TILE_CLICKED 뒤 already_clicked를 유지해 지연된 화면에서 재클릭을 막는다.
+
+    expected_account(블로그 소유 카카오 계정)가 주어지면 저장 계정이 여럿이어도
+    주소가 정확히 같은 타일 하나만 고른다(대소문자·앞뒤 공백 무시, 부분일치 금지).
+    대조는 브라우저 안에서만 하고, 일치 타일이 없으면 다른 신원을 고르지 않고
+    EXPECTED_ACCOUNT_MISSING 을 반환한다(2026-10-09: 한 프로필에 두 계정 저장 장애).
     """
     if not _is_kakao_login_route(page.url):
         return "LAYOUT_UNRECOGNIZED"
 
     return page.evaluate(
-        """alreadyClicked => {
+        """({alreadyClicked, expectedAccount}) => {
             const paths = ['/login', '/login/', '/login/simple', '/login/simple/'];
             if (location.origin !== 'https://accounts.kakao.com'
                 || !paths.includes(location.pathname)) return 'LAYOUT_UNRECOGNIZED';
@@ -64,13 +71,26 @@ def select_kakao_account(page, *, already_clicked: bool = False) -> str:
                 && tile.querySelector(':scope > div.cont_profile > span.info_profile'))
                 .filter(visible);
 
+            if (expectedAccount) {
+                const normalize = text => (text || '').trim().toLowerCase();
+                const wanted = normalize(expectedAccount);
+                const matches = saved.filter(tile => [...tile.querySelectorAll(
+                    ':scope > div.cont_profile > span.tit_profile, '
+                    + ':scope > div.cont_profile > span.info_profile'
+                )].some(span => normalize(span.textContent) === wanted));
+                if (matches.length > 1) return 'ACCOUNT_SELECTION';
+                if (!matches.length) return saved.length ? 'EXPECTED_ACCOUNT_MISSING' : 'WAIT';
+                if (!enabled(matches[0])) return 'WAIT';
+                matches[0].click();
+                return 'TILE_CLICKED';
+            }
             // 저장된 계정이 여럿이면 신원을 임의로 선택하지 않는다.
             if (saved.length > 1) return 'ACCOUNT_SELECTION';
             if (!saved.length || !enabled(saved[0])) return 'WAIT';
             saved[0].click();
             return 'TILE_CLICKED';
         }""",
-        already_clicked,
+        {"alreadyClicked": already_clicked, "expectedAccount": expected_account},
     )
 
 

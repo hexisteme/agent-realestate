@@ -90,6 +90,46 @@ def test_hidden_duplicate_does_not_require_false_account_choice(page):
     assert clicks(page) == ["saved-1"]
 
 
+def account(number, address, attrs=""):
+    """실측 레이아웃(2026-10-09): 주소는 tit_profile, 표시명은 info_profile."""
+    return (f'<li><a class="wrap_profile" role="button" id="saved-{number}" {attrs}>'
+            f'<div class="cont_profile"><span class="tit_profile">{address}</span>'
+            f'<span class="info_profile">합성 이름</span></div></a></li>')
+
+
+def test_expected_account_is_chosen_among_several_saved_accounts(page):
+    show(page, account(1, "other@example.invalid") + account(2, "owner@example.invalid"))
+    assert select_kakao_account(page, expected_account=" Owner@Example.invalid ") == "TILE_CLICKED"
+    assert clicks(page) == ["saved-2"]
+    assert select_kakao_account(page, already_clicked=True,
+                                expected_account="owner@example.invalid") == "WAIT"
+    assert clicks(page) == ["saved-2"]
+
+
+@pytest.mark.parametrize("tiles", [
+    account(1, "other@example.invalid"),
+    account(1, "other@example.invalid") + account(2, "xowner@example.invalid"),
+    account(1, "other@example.invalid") + account(2, "owner@example.invalid", "hidden"),
+])
+def test_expected_account_absent_never_clicks_another_identity(page, tiles):
+    show(page, tiles)
+    assert select_kakao_account(page, expected_account="owner@example.invalid") == "EXPECTED_ACCOUNT_MISSING"
+    assert clicks(page) == []
+
+
+def test_duplicate_expected_account_still_requires_choice(page):
+    show(page, account(1, "owner@example.invalid") + account(2, "owner@example.invalid"))
+    assert select_kakao_account(page, expected_account="owner@example.invalid") == "ACCOUNT_SELECTION"
+    assert clicks(page) == []
+
+
+def test_disabled_expected_account_waits_without_choosing_another(page):
+    show(page, account(1, "other@example.invalid")
+         + account(2, "owner@example.invalid", 'aria-disabled="true"'))
+    assert select_kakao_account(page, expected_account="owner@example.invalid") == "WAIT"
+    assert clicks(page) == []
+
+
 def test_disabled_second_account_does_not_choose_a_different_identity(page):
     show(page, saved(1) + saved(2, 'aria-disabled="true"'))
     assert select_kakao_account(page) == "ACCOUNT_SELECTION"

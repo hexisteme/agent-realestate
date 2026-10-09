@@ -63,6 +63,8 @@ STATE_FILE = os.path.join(PROFILE_DIR, "tistory_state.json")
 PUBLISH_MARKER = ".last-tistory-published"
 ATTEMPT_MARKER = ".last-tistory-attempted"
 ALERT_MARKER = ".last-tistory-alerted"
+# 부동산 블로그 소유 카카오 계정(비밀 아님). 공개 저장소라 값은 .env/환경변수에만 둔다.
+KAKAO_ACCOUNT_KEY = "TISTORY_KAKAO_ACCOUNT"
 
 
 def _read_marker(path: str) -> str:
@@ -116,6 +118,21 @@ def _auth_stage(url: str) -> str:
     return "OTHER_PAGE"
 
 
+def _expected_kakao_account() -> str | None:
+    """간편로그인에서 고를 블로그 소유 계정. 환경변수 우선, 없으면 .env 의 같은 키.
+
+    한 프로필에 다른 블로그 계정이 함께 저장돼도(2026-10-06~09 장애) 이 계정만 고른다.
+    .env 의 다른 시크릿은 os.environ 에 주입하지 않는다."""
+    value = os.environ.get(KAKAO_ACCOUNT_KEY)
+    if value is None:
+        try:
+            from agent_realestate.config import read_env_value
+            value = read_env_value(KAKAO_ACCOUNT_KEY)
+        except Exception:
+            value = None
+    return (value or "").strip() or None
+
+
 def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) -> bool:
     """티스토리 세션만료 시 무인 재로그인 시도 (2026-07-06, 이틀 연속 login_timeout 대응).
 
@@ -141,6 +158,9 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
         elif stage not in {"KAKAO_LOGIN", "KAKAO_ACCOUNT", "KAKAO_SSO"}:
             log.append("SSO_NO_LOGIN_ROUTE")
             return False
+        expected_account = _expected_kakao_account()
+        if expected_account:
+            log.append("SSO_ACCOUNT_PINNED")
         clicked_account = False
         keychain_submitted = False
         last_state = "WAIT"
@@ -151,7 +171,8 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
             if _auth_stage(url) == "TISTORY_PAGE":
                 break  # SSO 왕복 완료
             if urlsplit(url).hostname == "accounts.kakao.com":
-                state = select_kakao_account(page, already_clicked=clicked_account)
+                state = select_kakao_account(page, already_clicked=clicked_account,
+                                             expected_account=expected_account)
                 last_state = state
                 if state == "TILE_CLICKED":
                     clicked_account = True
@@ -175,6 +196,9 @@ def _relogin_via_kakao_sso(page, log: list[str], target_url: str = NEWPOST_URL) 
                     continue
                 if state == "ACCOUNT_SELECTION":
                     log.append("SSO_ACCOUNT_SELECTION_REQUIRED")
+                    return False
+                if state == "EXPECTED_ACCOUNT_MISSING":
+                    log.append("SSO_EXPECTED_ACCOUNT_MISSING")
                     return False
         if last_state == "LAYOUT_UNRECOGNIZED":
             log.append("SSO_LAYOUT_UNRECOGNIZED")

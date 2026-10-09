@@ -65,16 +65,32 @@ def ensure_report_dir() -> Path:
     return REPORT_DIR
 
 
-def load_env_file() -> None:
-    """agent_realestate/.env (chmod 600, gitignored) 의 KEY=VALUE 를 os.environ 에 주입.
-    시크릿(MOLIT_API_KEY 등)이 코드·로그·대화에 노출되지 않도록 파일에서만 읽는다.
-    외부 의존성 없이 단순 파싱 (이미 설정된 env 는 덮어쓰지 않음)."""
+def _env_file_items() -> list[tuple[str, str]]:
+    """agent_realestate/.env 의 KEY=VALUE 쌍. 파일이 없으면 빈 목록."""
     envp = EXT_ROOT / ".env"
     if not envp.exists():
-        return
+        return []
+    items = []
     for line in envp.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        items.append((k.strip(), v.strip().strip('"').strip("'")))
+    return items
+
+
+def load_env_file() -> None:
+    """agent_realestate/.env (chmod 600, gitignored) 의 KEY=VALUE 를 os.environ 에 주입.
+    시크릿(MOLIT_API_KEY 등)이 코드·로그·대화에 노출되지 않도록 파일에서만 읽는다.
+    외부 의존성 없이 단순 파싱 (이미 설정된 env 는 덮어쓰지 않음)."""
+    for k, v in _env_file_items():
+        os.environ.setdefault(k, v)
+
+
+def read_env_value(key: str) -> str | None:
+    """.env 에서 키 하나만 읽는다. 다른 값은 os.environ 에 주입하지 않는다."""
+    for k, v in _env_file_items():
+        if k == key:
+            return v
+    return None
