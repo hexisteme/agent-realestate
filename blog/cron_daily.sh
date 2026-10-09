@@ -97,6 +97,11 @@ publish_kind() {
       echo "[$(date)] tistory $kind: 브라우저 프로필 사용 중 (rc=4, 다음 슬롯 재시도)"
       [ "$publish_rc" -eq 1 ] || publish_rc=4
       ;;
+    5|6)
+      # 디자인 리뷰 게이트(2026-10-09): 5=open P1 rule 차단, 6=사람 판단. 발행·성공마커 없음, 알림은 퍼블리셔가 보냄.
+      echo "[$(date)] tistory $kind: 디자인 리뷰 보류 (rc=$rc, 5=차단·6=사람 판단, 다음 슬롯 재판정)"
+      [ "$publish_rc" -ne 0 ] || publish_rc=$rc
+      ;;
     *)
       echo "[$(date)] tistory $kind: 발행 실패 (rc=$rc, 다음 슬롯 재시도)"
       publish_rc=1

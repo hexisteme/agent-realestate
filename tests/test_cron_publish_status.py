@@ -103,6 +103,21 @@ def test_publish_results_survive_both_kinds(tmp_path, daily_rc, periodic_rc, exp
         assert f"tistory {kind}: {label}" in result.stdout
 
 
+@pytest.mark.parametrize("daily_rc,periodic_rc,expected", [
+    (5, 0, 5), (0, 5, 5), (6, 0, 6), (0, 6, 6), (5, 6, 5), (6, 5, 6),
+    (5, 1, 1), (1, 6, 1), (6, 4, 4), (4, 5, 4), (3, 5, 3), (5, 3, 5),
+])
+def test_design_review_hold_is_not_a_crash(tmp_path, daily_rc, periodic_rc, expected):
+    result, calls = _run_cron(tmp_path, daily_rc, periodic_rc)
+    assert result.returncode == expected, result.stderr
+    assert "last_resort_notification" not in calls
+    assert f"done (publish rc={expected})" in result.stdout
+    for kind, rc in (("daily", daily_rc), ("periodic", periodic_rc)):
+        if rc in (5, 6):
+            assert f"tistory {kind}: 디자인 리뷰 보류 (rc={rc}" in result.stdout
+            assert f"tistory {kind}: 발행 실패" not in result.stdout
+
+
 def test_daily_failure_without_periodic_still_fails(tmp_path):
     result, calls = _run_cron(tmp_path, daily_rc=1, periodic=False)
     assert result.returncode == 1

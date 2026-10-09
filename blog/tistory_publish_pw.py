@@ -41,6 +41,7 @@ from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
 from blog.tistory_media import MediaContractError, read_media_manifest  # noqa: E402
+from blog.tistory_design_review import grade_design_review, resolve_design_review_path  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
 
@@ -63,6 +64,11 @@ STATE_FILE = os.path.join(PROFILE_DIR, "tistory_state.json")
 PUBLISH_MARKER = ".last-tistory-published"
 ATTEMPT_MARKER = ".last-tistory-attempted"
 ALERT_MARKER = ".last-tistory-alerted"
+# 디자인 리뷰 게이트(2026-10-09): 보류 알림 nag-once 마커는 실패 알림 마커와 분리한다 —
+# 같은 날 로그인 만료 알림이 디자인 보류 알림에 가려지지 않게. 종료코드는 cron_daily.sh 가 크래시로 보지 않는다.
+DESIGN_ALERT_MARKER = ".last-tistory-design-alerted"
+DESIGN_BLOCK_EXIT = 5  # open P1 defect(check=rule) — 발행 안 함
+DESIGN_AWAIT_EXIT = 6  # 깨진·오래된 리뷰 또는 open P1 defect(check=advisory) — 사람 판단 전 발행 안 함
 # 부동산 블로그 소유 카카오 계정(비밀 아님). 공개 저장소라 값은 .env/환경변수에만 둔다.
 KAKAO_ACCOUNT_KEY = "TISTORY_KAKAO_ACCOUNT"
 
@@ -346,7 +352,8 @@ def _check_delivery(outroot: str, day: str, kind: str, data: dict, *, explicit: 
 
 def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             headless: bool = False, login_wait_s: int = 300,
-            post_id: str | None = None, kind: str = "daily", probe_relogin: bool = False) -> str:
+            post_id: str | None = None, kind: str = "daily", probe_relogin: bool = False,
+            design_review: str | None = None) -> str:
     today = datetime.date.today().isoformat()
     if kind not in {"daily", "periodic"} or mode not in {"auth", "inject", "draft", "publish"}:
         return "ERR:invalid publication mode/kind"
@@ -383,7 +390,8 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             return "SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중"
         # 마커·원격 대조·클릭을 하나의 잠금으로 묶는다.
         return _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind,
-                               explicit=bool(date), probe_relogin=probe_relogin, media=media)
+                               explicit=bool(date), probe_relogin=probe_relogin, media=media,
+                               draft_path=path, design_review=design_review)
 
 
 def pasted_anchors_present(page, anchors) -> bool:
@@ -455,8 +463,22 @@ def attach_representative_card(page, media) -> None:
         raise MediaContractError() from None
 
 
+def _gate_design_review(draft_path: str, explicit: str | None, name: str) -> str | None:
+    """발행 직전·브라우저 실행 전 디자인 리뷰 게이트(blog/tistory_design_review.py).
+
+    보류(BLOCK/AWAIT_HUMAN)면 결과 문자열을, 진행이면 None 을 돌려준다. 진행 시 로그는 한 줄만
+    출력하고 결과 문자열(log)에는 아무것도 더하지 않는다 — 리뷰 부재는 기존 발행과 같은 결과(사용자 결정)."""
+    grade = grade_design_review(resolve_design_review_path(draft_path, explicit), draft_path=draft_path)
+    if grade.result == "BLOCK":
+        return f"DESIGN_BLOCK:{name} — {grade.detail}"
+    if grade.result == "AWAIT_HUMAN":
+        return f"DESIGN_AWAIT_HUMAN:{name} — {grade.detail}"
+    print(f"[design-review] {grade.detail}", flush=True)
+    return None
+
+
 def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit,
-                    probe_relogin=False, media=None):
+                    probe_relogin=False, media=None, draft_path=None, design_review=None):
     title, body, tags = data["title"], data["body"], data["tags"]
     target_url = resolve_editor_url(post_id)
     tracked = mode == "publish" and not post_id
@@ -466,6 +488,11 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
         stopped = _check_delivery(outroot, day, kind, data, explicit=explicit, log=log)
         if stopped:
             return stopped
+    # 이미 발행·시도된 날은 위에서 끝난다. 여기부터가 실제로 원고를 공개하려는 유일한 지점이다.
+    if mode == "publish" and draft_path:
+        held = _gate_design_review(draft_path, design_review, name)
+        if held:
+            return held
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
@@ -715,7 +742,42 @@ def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> Non
         print(f"[notify] 알림 전송 실패(비치명): {type(e).__name__}")
 
 
+def _notify_design_review(detail: str, outroot: str = ".", kind: str = "daily") -> None:
+    """디자인 리뷰 보류(차단·사람 판단)를 실패 알림과 같은 경로(.env → telegram.send_message)로 알린다.
+    nag-once 는 (날짜, 사유) 단위 — 재시도 슬롯마다 같은 사유를 반복하지 않되 사유가 바뀌면 다시 알린다.
+    미설정/전송실패는 비치명(무음). 사유 문자열에는 경로·finding id·개수만 있다(시크릿 없음)."""
+    try:
+        import hashlib
+        import html
+        from agent_realestate.config import load_env_file
+        from agent_realestate.notify.telegram import send_message
+        load_env_file()
+        today = datetime.date.today().isoformat()
+        suffix = "" if kind == "daily" else f"-{kind}"
+        alert_marker = os.path.join(outroot, DESIGN_ALERT_MARKER + suffix)
+        stamp = f"{today} {hashlib.sha256(detail.encode('utf-8')).hexdigest()[:16]}"
+        if _read_marker(alert_marker) == stamp:
+            print("[notify] 같은 디자인 리뷰 보류 알림을 오늘 이미 발송 — skip (nag-once)")
+            return
+        held = "차단" if detail.startswith("DESIGN_BLOCK:") else "사람 판단 대기"
+        sent = send_message(
+            f"<b>티스토리 발행 보류 — 디자인 리뷰 {held}</b> — {today} ({kind})\n"
+            f"<code>{html.escape(detail[:600])}</code>\n"
+            f"성공 마커를 쓰지 않았다. 리뷰를 고친 뒤(수정 후 재검증 fixed, 또는 사람이 waived+waiver_reason) "
+            f"다음 재시도 슬롯이 다시 판정한다.")
+        if sent:
+            with open(alert_marker, "w", encoding="utf-8") as out:
+                out.write(stamp)
+    except Exception as e:
+        print(f"[notify] 알림 전송 실패(비치명): {type(e).__name__}")
+
+
 def result_exit_code(result: str, mode: str) -> int:
+    # 디자인 리뷰 보류는 접두로 먼저 가른다 — 사유에 리뷰 파일 경로·finding id 가 실려 "ERR:" 문자열과 섞일 수 있다.
+    if result.startswith("DESIGN_BLOCK:"):
+        return DESIGN_BLOCK_EXIT
+    if result.startswith("DESIGN_AWAIT_HUMAN:"):
+        return DESIGN_AWAIT_EXIT
     if "ERR:" in result or "MARKER_FAIL" in result or "STATE_SAVE_FAIL" in result:
         return 1
     if result.startswith("AWAIT_REVIEW:"):
@@ -754,6 +816,8 @@ def main():
     ap.add_argument("--pending", action="store_true", help="일간 누락 원고를 오래된 순서로 최대 2건 복구")
     ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
     ap.add_argument("--probe-relogin", action="store_true", help="auth 전용: 별도 메모리 컨텍스트에서 티스토리 세션 만료 후 SSO 검증")
+    ap.add_argument("--design-review", help="publish 전용: design_review.json 경로 "
+                    "(기본: 원고 옆 <원고>.design_review.json, 없으면 게이트 미실행·비차단)")
     a = ap.parse_args()
     if a.kind not in {"daily", "periodic"}:
         ap.error("--kind 는 daily 또는 periodic")
@@ -761,13 +825,16 @@ def main():
         ap.error("--pending 은 날짜/글번호 없는 daily publish 전용")
     if a.probe_relogin and a.mode != "auth":
         ap.error("--probe-relogin 은 auth 전용")
+    if a.design_review and a.mode != "publish":
+        ap.error("--design-review 는 publish 전용")
     dates = pending_dates(a.outroot, datetime.date.today().isoformat()) if a.pending else [a.date]
     if not dates:
         dates = [None]  # 원고 부재/stale를 성공으로 숨기지 않는다.
     for stamp in dates:
         try:
             result = publish(a.outroot, a.mode, stamp, headless=a.headless, login_wait_s=a.login_wait,
-                             post_id=a.post_id, kind=a.kind, probe_relogin=a.probe_relogin)
+                             post_id=a.post_id, kind=a.kind, probe_relogin=a.probe_relogin,
+                             design_review=a.design_review)
         except Exception as e:
             # Playwright 예외/URL에는 인증 토큰이 있을 수 있어 종류만 출력한다.
             result = f"ERR:exception:{type(e).__name__}"
@@ -775,6 +842,8 @@ def main():
         rc = result_exit_code(result, a.mode)
         if rc == 1 and a.mode == "publish" and not a.no_notify:
             _notify_failure(result, a.outroot, kind=a.kind)
+        if rc in (DESIGN_BLOCK_EXIT, DESIGN_AWAIT_EXIT) and not a.no_notify:
+            _notify_design_review(result, a.outroot, kind=a.kind)
         if rc:
             return rc
     return 0
