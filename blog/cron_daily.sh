@@ -108,9 +108,19 @@ publish_kind() {
       ;;
   esac
 }
+# 발행 전 디자인 리뷰 자동 작성(2026-10-10 사용자 결정): 측정(axe·가로 넘침)은 결정론, 해석은 Codex(무인 엔진).
+# 원고 옆 <원고>.design_review.json 을 쓰고 퍼블리셔 게이트가 읽는다. 같은 원고의 리뷰가 있으면 재사용(Codex 재호출 없음).
+# 실패해도 발행은 진행한다 — 리뷰가 없으면 게이트는 NOT_RUN(비차단)이다.
+author_review() {
+  local rc=0
+  python3 blog/draft_design_review.py "$@" || rc=$?
+  [ "$rc" -eq 0 ] || echo "[$(date)] 디자인 리뷰 작성 실패 (rc=$rc) — 게이트 미실행 상태로 발행 진행"
+}
+author_review --pending
 publish_kind daily --pending
 # 2편째: 주간결산/월간결산(일요일에만 원고가 생긴다). daily 마커와 독립(.last-tistory-published-periodic).
 if periodic_pending; then
+  author_review --kind periodic
   publish_kind periodic --kind periodic
 fi
 echo "[$(date)] done (publish rc=$publish_rc)"

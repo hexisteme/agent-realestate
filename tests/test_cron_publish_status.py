@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _run_cron(tmp_path, daily_rc=0, periodic_rc=0, *, periodic=True,
-              build_rc=0, already_published=False):
+              build_rc=0, already_published=False, review_rc=0):
     root = tmp_path / "root"
     root.mkdir()
     bins = tmp_path / "bin"
@@ -50,6 +50,10 @@ if [ "$1" = '-m' ]; then
   printf '%s\\n' 'build_daily' >> "$STUB_CALLS"
   exit "$STUB_BUILD_RC"
 fi
+if [ "$1" = 'blog/draft_design_review.py' ]; then
+  printf '%s\\n' "review $*" >> "$STUB_CALLS"
+  exit "$STUB_REVIEW_RC"
+fi
 if [ "$1" != 'blog/tistory_publish_pw.py' ]; then exit 98; fi
 printf '%s\\n' "publish $*" >> "$STUB_CALLS"
 case " $* " in
@@ -72,6 +76,7 @@ esac
         "STUB_DAILY_RC": str(daily_rc),
         "STUB_PERIODIC_RC": str(periodic_rc),
         "STUB_BUILD_RC": str(build_rc),
+        "STUB_REVIEW_RC": str(review_rc),
         "AGENT_REALESTATE_ROOT": str(root),
         "LC_ALL": "C",
     }
@@ -137,3 +142,15 @@ def test_existing_success_guard_skips_without_children(tmp_path):
     assert result.returncode == 0
     assert calls == []
     assert "멱등 가드" in result.stdout
+
+
+@pytest.mark.parametrize("review_rc", [0, 1])
+def test_design_review_is_authored_before_each_publish(tmp_path, review_rc):
+    result, calls = _run_cron(tmp_path, review_rc=review_rc)
+    children = [line for line in calls if line.startswith(("review ", "publish "))]
+    assert [line.split()[0] for line in children] == ["review", "publish", "review", "publish"]
+    assert " --pending" in children[0] and " --pending" in children[1]
+    assert " --kind periodic" in children[2] and " --kind periodic" in children[3]
+    assert result.returncode == 0, result.stderr
+    assert "last_resort_notification" not in calls
+    assert ("디자인 리뷰 작성 실패 (rc=1)" in result.stdout) is (review_rc == 1)
