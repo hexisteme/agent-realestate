@@ -11,8 +11,8 @@
   kr_govt10y_m     국고채 10년(월평균, OECD 경유 1~2개월 지연) FRED IRLTLT01KRM156N              monthly
   kr_govt3y · cd91 국고채 3년 · CD 91일                    금융투자협회 고시(네이버금융 일별 표)   daily
   cofix_new/bal    코픽스 신규취급액/잔액기준              은행연합회 공시(네이버금융 일별 표)     monthly(step)
-  gold_krw_g       국내 금 매매기준율(원/g)                네이버금융 금 시세 표(은행 고시)        daily
-  gold_usd_oz      국제 금($/oz)                           같은 표 '기준 국제 금 시세'             daily
+  gold_krw_g       국내 금 기준가격(우리은행, 원/g)         우리은행 공식 골드뱅킹 일별 기준가격    daily
+  gold_usd_oz      국제 금(우리은행 기준 시세, $/oz)        같은 표 금가격(USD/트로이온스)          daily
   usdkrw           원/달러 매매기준율                      네이버금융 환율 표(은행 고시)           daily
 
 규약
@@ -29,10 +29,12 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import os
 import re
 import time
 import urllib.request
+from urllib.parse import urlencode
 from datetime import date, datetime, timedelta
 
 from agent_realestate import config
@@ -181,15 +183,26 @@ def parse_ecos_json(text: str) -> list[tuple[str, float]]:
         code = str((obj.get("RESULT") or {}).get("CODE", ""))
         raise EcosResponseError(f"ECOS 응답 오류 코드 {code if _ECOS_CODE.fullmatch(code) else '?'}")   # 형식 밖 문자열은 응답 원문 → 싣지 않는다
     out = []
+    seen = set()
     for r in obj["StatisticSearch"].get("row", []):
         t, v = str(r.get("TIME", "")), r.get("DATA_VALUE")
         if v in (None, "") or len(t) not in (4, 6, 8):
             continue
         d = t[:4] + "-" + (t[4:6] if len(t) >= 6 else "01") + "-" + (t[6:8] if len(t) == 8 else "01")
         try:
-            out.append((d, float(v)))
+            value = float(v)
+            if not math.isfinite(value):
+                raise ValueError
         except (TypeError, ValueError):
-            raise EcosResponseError("ECOS DATA_VALUE 가 숫자가 아님") from None                 # float() 메시지는 원문을 되풀이한다
+            raise EcosResponseError("ECOS DATA_VALUE 가 숫자가 아님") from None
+        try:
+            date.fromisoformat(d)
+            if d in seen:
+                raise ValueError
+        except ValueError:
+            raise EcosResponseError("ECOS 관측 날짜/중복 오류") from None
+        seen.add(d)
+        out.append((d, value))
     return sorted(out)
 
 
@@ -290,16 +303,29 @@ ECOS_PAGE = "https://ecos.bok.or.kr/"                          # 카드 출처 �
 ECOS_SERIES = {  # code: (stat, item, cycle) — 2026-09-07 통계코드검색: 기준금리 722Y001(D) · M2 평잔·계절조정 161Y005/BBHS00(M, 2003-10~, 십억원)
     "bok_base_ecos": ("722Y001", "0101000", "D"),
     "kr_m2": ("161Y005", "BBHS00", "M"),
+    "kr_mortgage_new": ("121Y006", "BECBLA0302", "M"),
+    "seoul_apt_sale": ("901Y149", "01/a7", "M"),
+    "seoul_apt_jeonse": ("901Y150", "01/a7", "M"),
+    "seoul_unsold": ("901Y074", "I410B", "M"),
 }
 ECOS_INDICATORS = {  # 일간 수집(키 있을 때만, 월별 주기만): code → (label, unit, freq)
     "kr_m2": ("한국 M2(평잔·계절조정)", "십억원", "monthly"),
+    "kr_mortgage_new": ("주택담보대출 금리(전국·신규취급)", "%", "monthly"),
+    "seoul_apt_sale": ("서울 아파트 매매가격지수", "2026.06=100", "monthly"),
+    "seoul_apt_jeonse": ("서울 아파트 전세가격지수", "2026.06=100", "monthly"),
+    "seoul_unsold": ("서울 미분양 주택", "호", "monthly"),
 }
+ECOS_EXPECTED_UNITS = {"kr_mortgage_new": "연리%", "seoul_apt_sale": "2026.06=100",
+                       "seoul_apt_jeonse": "2026.06=100", "seoul_unsold": "호"}
+ECOS_FALLBACKS = {"kr_govt3y": ("817Y002", "010200000", "연%"),
+                  "cd91": ("817Y002", "010502000", "연%"),
+                  "usdkrw": ("731Y001", "0000001", "원")}
 ECOS_MONTHLY_START = "200001"                                 # 통계 시작 이전이면 ECOS 가 시작 시점부터 돌려준다(161Y005: 273행·82KB, 2026-09-07 실측)
 _load_env_file = config.load_env_file
 
 
 def fetch_ecos_series(stat: str, item: str, cycle: str, start: str, end: str,
-                      fetch=fetch_text, n: int = 1000) -> list[tuple[str, float]]:
+                      fetch=fetch_text, n: int = 1000, expected_unit: str | None = None) -> list[tuple[str, float]]:
     """ECOS StatisticSearch — 키는 환경변수에서만. 키가 든 URL 과 원 예외는 밖으로 내지 않는다."""
     _load_env_file()
     key = os.environ.get("ECOS_API_KEY")
@@ -311,6 +337,15 @@ def fetch_ecos_series(stat: str, item: str, cycle: str, start: str, end: str,
     except Exception as e:                                    # noqa: BLE001
         raise RuntimeError(f"ECOS 요청 실패({type(e).__name__})") from None
     try:
+        if expected_unit is not None:
+            rows = json.loads(text).get("StatisticSearch", {}).get("row", [])
+            codes = item.split("/")
+            for row in rows:
+                if (row.get("STAT_CODE") != stat or row.get("UNIT_NAME") != expected_unit
+                        or any(row.get(f"ITEM_CODE{i}") != code for i, code in enumerate(codes, 1))
+                        or not re.fullmatch(r"\d{6}" if cycle == "M" else r"\d{8}", str(row.get("TIME", "")))
+                        or not start <= row["TIME"] <= end):
+                    raise EcosResponseError("ECOS 지표 범위/단위/기간 불일치")
         return parse_ecos_json(text)
     except EcosResponseError as e:                            # 고정 문구·화이트리스트 코드만 담긴 메시지
         raise RuntimeError(f"ECOS 응답 해석 실패({e})") from None
@@ -319,6 +354,59 @@ def fetch_ecos_series(stat: str, item: str, cycle: str, start: str, end: str,
 
 
 # ── 수집 오케스트레이션 ─────────────────────────────────────────────────────────
+RONE_SALES_URL = "https://www.reb.or.kr/r-one/openapi/SttsApiTblData.do"
+VISUAL_FIRST_SALES_MONTHS = 26  # 대시보드 24개월 + 공표 지연 약 2개월(확인일 기준 창이 미공표 달을 포함)
+
+
+def fetch_seoul_apt_sales(today: str, fetch=fetch_text, months: int = 5) -> list[tuple[str, float]]:
+    """R-ONE 공개 샘플은 요청당 5행 — months 를 5개월 창으로 나눠 요청하고 창마다 완전성을 검증한다.
+
+    한 창이라도 범위·건수·단위 검증에 실패하면 전체 시계열을 버린다(부분 시계열 발행 금지)."""
+    end = date.fromisoformat(today)
+    last = end.year * 12 + end.month - 1
+    first = last - (max(months, 1) - 1)
+    out: dict[str, tuple[str, float]] = {}
+    # 창은 이번 달부터 거꾸로 자른다 — 맨 끝 창이 늘 기본 단일 창과 같아 미공표 달만 든 빈 창이 생기지 않는다.
+    windows = sorted((max(hi - 4, first), hi) for hi in range(last, first - 1, -5))
+    for lo, hi in windows:
+        window = _fetch_rone_sales_window(f"{lo // 12:04d}{lo % 12 + 1:02d}",
+                                          f"{hi // 12:04d}{hi % 12 + 1:02d}", fetch)
+        if out.keys() & window.keys():
+            raise RuntimeError("R-ONE 매매거래량 수집/범위 검증 실패(중복 월)")
+        out.update(window)
+    return [out[month] for month in sorted(out)]
+
+
+def _fetch_rone_sales_window(start: str, finish: str, fetch) -> dict[str, tuple[str, float]]:
+    """5개월 이하 창 1회 요청 — 기존 단일 창 검증 규칙 그대로."""
+    query = urlencode({"Type": "json", "STATBL_ID": "A_2024_00554", "DTACYCLE_CD": "MM",
+                       "CLS_ID": "500002", "ITM_ID": "100001", "START_WRTTIME": start,
+                       "END_WRTTIME": finish, "pIndex": "1", "pSize": "5"})
+    try:
+        blocks = json.loads(fetch(RONE_SALES_URL + "?" + query)).get("SttsApiTblData", [])
+        heads = [head for block in blocks for head in block.get("head", [])]
+        rows = [row for block in blocks for row in block.get("row", [])]
+        total = next(head["list_total_count"] for head in heads if "list_total_count" in head)
+        if (not rows or int(total) != len(rows) or len(rows) > 5
+                or not any(head.get("RESULT", {}).get("CODE") == "INFO-000" for head in heads)):
+            raise ValueError
+        out = {}
+        for row in rows:
+            month = str(row["WRTTIME_IDTFR_ID"])
+            value = float(row["DTA_VAL"])
+            if (row["STATBL_ID"] != "A_2024_00554" or str(row["CLS_ID"]) != "500002"
+                    or str(row["ITM_ID"]) != "100001" or row["DTACYCLE_CD"] != "MM"
+                    or row["UI_NM"] != "호수" or not re.fullmatch(r"\d{6}", month)
+                    or not start <= month <= finish or month in out
+                    or not math.isfinite(value) or value < 0 or not value.is_integer()):
+                raise ValueError
+            observed = date.fromisoformat(month[:4] + "-" + month[4:] + "-01").isoformat()
+            out[month] = (observed, value)
+        return out
+    except Exception as exc:
+        raise RuntimeError(f"R-ONE 매매거래량 수집/범위 검증 실패({type(exc).__name__})") from None
+
+
 def _reason(e: Exception) -> str:
     return f"{type(e).__name__}: {str(e)[:80]}"
 
@@ -347,7 +435,11 @@ def collect_macro(today: str, prev: dict | None = None, fetch=fetch_text, naver_
     def _put(code, label, unit, freq, source, url, series, series_kind="observations"):
         if not series:
             raise ValueError("새 관측 없음(빈 표)")                  # 이전 이력만으로 '수집 성공' 이 되지 않게
-        merged = merge_series((prev_ind.get(code) or {}).get("series") or [], series)
+        prior = prev_ind.get(code) or {}
+        # A replacement source can use another observation date/frequency definition.
+        same_definition = (prior.get("source"), prior.get("unit"), prior.get("freq"), prior.get("series_kind", "observations")) == (source, unit, freq, series_kind)
+        history = (prior.get("series") or []) if same_definition else []
+        merged = merge_series(history, series)
         ind[code] = build_indicator(code, label, unit, freq, source, url, merged, series_kind)
 
     try:
@@ -364,7 +456,8 @@ def collect_macro(today: str, prev: dict | None = None, fetch=fetch_text, naver_
         stat, item, cycle = ECOS_SERIES[code]
         try:
             _put(code, label, unit, freq, f"한국은행 ECOS {stat}/{item}", ECOS_PAGE,
-                 fetch_ecos_series(stat, item, cycle, ECOS_MONTHLY_START, today.replace("-", "")[:6], fetch=fetch))
+                 fetch_ecos_series(stat, item, cycle, ECOS_MONTHLY_START, today.replace("-", "")[:6], fetch=fetch,
+                                   expected_unit=ECOS_EXPECTED_UNITS.get(code)))
         except MacroSourceMissing:
             continue                                          # 키 없음 = 출처 없음 → errors 에도 남기지 않고 생략
         except Exception as e:                                # noqa: BLE001
@@ -376,18 +469,16 @@ def collect_macro(today: str, prev: dict | None = None, fetch=fetch_text, naver_
         except Exception as e:                                # noqa: BLE001
             errors[code] = _reason(e)
     try:
-        gold: dict[str, dict[str, float]] = {"gold_krw_g": {}, "gold_usd_oz": {}}
-        for p in range(1, pages + 1):
-            parsed = parse_naver_gold(fetch(NAVER_GOLD.format(page=p), NAVER_ENCODING))
-            fresh = [(d, v) for d, v in parsed["gold_krw_g"] if d not in gold["gold_krw_g"]]
-            if not fresh:
-                break
-            for k in gold:
-                gold[k].update(parsed[k])
-            if p < pages and PAGE_DELAY_S:
-                time.sleep(PAGE_DELAY_S)
-        _put("gold_krw_g", "국내 금 매매기준율(원/g)", "원/g", "daily", "네이버금융 금 시세(은행 고시)", NAVER_GOLD.format(page=1), sorted(gold["gold_krw_g"].items()))
-        _put("gold_usd_oz", "국제 금($/oz)", "$/oz", "daily", "네이버금융 금 시세 '기준 국제 금 시세'", NAVER_GOLD.format(page=1), sorted(gold["gold_usd_oz"].items()))
+        _put("seoul_apt_sales", "서울 아파트 매매거래량", "호", "monthly", "한국부동산원 R-ONE A_2024_00554/서울/동(호)수",
+             "https://www.reb.or.kr/r-one/portal/stat/easyStatPage.do",
+             fetch_seoul_apt_sales(today, fetch=fetch, months=VISUAL_FIRST_SALES_MONTHS if config.visual_first_enabled() else 5))
+    except Exception as e:
+        errors["seoul_apt_sales"] = _reason(e)
+    try:
+        from agent_realestate.collectors.macro_gold import GOLD_PAGE, GOLD_SOURCE_KRW, GOLD_SOURCE_USD, fetch_woori_gold
+        gold = fetch_woori_gold(today, fetch)
+        _put("gold_krw_g", "국내 금 기준가격(우리은행, 원/g)", "원/g", "daily", GOLD_SOURCE_KRW, GOLD_PAGE, gold["gold_krw_g"])
+        _put("gold_usd_oz", "국제 금(우리은행 기준 시세, $/oz)", "$/oz", "daily", GOLD_SOURCE_USD, GOLD_PAGE, gold["gold_usd_oz"])
     except Exception as e:                                    # noqa: BLE001
         errors["gold_krw_g"] = errors["gold_usd_oz"] = _reason(e)
     try:
@@ -395,6 +486,33 @@ def collect_macro(today: str, prev: dict | None = None, fetch=fetch_text, naver_
              _naver_pages(lambda p: fetch(NAVER_FX.format(page=p), NAVER_ENCODING), parse_naver_fx, pages))
     except Exception as e:                                    # noqa: BLE001
         errors["usdkrw"] = _reason(e)
+    for code, (stat, item, expected_unit) in ECOS_FALLBACKS.items():
+        if code in ind:
+            continue
+        try:
+            series = fetch_ecos_series(stat, item, "D", (date.fromisoformat(today) - timedelta(days=400)).strftime("%Y%m%d"),
+                                       today.replace("-", ""), fetch=fetch, expected_unit=expected_unit)
+            label = "원/달러 매매기준율" if code == "usdkrw" else NAVER_INTEREST_SERIES[code][1]
+            _put(code, label, "원" if code == "usdkrw" else "%", "daily", f"한국은행 ECOS {stat}/{item}", ECOS_PAGE, series)
+            errors.pop(code, None)
+        except MacroSourceMissing:
+            pass
+        except Exception as e:
+            errors[code] = _reason(e)
+    if "cofix_new" not in ind or "cofix_bal" not in ind:
+        try:
+            from agent_realestate.collectors.macro_sources import COFIX_URL, fetch_cofix_series
+            official = fetch_cofix_series(fetch)
+            for code in ("cofix_new", "cofix_bal"):
+                if code not in ind:
+                    eligible = [(d, v) for d, v in official[code] if d <= today]
+                    _put(code, NAVER_INTEREST_SERIES[code][1], "%", "monthly", "은행연합회 공식 COFIX 공시표",
+                         COFIX_URL, eligible)
+                    errors.pop(code, None)
+        except Exception as e:
+            for code in ("cofix_new", "cofix_bal"):
+                if code not in ind:
+                    errors[code] = errors.get(code, "수집 실패") + f"; 공식 표 {type(e).__name__}"
     carried = {c: v for c, v in prev_ind.items() if c not in ind}   # 이번에 실패한 지표의 마지막 성공 이력(카드에는 쓰지 않음)
     return {"asof": today, "collected_at": datetime.now().isoformat(timespec="seconds"),
             "indicators": ind, "errors": errors, "carried": carried, "n_ok": len(ind)}

@@ -194,8 +194,8 @@ class CardCanvas:
         return self._fonts[key]
 
     def text(self, value: str, box: tuple[int, int, int, int], *, size: int = 28,
-             fill: str = "#ffffff", bold: bool = False, min_size: int | None = None) -> None:
-        """박스 밖으로 넘치지 않게 폰트를 줄인 뒤 끝 문자를 생략한다."""
+             fill: str = "#ffffff", bold: bool = False, min_size: int | None = None, center: bool = False) -> None:
+        """박스 밖으로 넘치지 않게 폰트를 줄인 뒤 끝 문자를 생략한다. center=True 는 박스 안 가로 가운데 정렬."""
         left, top, right, bottom = box
         if not (0 <= left < right <= CARD_WIDTH and 0 <= top < bottom <= CARD_HEIGHT):
             raise ValueError("대표 카드 텍스트 박스가 캔버스 경계를 벗어났습니다.")
@@ -215,8 +215,10 @@ class CardCanvas:
         height = measured[3] - measured[1]
         if height > bottom - top:
             raise ValueError("대표 카드 텍스트 높이가 지정 박스를 초과했습니다.")
-        self.draw.text((left - measured[0], top - measured[1]), value, font=chosen, fill=fill)
-        rendered = (left, top, left + measured[2] - measured[0], top + height)
+        width = measured[2] - measured[0]
+        x = left + ((right - left) - width) // 2 if center else left
+        self.draw.text((x - measured[0], top - measured[1]), value, font=chosen, fill=fill)
+        rendered = (x, top, x + width, top + height)
         self.text_boxes.append(rendered)
 
     def png_bytes(self) -> bytes:
@@ -232,9 +234,35 @@ def format_card_count(value: int | None, unit: str = "") -> str:
     return "미확인" if value is None else f"{value:,}{unit}"
 
 
-def draw_daily_card(data: DailyCardData, font_path: Path) -> CardCanvas:
-    """큰 숫자형 관측 범위 카드를 렌더한다."""
+def _draw_cover_safe_card(data: DailyCardData, card: CardCanvas) -> CardCanvas:
+    """커버 안전 배치(2026-10-10) — 스킨이 가로 중앙 48~55%만 남기고 세로 50% 아래에 제목을 겹치므로
+    브랜드·관측 단지 수·상승/하락을 x 312~888, y 300 이내 가운데에 둔다. 아래쪽은 링크 미리보기용 보조 정보."""
+    card.draw.rectangle((0, 0, 1200, 9), fill="#2dd4bf")
+    card.text(CARD_BRAND, (312, 40, 888, 76), size=26, fill="#c7d6e2", bold=True, center=True)
+    card.text("오늘 관측 단지", (312, 98, 888, 134), size=32, fill="#c7d6e2", center=True)
+    card.text(format_card_count(data.complex_count), (312, 146, 888, 240),
+              size=100, min_size=46, fill="#5eead4", bold=True, center=True)
+    card.text(f"상승 {format_card_count(data.up_count)} · 하락 {format_card_count(data.down_count)}",
+              (312, 254, 888, 296), size=36, bold=True, center=True)
+    card.draw.line((56, 330, 1144, 330), fill="#294356", width=2)
+    card.text(f"대표면적 실거래 표본 {format_card_count(data.sample_count, '건')}", (56, 362, 1144, 400),
+              size=30, fill="#c7d6e2", center=True)
+    card.text("상승·하락은 각 단지의 비교기간 거래 중위값 기준", (56, 414, 1144, 442), size=22,
+              fill="#a6bfcd", center=True)
+    card.draw.line((56, 511, 1144, 511), fill="#294356", width=2)
+    card.text(f"관측일 {data.observed_date}  ·  데이터 기준 {data.data_asof}",
+              (56, 530, 1144, 564), size=25, fill="#c7d6e2")
+    card.text(CARD_SOURCE, (56, 581, 589, 608), size=21, fill="#9ab2c3")
+    card.text("입력 일부 미확인 · 원문 확인 필요" if data.issues else CARD_NOTICE,
+              (594, 581, 1144, 608), size=21, fill="#9ab2c3")
+    return card
+
+
+def draw_daily_card(data: DailyCardData, font_path: Path, cover_safe: bool = False) -> CardCanvas:
+    """큰 숫자형 관측 범위 카드를 렌더한다. cover_safe=True 는 시각 우선 글의 커버 안전 배치."""
     card = CardCanvas(font_path)
+    if cover_safe:
+        return _draw_cover_safe_card(data, card)
     card.draw.rectangle((0, 0, 1200, 9), fill="#2dd4bf")
     card.text(CARD_BRAND, (56, 39, 1030, 78), size=28, bold=True)
     card.draw.line((56, 99, 1144, 99), fill="#294356", width=2)
@@ -285,11 +313,11 @@ def _write_card_bytes(output_dir: Path, file_name: str, payload: bytes) -> Path:
 
 def build_daily_card(ds: Mapping[str, Any], output_dir: str | Path, *,
                      today: str | None = None, asof: str | None = None,
-                     font_path: str | Path | None = None) -> ThumbnailCard:
+                     font_path: str | Path | None = None, cover_safe: bool = False) -> ThumbnailCard:
     """일간 데이터 → 폰트 검증 → 정확 조판 → 해시를 포함한 원자적 PNG 출력."""
     data = prepare_daily_card(ds, today=today, asof=asof)
     font = _resolve_font(font_path)
-    payload = draw_daily_card(data, font).png_bytes()
+    payload = draw_daily_card(data, font, cover_safe=cover_safe).png_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     file_date = data.observed_date if data.observed_date != "미확인" else "undated"
     name = f"daily-{file_date}-{digest[:16]}.png"

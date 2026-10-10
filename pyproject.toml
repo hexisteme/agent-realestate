@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "beautifulsoup4>=4.12", "playwright>=1.60,<2"]
 blog = ["Pillow>=10.4,<13"]
 
 [project.scripts]

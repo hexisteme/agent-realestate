@@ -34,3 +34,29 @@ def test_attach_inventory_missing_is_explicit_and_does_not_add_source(tmp_path):
     assert out["listing_inventory"]["status"] == "missing"
     assert out["listing_inventory"]["fresh"] is False
     assert out["sources"] == []
+
+
+def test_collect_daily_support_persists_snapshot_for_site_build(tmp_path, monkeypatch):
+    """A daily run must persist the same dated support input that its detail page loads."""
+    import json
+    from agent_realestate.collectors import housing_support
+    from blog import run_daily
+    payload = {"schema_version": 1, "target_date": "2026-10-03", "collected_at": None,
+               "sources": {}, "notices": [], "errors": {}}
+    monkeypatch.setattr(housing_support, "collect_housing_support", lambda *args, **kwargs: payload)
+    result = run_daily.collect_daily_housing_support("2026-10-03", str(tmp_path))
+    assert result["target_date"] == "2026-10-03"
+    persisted = json.loads((tmp_path / "snapshots/housing-support/support-2026-10-03.json").read_text())
+    assert persisted["schema_version"] == 1 and persisted["target_date"] == "2026-10-03"
+
+
+def test_collect_daily_support_failure_is_visible_and_redacts_error_detail(tmp_path, monkeypatch, capsys):
+    from agent_realestate.collectors import housing_support
+    from blog import run_daily
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("TEST_PRIVATE_FAILURE_DETAIL")
+    monkeypatch.setattr(housing_support, "collect_housing_support", unavailable)
+    result = run_daily.collect_daily_housing_support("2026-10-03", str(tmp_path))
+    assert result["target_date"] == "2026-10-03"
+    assert result["notices"] == [] and result["errors"]
+    assert "TEST_PRIVATE_FAILURE_DETAIL" not in capsys.readouterr().out

@@ -5,18 +5,14 @@ from io import BytesIO
 
 import pytest
 from PIL import Image
-from playwright.sync_api import sync_playwright
 
 from blog.tistory_media import DraftMedia, MediaContractError
 from blog.tistory_publish_pw import attach_representative_card, pasted_anchors_present
 
 
 @pytest.fixture(scope="module")
-def browser():
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch()
-        yield browser
-        browser.close()
+def browser(required_browser):
+    return required_browser
 
 
 @pytest.fixture
@@ -32,8 +28,8 @@ def dialog(page, *, count=1, preview="img"):
       <input id="tagText" value="original tags">
       <iframe id="editor-tistory_ifr" srcdoc="<body>original body</body>"></iframe>
       <button id="publish-btn">공개발행</button>'''
-      + '<div class="inner_box"><input type="file" accept="image/*" class="inp_g">'
-        '<i class="mce-ico ico_attach"></i><span class="txt_thumb">대표이미지 추가</span></div>' * count)
+      + '<div class="box_thumb"><div class="inner_box"><input type="file" accept="image/*" class="inp_g">'
+        '<i class="mce-ico ico_attach"></i><span class="txt_thumb">대표이미지 추가</span></div></div>' * count)
     page.evaluate('''(preview) => {
       for(const input of document.querySelectorAll('input[type=file]')) {
         input.addEventListener('change', () => {
@@ -77,12 +73,71 @@ def test_every_anchor_required_in_actual_iframe(browser, text, expected):
         page.close()
 
 
+@pytest.mark.parametrize("loaded", [True, False])
+def test_native_upload_removes_input_before_thumbnail_preview(browser, media, loaded):
+    """Live Tistory replaces the file input with thumb_g and its delete button."""
+    page = browser.new_page()
+    try:
+        dialog(page, preview="none")
+        page.evaluate('''loaded => {
+            const input = document.querySelector('input[type=file]');
+            input.addEventListener('change', () => {
+                const file = input.files[0];
+                window.selected = {name:file.name, type:file.type, size:file.size};
+                const thumb = document.createElement('span');
+                thumb.className = 'thumb_g';
+                thumb.style.backgroundImage = `url("${loaded ? URL.createObjectURL(file) : 'data:image/png;base64,broken'}")`;
+                const remove = document.createElement('button');
+                remove.className = 'mce-ico ico_delete';
+                remove.textContent = '삭제';
+                // A loaded delete icon must not stand in for a broken thumbnail.
+                remove.style.backgroundImage = `url("${URL.createObjectURL(file)}")`;
+                thumb.append(remove);
+                input.parentElement.replaceChildren(thumb);
+            });
+        }''', loaded)
+        if loaded:
+            attach_representative_card(page, media)
+            assert page.locator('input[type=file]').count() == 0
+            assert page.locator('.box_thumb .thumb_g').count() == 1
+            assert page.evaluate('window.selected') == {"name": "card.png", "type": "image/png", "size": len(media.image_bytes)}
+            assert page.locator('#post-title-inp').input_value() == 'original title'
+            assert page.frame_locator('iframe').locator('body').inner_text() == 'original body'
+        else:
+            with pytest.raises(MediaContractError):
+                attach_representative_card(page, media)
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("count,preview", [(0, "img"), (2, "img"), (1, "none")])
 def test_missing_ambiguous_or_no_preview_fails_closed(browser, media, count, preview):
     page = browser.new_page()
     try:
         dialog(page, count=count, preview=preview)
         page.set_default_timeout(250)
+        with pytest.raises(MediaContractError):
+            attach_representative_card(page, media)
+    finally:
+        page.close()
+
+
+def test_unrelated_replacement_wrapper_cannot_confirm_selected_upload(browser, media):
+    page = browser.new_page()
+    try:
+        dialog(page, preview="none")
+        page.evaluate('''() => {
+            const input = document.querySelector('input[type=file]');
+            input.addEventListener('change', () => {
+                const url = URL.createObjectURL(input.files[0]);
+                const selected = input.closest('.box_thumb');
+                const unrelated = document.createElement('div');
+                unrelated.className = 'box_thumb';
+                unrelated.innerHTML = '<div class="inner_box"><span class="thumb_g"></span></div>';
+                unrelated.querySelector('.thumb_g').style.backgroundImage = `url("${url}")`;
+                selected.replaceWith(unrelated);
+            });
+        }''')
         with pytest.raises(MediaContractError):
             attach_representative_card(page, media)
     finally:

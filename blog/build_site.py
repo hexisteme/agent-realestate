@@ -30,6 +30,34 @@ def _daily_media_meta(today: str) -> tuple[str, str]:
     relative = f"images/{destination.name}"
     return social_meta(BASE_URL, relative, media.alt), relative
 
+def _daily_body_media(today: str) -> list[str]:
+    """시각 우선 글의 본문 이미지 — 원고 계약(sidecar)으로 검증된 바이트만 site/images 에 복사한다.
+    꺼진 경로는 sidecar 가 없어 원고를 파싱하지 않는다(대표 카드 _daily_media_meta 와 같은 관문).
+    오늘 계약이 깨졌으면 멈추고, 지난날 계약은 검증되는 것만 복사한다 — 새 출력 디렉터리 재빌드에서도
+    지난 일간 페이지의 그래프가 깨지지 않게."""
+    from blog.body_media import BodyMediaError, read_body_media
+    from blog.tistory_contract import parse_helper
+    copied = []
+    suffix = "-tistory-draft.body-media.json"
+    for sidecar in sorted(Path(SRC, "tistory").glob(f"*{suffix}")):
+        day = sidecar.name[:-len(suffix)]
+        if day > today:
+            continue
+        helper = sidecar.parent / f"{day}-tistory-draft.html"
+        try:
+            images = read_body_media(helper, parse_helper(helper)) or []
+        except Exception:
+            if day == today:
+                raise BodyMediaError() from None
+            continue
+        for image in images:
+            destination = Path(SITE) / "images" / image.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not destination.exists() or destination.read_bytes() != image.image_bytes:
+                destination.write_bytes(image.image_bytes)
+            copied.append(f"images/{image.name}")
+    return copied
+
 # BLOG_SITE_DIR/BLOG_SRC_DIR(2026-09-05 P1) — 미설정 시 기존 경로 그대로(회귀 없음). 테스트·검증용
 # 스크래치 빌드가 실제 site/ 를 건드리지 않도록 오버라이드 지점을 연다.
 SITE=os.environ.get("BLOG_SITE_DIR","site"); SRC=os.environ.get("BLOG_SRC_DIR","report/blog")
@@ -141,6 +169,7 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
     os.makedirs(f"{SITE}/gu",exist_ok=True)
     os.makedirs(f"{SITE}/daily",exist_ok=True)
     card_meta, card_relative = _daily_media_meta(today)
+    _daily_body_media(today)
     source_dated=f"{SRC}/daily/{today}.html"
     source_latest=f"{SRC}/daily/latest.html"
     if os.path.exists(source_dated) and os.path.exists(source_latest):
@@ -264,6 +293,8 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
         '<p>왜 이 숫자를 믿을 수 있나 — 측정·출처·한계</p></a>'
         f'<a class=card href="macro.html" {macro_entry_attributes("index", "macro")}><h3>📈 거시 지표</h3>'
         '<p>기준금리·코픽스·국고채·환율·금의 관측값, 발표 캘린더, 시차 · 상환·한도·보유세 계산기</p></a>'
+        '<a class=card href="housing-support.html"><h3>🏠 청약·주거지원</h3>'
+        '<p>SH·LH·청약홈의 청년·신혼·무주택 지원 요건과 공식 모집공고</p></a>'
         '</div>')
     recent_items = "".join(
         f'<li><a href="posts/{os.path.basename(p)}">{html.escape(_post_meta(p)[1])}</a></li>'
@@ -386,6 +417,19 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
 <p class=d>생성: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a> (결정론 파이프라인, MIT) ·
 콘텐츠 라이선스 CC-BY-NC-4.0 · AI 인덱스 <a href="llms.txt">/llms.txt</a></p>
 </body></html>""")
+    # 주거지원은 공개 모집공고의 날짜·요건과 공통 길잡이를 별도 페이지에서 읽게 한다.
+    from agent_realestate.collectors.housing_support import load_housing_support_latest
+    from blog.housing_support import render_housing_support_page
+    try:
+        support_snap = load_housing_support_latest(
+            f"{SRC}/snapshots/housing-support", on_or_before=today,
+        )
+    except (OSError, ValueError, TypeError):
+        support_snap = None
+    if support_snap is None:
+        support_snap = {"schema_version": 1, "target_date": today, "collected_at": None,
+                        "sources": {}, "notices": [], "errors": {}}
+    open(f"{SITE}/housing-support.html", "w").write(render_housing_support_page(support_snap, today=today))
     # 2e) 거시 지표 페이지(2026-09-07 MacroContext S2) — 최신 macro 스냅샷(SRC 기준 dir)으로 macro.html. 없거나 3일 초과면 '미수집' 페이지.
     from blog.snapshots import load_macro_snapshot_latest
     from blog.macro_context import build_macro_context, render_macro_page
@@ -424,6 +468,7 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
     core_body=(f"<url><loc>{BASE_URL}/</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/methodology.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/macro.html</loc><lastmod>{today}</lastmod></url>"
+               f"<url><loc>{BASE_URL}/housing-support.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/cycles.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/calc.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/archive.html</loc><lastmod>{today}</lastmod></url>"

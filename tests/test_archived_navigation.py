@@ -341,16 +341,14 @@ def test_script_enabled_noscript_does_not_invent_fragment_but_preserves_own_id(t
 
 
 @pytest.fixture(scope="module")
-def script_enabled_chromium_page():
-    playwright_api = pytest.importorskip("playwright.sync_api")
-    with playwright_api.sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        context = browser.new_context(java_script_enabled=True)
+def script_enabled_chromium_page(required_browser):
+    context = required_browser.new_context(java_script_enabled=True)
+    try:
         context.route("**/*", lambda route: route.abort())
         page = context.new_page()
         yield page
+    finally:
         context.close()
-        browser.close()
 
 
 @pytest.mark.parametrize("opening,closing", (

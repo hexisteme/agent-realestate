@@ -1,7 +1,9 @@
 """거시 지표 수집기(agent_realestate/collectors/macro.py) + macro 스냅샷 — 픽스처 기반, 네트워크 없음."""
 import json
 import os
+import re
 from datetime import date
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -17,7 +19,30 @@ def _read(name):
 
 
 def _fixture_fetch(url, encoding="utf-8"):
+    if "wooribank.com/pot/jcc" in url:
+        until = parse_qs(urlsplit(url).query)["BAS_EDT"][0]
+        def requested_row(match):
+            stamp = re.search(r"\d{4}\.\d{2}\.\d{2}", match[0])
+            return "" if stamp and stamp[0].replace(".", "") > until else match[0]
+        return re.sub(r"<tr>.*?</tr>", requested_row, _read("woori_gold.html"), flags=re.S)
+    if "reb.or.kr/r-one/openapi" in url:                         # 요청 창(START~END) 안의 공표 월(~2026-08)만 답한다
+        q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+        months = [f"{y}{mo:02d}" for y in (2024, 2025, 2026) for mo in range(1, 13)
+                  if q["START_WRTTIME"] <= f"{y}{mo:02d}" <= min(q["END_WRTTIME"], "202608")]
+        values = {"202607": 1000, "202608": 1234}
+        return json.dumps({"SttsApiTblData": [{"head": [{"list_total_count": len(months)}, {"RESULT": {"CODE": "INFO-000"}}]},
+            {"row": [{"STATBL_ID": "A_2024_00554", "CLS_ID": 500002, "ITM_ID": 100001,
+                      "UI_NM": "호수", "DTACYCLE_CD": "MM", "WRTTIME_IDTFR_ID": month, "DTA_VAL": values.get(month, 900)}
+                     for month in months]}]})
     if "ecos.bok.or.kr" in url:                                   # bok.or.kr 분기보다 먼저(부분 문자열)
+        for stat, item, unit in (("121Y006", "BECBLA0302", "연리%"), ("901Y149", "01/a7", "2026.06=100"),
+                                 ("901Y150", "01/a7", "2026.06=100"), ("901Y074", "I410B", "호")):
+            if stat in url:
+                return json.dumps({"StatisticSearch": {"row": [
+                    {"STAT_CODE": stat, "ITEM_CODE1": item.split("/")[0],
+                     "ITEM_CODE2": item.split("/")[-1] if "/" in item else None,
+                     "UNIT_NAME": unit, "TIME": month, "DATA_VALUE": value}
+                    for month, value in (("202607", "100"), ("202608", "101"))]}})
         return _read("ecos_m2.json") if "161Y005" in url else _read("ecos_base_rate.json")
     if "bok.or.kr" in url:
         return _read("bok_base_rate.html")
@@ -126,13 +151,15 @@ def test_collect_macro_omits_failed_sources_and_keeps_others():
             raise OSError("연결 실패")
         return _fixture_fetch(url, encoding)
     out = m.collect_macro("2026-09-07", fetch=flaky)
-    assert "cofix_new" not in out["indicators"] and "gold_krw_g" not in out["indicators"] and "usdkrw" not in out["indicators"]
+    assert "cofix_new" not in out["indicators"] and "usdkrw" not in out["indicators"]
+    assert {"gold_krw_g", "gold_usd_oz"} <= out["indicators"].keys()  # Official bank source is independent of Naver.
     assert out["errors"]["cofix_new"].startswith("OSError") and "Traceback" not in out["errors"]["cofix_new"]
     assert "bok_base" in out["indicators"] and "us10y" in out["indicators"]
 
 
 def test_collect_macro_merges_previous_snapshot_series():
-    prev = {"indicators": {"kr_govt3y": {"series": [["2025-01-02", 2.6], ["2025-01-03", 2.62]]}}}
+    prev = {"indicators": {"kr_govt3y": {"series": [["2025-01-02", 2.6], ["2025-01-03", 2.62]],
+            "source": "금융투자협회 고시(네이버금융 경유)", "unit": "%", "freq": "daily"}}}
     out = m.collect_macro("2026-09-07", prev=prev, fetch=_fixture_fetch)
     s = out["indicators"]["kr_govt3y"]["series"]
     assert s[0] == ["2025-01-02", 2.6] and s[-1][0] >= "2026-08-01"
@@ -183,7 +210,7 @@ def test_collect_macro_kr_m2_only_with_key_and_never_leaks(monkeypatch):
             return body if "ecos.bok.or.kr" in url else _fixture_fetch(url, encoding)
         out = m.collect_macro("2026-09-07", fetch=ecos_body)
         assert out["errors"]["kr_m2"] == f"RuntimeError: ECOS 응답 해석 실패({want})" and "kr_m2" not in out["indicators"]
-        assert "dummy-key-XYZ" not in json.dumps(out, ensure_ascii=False) and out["n_ok"] == 15   # 비정상 응답도 스냅샷에 원문이 남지 않는다
+        assert "dummy-key-XYZ" not in json.dumps(out, ensure_ascii=False) and out["n_ok"] == 16   # 비정상 응답도 스냅샷에 원문이 남지 않는다
 
 
 def test_calendar_next_upcoming_recent():
@@ -218,7 +245,8 @@ def test_empty_page_is_failure_and_history_is_carried():
         if "interestDailyQuote" in url:
             return "<table><tr><th>날짜</th></tr></table>"                 # 행 없음 → 실패로 기록
         return _fixture_fetch(url, encoding)
-    prev = {"indicators": {"kr_govt3y": {"series": [["2025-01-02", 2.6]], "value": 2.6, "date": "2025-01-02"}}}
+    prev = {"indicators": {"kr_govt3y": {"series": [["2025-01-02", 2.6]], "value": 2.6, "date": "2025-01-02",
+            "source": "금융투자협회 고시(네이버금융 경유)", "unit": "%", "freq": "daily"}}}
     out = m.collect_macro("2026-09-07", prev=prev, fetch=empty_naver)
     assert "kr_govt3y" not in out["indicators"] and out["errors"]["kr_govt3y"].startswith("ValueError: 새 관측 없음")
     assert out["carried"]["kr_govt3y"]["series"] == [["2025-01-02", 2.6]]           # 이력은 보존, 카드 재료 아님

@@ -61,15 +61,9 @@ def budget_evidence():
 
 
 @pytest.fixture(scope="module")
-def budget_browser(budget_evidence):
-    playwright_api = pytest.importorskip("playwright.sync_api")
-    with playwright_api.sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        budget_evidence["browser"] = "Chromium " + browser.version
-        try:
-            yield browser
-        finally:
-            browser.close()
+def budget_browser(budget_evidence, required_browser):
+    budget_evidence["browser"] = "Chromium " + required_browser.version
+    return required_browser
 
 
 @pytest.fixture

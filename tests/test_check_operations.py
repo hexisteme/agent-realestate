@@ -2,6 +2,8 @@
 import json
 from datetime import date
 
+import pytest
+
 from blog.check_operations import check_operations
 from blog.macro_context import build_macro_context
 
@@ -57,6 +59,55 @@ def test_card_value_requires_equal_cell_not_substring(tmp_path):
     source, site, _, _ = _outputs(tmp_path)
     p = site / "macro.html"
     p.write_text(p.read_text().replace("4,213.0조원", "14,213.0조원"))
+    result = _check(source, site)
+    assert result["status"] == "FAIL"
+    assert not next(c["passed"] for c in result["checks"] if c["name"] == "kr_m2_card")
+
+
+@pytest.mark.parametrize("cells", [
+    ("한국 M2(평잔·계절조정)", "4,213.0조원<br>2026-06-01"),
+    ("<b>한국 M2(평잔·계절조정)</b><br><span>2026-06-01</span>", "4,213.0조원"),
+], ids=["legacy", "responsive"])
+def test_m2_card_accepts_exact_legacy_and_responsive_cells(tmp_path, monkeypatch, cells):
+    monkeypatch.delenv("ECOS_API_KEY", raising=False)
+    source, site, _, _ = _outputs(tmp_path)
+    (site / "macro.html").write_text(
+        f"<table><tr><td>{cells[0]}</td><td>{cells[1]}</td></tr></table>")
+    result = _check(source, site, expected_count=1, m2_month="2026-06")
+    assert result["status"] == "PASS"
+    assert next(c["passed"] for c in result["checks"] if c["name"] == "kr_m2_card")
+
+
+@pytest.mark.parametrize("cells", [
+    ("한국 M2(평잔·계절조정)", "14,213.0조원 2026-06-01"),
+    ("한국 M2(평잔·계절조정) 2026-06-01", "14,213.0조원"),
+    ("한국 M2(평잔·계절조정) 참고", "4,213.0조원 2026-06-01"),
+    ("한국 M2(평잔·계절조정) 2026-06-01 참고", "4,213.0조원"),
+    ("한국 M2(평잔·계절조정)", "4,213.0조원 2026-06-01 참고"),
+    ("한국 M2(평잔·계절조정) 2026-06-01", "4,213.0조원 참고"),
+    ("한국 M2(평잔·계절조정)", "4,213.0조원 2026-05-01"),
+    ("한국 M2(평잔·계절조정) 2026-05-01", "4,213.0조원"),
+    ("한국 M2(평잔·계절조정) 2026-06-01", "4,213.0조원 2026-06-01"),
+    ("한국 M2(평잔·계절조정)", "4,213.0조원"),
+    ("4,213.0조원", "한국 M2(평잔·계절조정) 2026-06-01"),
+], ids=["legacy-prefixed-value", "responsive-prefixed-value", "legacy-label-suffix",
+        "responsive-label-suffix", "legacy-value-suffix", "responsive-value-suffix",
+        "legacy-wrong-date", "responsive-wrong-date", "mixed-contracts", "missing-date",
+        "swapped-cells"])
+def test_m2_card_rejects_inexact_or_mixed_cell_contracts(tmp_path, cells):
+    source, site, _, _ = _outputs(tmp_path)
+    (site / "macro.html").write_text(
+        f"<table><tr><td>{cells[0]}</td><td>{cells[1]}</td></tr></table>")
+    result = _check(source, site)
+    assert result["status"] == "FAIL"
+    assert not next(c["passed"] for c in result["checks"] if c["name"] == "kr_m2_card")
+
+
+def test_m2_card_requires_value_and_date_in_the_same_row(tmp_path):
+    source, site, _, _ = _outputs(tmp_path)
+    (site / "macro.html").write_text(
+        "<table><tr><td>한국 M2(평잔·계절조정) 2026-06-01</td><td>—</td></tr>"
+        "<tr><td>다른 지표</td><td>4,213.0조원</td></tr></table>")
     result = _check(source, site)
     assert result["status"] == "FAIL"
     assert not next(c["passed"] for c in result["checks"] if c["name"] == "kr_m2_card")

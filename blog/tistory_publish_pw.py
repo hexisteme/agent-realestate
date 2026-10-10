@@ -41,6 +41,8 @@ from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
 from blog.tistory_media import MediaContractError, read_media_manifest  # noqa: E402
+from blog.body_media import (BodyMediaError, embed_body_images, read_body_media, read_editor_images,  # noqa: E402
+                             verify_body_images)
 from blog.tistory_design_review import grade_design_review, resolve_design_review_path  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
@@ -379,6 +381,10 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         media = read_media_manifest(path, data) if path else None
     except MediaContractError:
         return "ERR:representative image contract invalid"
+    try:
+        body_images = read_body_media(path, data) if path else None
+    except BodyMediaError:
+        return "ERR:body image contract invalid"
     if mode == "publish" and needs_review(outroot, path, data, kind):
         return f"AWAIT_REVIEW:{name} — 첫 결산 원고의 사람 승인 필요"
     import fcntl
@@ -391,7 +397,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         # 마커·원격 대조·클릭을 하나의 잠금으로 묶는다.
         return _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind,
                                explicit=bool(date), probe_relogin=probe_relogin, media=media,
-                               draft_path=path, design_review=design_review)
+                               draft_path=path, design_review=design_review, body_images=body_images)
 
 
 def pasted_anchors_present(page, anchors) -> bool:
@@ -412,10 +418,11 @@ def attach_representative_card(page, media) -> None:
     Selection alone is insufficient: a loaded preview must appear in this container.
     """
     try:
-        container = page.locator(".inner_box").filter(has=page.locator(".txt_thumb", has_text="대표이미지 추가"))
+        container = page.locator(".box_thumb").filter(has=page.locator(".txt_thumb", has_text="대표이미지 추가"))
         upload = container.locator('input.inp_g[type="file"][accept="image/*"]')
         if container.count() != 1 or upload.count() != 1:
             raise MediaContractError()
+        selected_container = container.element_handle()
         previous_sources = container.evaluate("""box => {
             const sources = [...box.querySelectorAll('img')].map(i => i.currentSrc || i.src);
             for (const node of [box, ...box.querySelectorAll('*')]) {
@@ -426,12 +433,13 @@ def attach_representative_card(page, media) -> None:
         }""")
         upload.set_input_files({"name": os.path.basename(media.image_path),
                                 "mimeType": "image/png", "buffer": media.image_bytes})
-        page.evaluate("""async (previousSources) => {
+        page.evaluate("""async ({previousSources, container}) => {
             const previous = new Set(previousSources);
             const currentBox = () => {
-                const inputs = [...document.querySelectorAll('input.inp_g[type="file"][accept="image/*"]')]
-                    .filter(input => input.closest('.inner_box'));
-                return inputs.length === 1 ? inputs[0].closest('.inner_box') : null;
+                // A successful native upload removes the file input and label.
+                if (!container || !container.isConnected) return null;
+                const boxes = container.querySelectorAll('.inner_box');
+                return boxes.length === 1 ? boxes[0] : null;
             };
             const loaded = async () => {
                 // Reacquire on every poll: React may replace the selected input's container.
@@ -439,7 +447,8 @@ def attach_representative_card(page, media) -> None:
                 if (!box) return false;
                 if ([...box.querySelectorAll('img')].some(i =>
                     i.complete && i.naturalWidth > 0 && !previous.has(i.currentSrc || i.src))) return true;
-                for (const node of [box, ...box.querySelectorAll('*')]) {
+                // The delete button's CSS sprite is not the uploaded thumbnail.
+                for (const node of [box, ...box.querySelectorAll('.thumb_g')]) {
                     const background = getComputedStyle(node).backgroundImage;
                     const match = /^url\\(["']?(.*?)["']?\\)$/.exec(background);
                     if (!match || previous.has(match[1])) continue;
@@ -458,7 +467,7 @@ def attach_representative_card(page, media) -> None:
             do { if (await loaded()) return; await new Promise(r => setTimeout(r, 100)); }
             while (Date.now() < deadline);
             throw new Error('representative preview unavailable');
-        }""", previous_sources)
+        }""", {"previousSources": previous_sources, "container": selected_container})
     except Exception:
         raise MediaContractError() from None
 
@@ -478,7 +487,7 @@ def _gate_design_review(draft_path: str, explicit: str | None, name: str) -> str
 
 
 def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post_id, kind, *, explicit,
-                    probe_relogin=False, media=None, draft_path=None, design_review=None):
+                    probe_relogin=False, media=None, draft_path=None, design_review=None, body_images=None):
     title, body, tags = data["title"], data["body"], data["tags"]
     target_url = resolve_editor_url(post_id)
     tracked = mode == "publish" and not post_id
@@ -596,6 +605,9 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             # 클린 슬레이트: 자동저장 복원 등 잔여 본문 위에 덧붙지 않게 전체선택 후 삭제.
             page.keyboard.press("Meta+A")
             page.keyboard.press("Delete")
+            # 본문 이미지 결박: 비운 편집기에 이미지가 남아 있으면 이후 대조가 예전 이미지를 통과시킬 수 있다.
+            if body_images and read_editor_images(page):
+                return f"[{name}] ERR:editor_not_empty_before_paste | {' '.join(log)}"
             # 클립보드 주입은 paste 직전 — 사용자 복사와의 레이스 창 최소화 (2026-07-06 리뷰).
             page.evaluate(
                 """async (html) => {
@@ -603,7 +615,8 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                         'text/html': new Blob([html], {type: 'text/html'}),
                         'text/plain': new Blob([html], {type: 'text/plain'})
                     })]);
-                }""", body)
+                }""", embed_body_images(body, body_images) if body_images else body)
+            # 본문 이미지(2026-10-10)는 원고 URL 대신 sha 검증 바이트의 data URI 로 붙여 Pages 배포 지연과 무관하게 한다.
             page.keyboard.press("Meta+V")
             page.wait_for_timeout(2500)
             if saved_clip is not None:
@@ -635,6 +648,14 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             if not pasted_ok:
                 return f"[{name}] ERR:paste_content_mismatch | {' '.join(log)}"
             log.append("PASTE_VERIFIED")
+            # 본문 이미지: 재호스팅은 비동기이고 실패 이미지는 조용히 사라진다 — 클릭·ATTEMPTED 마커 전에
+            # 수·순서·카카오 CDN·원본 크기와 내려받은 그림 내용까지 대조하고, 어긋나면 다음 슬롯이 같은 본문으로
+            # 재시도하게 멈춘다.
+            if body_images:
+                state = verify_body_images(page, body_images)
+                if state != "ok":
+                    return f"[{name}] ERR:body_image_unverified({state}) | {' '.join(log)}"
+                log.append(f"BODY_IMAGES_VERIFIED:{len(body_images)}")
 
             # 5) 태그
             if tags:

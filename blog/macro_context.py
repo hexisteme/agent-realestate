@@ -19,6 +19,7 @@ from agent_realestate.collectors.macro import RELEASE_LABELS, next_release, rece
 from blog.macro_scenario import DEFAULT_LOAN_KRW, DEFAULT_RATE_PCT, DEFAULT_YEARS, build_scenario_table
 from blog.macro_entry import macro_click_attribute, macro_entry_attributes
 from blog.wording_guard import assert_lead_wording_ok
+from blog.market_indicators import HOUSING_CODES, render_housing_indicators, render_reader_table, render_observation_views
 
 MAX_SNAPSHOT_AGE_DAYS = 3
 STALE_DAYS = {"daily": 7, "weekly": 14, "monthly": 100}     # event(기준금리 변경일)는 계단 시계열 — 오래됨 판정 없음
@@ -26,7 +27,7 @@ STALE_DAYS_BY_CODE = {"kr_m2": 120}                         # 한은 M2 는 M+2 
 STRIP_CODES = ("bok_base", "cofix_new", "kr_govt3y", "fed_target_hi", "us10y", "usdkrw", "gold_krw_g")
 TISTORY_STRIP_CODES = STRIP_CODES[:5]          # 티스토리는 인라인 스타일 비용이 커서 5카드(예산 30,000B 안 ≤3KB)
 RELEASE_SHORT = {"bok": "금통위", "fomc": "FOMC", "cofix": "코픽스 공시"}
-PAGE_CODES = STRIP_CODES + ("cofix_bal", "cd91", "us2y", "us_mortgage30", "kr_govt10y_m", "kr_m2", "us_m2", "gold_usd_oz")
+PAGE_CODES = STRIP_CODES + ("cofix_bal", "cd91", "us2y", "us_mortgage30", "kr_govt10y_m", "kr_m2", "us_m2", "gold_usd_oz") + HOUSING_CODES
 RELEASE_KIND_OF = {"bok_base": "bok", "fed_target_hi": "fomc", "cofix_new": "cofix", "cofix_bal": "cofix"}
 RELEASE_CODE_OF = {"bok": "bok_base", "fomc": "fed_target_hi", "cofix": "cofix_new"}
 MONTHS_12 = 365
@@ -73,6 +74,10 @@ def _fmt_value(v: float, unit: str) -> str:
         return f"{v / 1000:,.1f}조원"
     if unit == "원":
         return f"{v:,.1f}원"
+    if unit in ("호", "건"):
+        return f"{v:,.0f}{unit}"
+    if unit.endswith("=100"):
+        return f"{v:.2f} ({unit})"
     return f"{v:g}{unit}"
 
 
@@ -143,7 +148,8 @@ def validate_iso_date(v) -> str | None:
 
 def _usable(ind: dict | None, today: date) -> bool:
     """카드로 쓸 수 있는 지표 — 있고, 값이 숫자이고, 기준일이 날짜이고, 오래되지 않았다(아니면 수집 실패처럼 빠진다)."""
-    return bool(ind) and _numeric(ind.get("value")) and validate_iso_date(ind.get("date")) is not None and not _is_stale(ind, today)
+    observed = validate_iso_date((ind or {}).get("date"))
+    return bool(ind) and _numeric(ind.get("value")) and observed is not None and observed <= today.isoformat() and not _is_stale(ind, today)
 
 
 def _fresh_pair(other: dict | None, ind: dict, today: date) -> dict | None:
@@ -159,6 +165,8 @@ def _card(ind: dict, all_ind: dict, today: date) -> IndicatorCard:
     if ind["code"] == "fed_target_hi" and lo:
         label, value_txt = "미 연방기금 목표범위", f"{lo['value']:.2f}~{ind['value']:.2f}%"
     prev = ind.get("prev_value")
+    if ind["code"] in HOUSING_CODES:
+        prev = ind["series"][-2][1] if len(ind["series"]) > 1 else None
     delta_prev_txt = f"{_fmt_delta(ind['value'], prev, unit)}(직전 {_fmt_value(prev, unit)})" if _numeric(prev) else "—"
     since = validate_iso_date(ind.get("since"))
     if kind == "changes":
@@ -249,6 +257,15 @@ def build_macro_context(snapshot: dict | None, today: str) -> dict | None:
     ctx = {"asof": snapshot["asof"], "today": today, "cards": [asdict(c) for c in cards],
            "release_block": build_release_block(snapshot, t), "upcoming": upcoming_releases(t),
            "lags": TRANSMISSION_LAGS, "errors": snapshot.get("errors") or {}}
+    ctx["visual_snapshot"] = {
+        "asof": snapshot["asof"],
+        "indicators": {c.code: snapshot["indicators"][c.code] for c in cards
+                       if c.code in {*TISTORY_STRIP_CODES, *HOUSING_CODES, "usdkrw"}},
+    }
+    ctx["indicator_states"] = {
+        code: "stale" if _is_stale(ind, t) else "missing"
+        for code, ind in (snapshot.get("indicators") or {}).items() if not _usable(ind, t)
+    }
     ctx["tistory_html"] = render_macro_strip_tistory(ctx)
     ctx["site_html"] = render_macro_strip_site(ctx)
     ctx["page_html"] = render_macro_page(ctx, today)
@@ -267,34 +284,41 @@ def _ga(code: str) -> str:
     return macro_click_attribute(code)
 
 
-def render_macro_strip_tistory(ctx: dict) -> str:
-    """티스토리용(인라인 스타일, p/b/br/a/span/table/tr/td 만) — 스트립 카드 + 발표 직후 + 시차 한 줄."""
+def render_macro_strip_tistory(ctx: dict, housing: bool = True) -> str:
+    """티스토리용(인라인 스타일, p/b/br/a/span/table/tr/td 만) — 스트립 카드 + 발표 직후 + 시차 한 줄.
+    housing=False 는 시각 우선 글용 — 대시보드와 겹치는 '함께 볼 지표 5가지'를 뺀다."""
     from blog.build_site import BASE_URL
-    from blog.daily_digest import _MUT, _TBL, _TH
-    rows = "".join(                                             # 셀 인라인 스타일 생략(티스토리 테마 기본값) — 예산 절약
-        f'<tr><td><a href="{html.escape(c["url"])}">{c["label"]}</a> <span style="{_MUT}">{c["date"][5:]}</span></td>'
-        f'<td><b>{c["value_txt"]}</b></td><td>{c["delta_prev_txt"]}</td>'
-        f'<td>{c["delta_12m_txt"].split("(")[0]}</td><td>{c["next_release_short"] or "—"}</td></tr>'
-        for c in _strip_cards(ctx, TISTORY_STRIP_CODES))
-    rel = ctx["release_block"]
+    rel = ctx.get("release_block")
     rel_p = f'<p><b>발표 직후</b> — {" / ".join(html.escape(x) for x in rel["lines"])}</p>' if rel else ""
-    return (f'<p><b>거시 지표</b> <span style="{_MUT}">(기준일별 관측 사실 · 출처 링크 · 자체 해석 없음)</span></p>{rel_p}'
-            f'<table style="{_TBL}"><tr><td style="{_TH}"><b>지표(기준일)</b></td><td style="{_TH}"><b>값</b></td>'
-            f'<td style="{_TH}"><b>직전 대비</b></td><td style="{_TH}"><b>1년 전</b></td><td style="{_TH}"><b>다음 발표</b></td></tr>{rows}</table>'
-            f'<p style="{_MUT}">시차(구조): {LAG_ONE_LINER} · 환율·금·캘린더·전체 지표: <a href="{BASE_URL}/macro.html">거시 지표 페이지</a></p>')
+    return ('<p><b>거시 지표 — 금리와 주택시장</b></p>'
+            '<p style="font-size:12px;color:#64748b">지표마다 기준일이 다릅니다. 값과 출처를 함께 확인하세요. '
+            '자료 미수집·기준월 오래됨은 최신 관측값이 없는 상태입니다.</p>' + rel_p
+            + render_reader_table(ctx, TISTORY_STRIP_CODES, site=False)
+            + (render_housing_indicators(ctx, site=False) if housing else "")
+            + f'<p><a href="{BASE_URL}/macro.html">1년 전 비교·발표 일정·전체 지표 확인 →</a></p>')
 
 
 def render_macro_strip_site(ctx: dict) -> str:
     """사이트 일간 페이지용 — 기존 macro_click과 거시 진입 노출/첫 클릭(K10 v2) 배선."""
-    rows = "".join(
-        f'<tr><td><a href="{html.escape(c["url"])}" {_ga(c["code"])}>{c["label"]}</a><br><span class=mut>{c["date"]}</span></td>'
-        f'<td><b>{c["value_txt"]}</b></td><td>{c["delta_prev_txt"]}</td><td>{c["delta_12m_txt"]}</td><td>{c["next_release_txt"] or "—"}</td></tr>'
-        for c in _strip_cards(ctx))
     rel = ctx["release_block"]
     rel_p = f'<p class=rel><b>발표 직후</b> — {" / ".join(html.escape(x) for x in rel["lines"])}</p>' if rel else ""
     return (f'<h2>거시 지표 <span class=mut>(기준일별 관측 사실 · 자체 해석 없음)</span></h2>{rel_p}'
-            f'<div class=tblwrap><table><tr><th>지표(기준일)</th><th>값</th><th>직전 대비</th><th>1년 전 대비</th><th>다음 발표</th></tr>{rows}</table></div>'
-            f'<p class=mut>시차(구조): {LAG_ONE_LINER} · <a href="../macro.html" {macro_entry_attributes("daily", "macro")}>캘린더·전체 지표 →</a></p>')
+            + render_observation_views(_strip_cards(ctx), full=False)
+            + render_housing_indicators(ctx, site=True)
+            + f'<p class=mut>시차(구조): {LAG_ONE_LINER} · <a href="../macro.html" {macro_entry_attributes("daily", "macro")}>캘린더·전체 지표 →</a></p>')
+
+
+def render_macro_unavailable(today: str) -> dict:
+    """Keep readers informed when collection or context validation failed."""
+    ctx = {"today": today, "cards": [], "release_block": None}
+    return {"tistory_html": '<p><b>거시 지표 — 금리와 주택시장</b></p><p>자료 미수집 · 최신 관측값을 확인하지 못했습니다.</p>'
+                            '<p>한국은행 기준금리·코픽스·국고채 3년·미 정책금리·미 국채 10년, '
+                            '주택담보대출 금리·서울 아파트 매매가격지수·전세가격지수·매매거래량·미분양 주택을 확인합니다.</p>'
+                            '<p><a href="https://ecos.bok.or.kr/">한국은행 ECOS</a> · '
+                            '<a href="https://www.reb.or.kr/r-one/portal/stat/easyStatPage.do">한국부동산원</a></p>',
+            "site_html": '<h2>거시 지표</h2><p>자료 미수집 · 최신 관측값을 확인하지 못했습니다.</p>'
+                         + render_reader_table(ctx, TISTORY_STRIP_CODES, site=True)
+                         + render_housing_indicators(ctx, site=True)}
 
 
 def render_macro_page(ctx: dict | None, today: str) -> str:
@@ -302,45 +326,45 @@ def render_macro_page(ctx: dict | None, today: str) -> str:
     from blog import build_explorer as be
     from blog.build_site import BASE_URL, ga4_snippet
     from blog.daily_digest import _SITE_CSS
+    from blog.market_visuals import render_macro_trends
     lag_rows = "".join(f"<tr><td>{a}</td><td>{b}</td><td>{c}</td><td class=mut>{d}</td></tr>" for a, b, c, d in TRANSMISSION_LAGS)
     if ctx is None:
         body = (f'<p class=meta>{today} 기준 — 거시 지표 <b>미수집</b>(수집 실패 또는 스냅샷 {MAX_SNAPSHOT_AGE_DAYS}일 초과). '
                 f'카드를 만들지 않는다(지어내지 않음).</p>')
-        cards_html, cal_html, rel_html = "", "", ""
+        cards_html, cal_html, rel_html, trend_html = "", "", "", ""
     else:
         body = (f'<p class=meta>수집 기준일 {ctx["asof"]} · 지표 {len(ctx["cards"])}개 · 관측 사실만(자체 점수·해석 없음) · '
                 f'<a href="calc.html" {_ga("calc")}>전달 계산기 →</a> · <a href="cycles.html" {_ga("cycles")}>과거 인상사이클 →</a></p>')
         rel = ctx["release_block"]
         rel_html = (f'<h2>발표 직후</h2><ul>{"".join(f"<li>{html.escape(x)}</li>" for x in rel["lines"])}</ul>') if rel else ""
-        cards_html = ('<h2>지표 카드</h2><div class=tblwrap><table><tr><th>지표</th><th>값(기준일)</th><th>직전 대비</th>'
-                      '<th>같은 값 시작</th><th>1년 전 대비</th><th>연속</th><th>다음 발표</th><th>출처</th></tr>' + "".join(
-            f'<tr><td>{c["label"]}</td><td><b>{c["value_txt"]}</b><br><span class=mut>{c["date"]}</span></td>'
-            f'<td>{c["delta_prev_txt"]}</td><td>{c["since_txt"] or "—"}</td><td>{c["delta_12m_txt"]}</td><td>{c["streak_txt"] or "—"}</td>'
-            f'<td>{c["next_release_txt"] or "—"}</td><td><a href="{html.escape(c["url"])}" {_ga(c["code"])}>{c["source"]}</a></td></tr>'
-            for c in ctx["cards"]) + "</table></div>")
+        cards_html = ('<h2>지표 카드</h2>'
+                      + render_observation_views([c for c in ctx["cards"] if c["code"] not in HOUSING_CODES], full=True)
+                      + render_housing_indicators(ctx, site=True))
+        trend_html = render_macro_trends(ctx.get("visual_snapshot"), today)
         cal_rows = "".join(f'<tr><td>{u["date"]}</td><td>{u["label"]}</td></tr>' for u in ctx["upcoming"])
         cal_html = (f'<h2>발표 캘린더 <span class=mut>(45일)</span></h2><div class=tblwrap><table><tr><th>날짜</th><th>발표</th></tr>{cal_rows}</table></div>'
                     if cal_rows else '<h2>발표 캘린더</h2><p class=mut>45일 안에 등록된 발표 일정 없음(연 1회 갱신).</p>')
     return f"""<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>거시 지표 — 서울 부동산 데이터 스냅샷</title>
-<meta name=description content="한국은행 기준금리·코픽스·국고채·미 연준 목표범위·미 국채·환율·금의 기준일별 관측값, 발표 캘린더, 대출·실거래까지의 구조적 시차. 자체 해석 없음.">
+<title>대출금리와 서울 아파트 시장지표 — 서울 부동산 데이터 스냅샷</title>
+<meta name=description content="기준금리·코픽스·주택담보대출 금리와 서울 아파트 매매·전세가격지수, 매매거래량, 미분양 주택을 출처·기준월과 함께 확인하세요. 발표 캘린더와 1년 전 비교도 제공합니다.">
 <style>{_SITE_CSS}</style>
 {ga4_snippet()}
 </head><body>
 <div class=wrap>
 <nav class=top><a href="index.html">구 허브</a><a href="explorer.html">탐색기</a><a href="daily/latest.html">오늘의 변화</a><a href="methodology.html">방법론</a></nav>
 <div class=crumb><a href="index.html">서울</a> › 거시 지표</div>
-<h1>거시 지표</h1>
+<h1>거시 지표 — 대출금리와 서울 주택시장</h1>
 {body}
 {rel_html}
 {cards_html}
+{trend_html}
 {cal_html}
 <h2>전달시차 <span class=mut>(구조적 지연의 사실)</span></h2>
 <div class=tblwrap><table><tr><th>출발</th><th>도착</th><th>지연</th><th>근거</th></tr>{lag_rows}</table></div>
 <div class=foot>
 값은 각 출처의 공표 관측값이며 이 사이트는 해석을 붙이지 않는다. '직전 대비'는 직전 다른 값과의 차이, '1년 전 대비'는 계단 지표(기준금리)는 오늘의 365일 전 유효값, 관측 지표는 기준일의 365일 전(45일 안 가장 가까운 관측)과의 차이.
-코픽스는 은행연합회 공시(매월 15일 15:00, 주말·공휴일이면 다음 영업일)를 네이버금융 경유로 읽는다. FOMC 는 한국시간 발표일(미국 회의 2일차 익일 새벽)로 적는다. 발표 캘린더는 연 1회 갱신하며 미등록 연도는 '일정 미등록' 으로 표기한다.<br>
+코픽스는 은행연합회 공시(매월 15일 15:00, 주말·공휴일이면 다음 영업일)를 확인하며 카드별 출처에 공식 표 또는 수집 경유지를 표시한다. FOMC 는 한국시간 발표일(미국 회의 2일차 익일 새벽)로 적는다. 발표 캘린더는 연 1회 갱신하며 미등록 연도는 '일정 미등록' 으로 표기한다.<br>
 {be.DISCLAIMER} {be._takedown()}<br>
 <a href="methodology.html">방법론 전문</a> · <a href="daily/latest.html">오늘의 변화</a> · 코드: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a> · <a href="{BASE_URL}/macro.html">{BASE_URL}/macro.html</a>
 </div>

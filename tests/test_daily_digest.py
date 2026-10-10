@@ -171,6 +171,27 @@ def _assert_answer_first(body, surface):
     assert query["utm_medium"] == ["referral" if surface == "tistory_html" else "internal"]
 
 
+def test_daily_keeps_support_guidance_and_macro_through_budget_compaction():
+    """Dropping housing_support or macro_html in a compaction pass loses required reader information."""
+    rows = [_area_row(gu=f"구{i:02}", name=f"긴이름평형단지{i:02}", complex_no=str(i),
+                      molit_pos_52w=100, turnover_pct=15, jeonse_n=8,
+                      jeonse_ratio_complex_pct=80, gap_eok=2) for i in range(25)]
+    ds = {"complexes": rows, "count": 25, "listing_inventory": _inventory()}
+    support = {"schema_version": 1, "target_date": "2026-10-03", "collected_at": None,
+               "sources": {}, "notices": [], "errors": {}}
+    macro = {"tistory_html": "<p>거시 지표 · 한국은행 기준금리 3.00%</p>",
+             "site_html": "<h2>거시 지표</h2><p>한국은행 기준금리 3.00%</p>"}
+    digest = build_daily_digest(ds, "2026-10-03", "2026-10-01", macro=macro, housing_support=support)
+    for surface in ("tistory_html", "site_html"):
+        text = _visible_digest_text(digest[surface])
+        for required in ("SH", "LH", "청약홈", "청년", "신혼", "무순위", "한국은행 기준금리 3.00%"):
+            assert required in text
+        assert "housing-support.html" in digest[surface]
+    assert len(digest["tistory_html"].encode()) <= 28000
+    for i in range(25):
+        assert f"<b>구{i:02}</b>" in digest["tistory_html"]
+
+
 @pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
 def test_answer_first_uses_observed_top_three_before_details_and_final_cta(surface):
     digest = build_daily_digest(_answer_first_ds(), "2026-09-05", "2026-09-04")
@@ -220,7 +241,7 @@ def test_answer_first_complex_name_stays_literal_text(surface):
     assert answer.count(name) == 2
 
 
-def test_answer_first_survives_detail_budget_degradation():
+def test_answer_first_survives_detail_budget_degradation(monkeypatch):
     ds = _answer_first_ds()
     ds["listing_inventory"] = _inventory()
     # Fill repeated tables, never the required summary; literal candidates still lead both groups.
@@ -228,9 +249,11 @@ def test_answer_first_survives_detail_budget_degradation():
                                    molit_pos_52w=100, turnover_pct=4, jeonse_n=8,
                                    jeonse_ratio_complex_pct=70, gap_eok=3) for i in range(8)]
     ds["count"] = len(ds["complexes"])
+    # The responsive layout is smaller; force an actual compaction instead of pinning a row count.
+    monkeypatch.setattr(blog.daily_digest, "_TISTORY_TEXT_BUDGET", 22000)
     digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
-    assert "아래 반복 상세 표는 각 최대 1개" in digest["tistory_html"]
-    assert len(digest["tistory_html"].encode("utf-8")) <= 28000
+    assert "아래 반복 상세 표는 각 최대" in digest["tistory_html"]
+    assert len(digest["tistory_html"].encode("utf-8")) <= 22000
     _assert_answer_first(digest["tistory_html"], "tistory_html")
 
 
@@ -276,7 +299,8 @@ def test_build_daily_digest_return_shape_and_title():
     assert "오늘의 서울 아파트 핵심 요약 (30초 브리핑)" in d["tistory_html"]
     assert "서울 아파트 인터랙티브 탐색기 열기" in d["tistory_html"]
     assert "매일 아침 자동 업데이트" in d["tistory_html"]
-    assert f"<h1>{d['title']}</h1>" in d["site_html"]
+    assert '<h1>서울 집값과 주거지원, 한눈에</h1>' in d["site_html"]
+    assert f"<title>{d['title']}</title>" in d["site_html"]
     assert '<link rel="canonical" href="https://hexisteme.github.io/seoul-re-snapshot/daily/2026-09-05.html">' in d["site_html"]
     assert "서울 아파트 7단지 전체 직접 필터·비교하기" in d["tistory_html"]
     assert "utm_source=tistory" in d["tistory_html"]
@@ -541,26 +565,20 @@ def test_tistory_partial_area_table_has_all_rows_on_owned_daily():
     assert "평형단지07" in digest["site_html"]
 
 
-def test_tistory_budget_shrinks_only_optional_detail_rows_and_preserves_required_summary():
-    from blog.daily_digest import _render_tistory
-    from blog.search_intent import daily_intent
+def test_tistory_budget_shrinks_only_optional_detail_rows_and_preserves_required_summary(monkeypatch):
     rows = [_area_row(gu=f"구{i:02}", name=f"평형단지{i:02}", complex_no=str(i),
                       molit_pos_52w=100, molit_trend_dir="▲", molit_trend_pct=5,
                       turnover_pct=15, jeonse_n=8, jeonse_ratio_complex_pct=80, gap_eok=2)
             for i in range(25)]
     ds = {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04"}
     ds["listing_inventory"] = _inventory()
-    counts = blog.daily_digest._today_counts(ds)
-    sel = _select_ranked(ds)
-    leads = blog.daily_digest.build_fact_leads(ds, "seoul")
-    intent = daily_intent("2026-09-05", "관측", "관측")
-    full = _render_tistory("2026-09-05", "2026-09-04", counts, sel, _gu_summary_rows(ds), leads, intent,
-                           band_rows=blog.daily_digest._band_summary_rows(ds), area_rows=rows,
-                           inventory=ds["listing_inventory"])
-    assert len(full.encode("utf-8")) > 30000
+    full = build_daily_digest(ds, "2026-09-05", "2026-09-04")["tistory_html"]
+    budget = 23000  # Preserve reader overview and all 25 default + 25 synthetic districts.
+    assert len(full.encode("utf-8")) > budget
+    monkeypatch.setattr(blog.daily_digest, "_TISTORY_TEXT_BUDGET", budget)
     digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
     body = digest["tistory_html"]
-    assert len(body.encode("utf-8")) <= 28000
+    assert len(body.encode("utf-8")) <= budget
     assert "아래 반복 상세 표는 각 최대" in body
     for required in ("30초 브리핑", "오늘의 숫자", "가격대별 요약", "서울 25개 구 요약", "국토부 RTMS",
                      "게이트:", "표본수", "방법론 전문", "59㎡·84㎡ 실거래 중위 관측"):
@@ -569,9 +587,50 @@ def test_tistory_budget_shrinks_only_optional_detail_rows_and_preserves_required
         assert f"<b>구{i:02}</b>" in body
 
 
+def test_budget_compaction_keeps_macro_observations(monkeypatch):
+    """Removing macro_html from any compaction pass loses a required reader section."""
+    rows = [_area_row(gu=f"구{i:02}", name=f"평형단지{i:02}", complex_no=str(i),
+                      molit_pos_52w=100, molit_trend_dir="▲", molit_trend_pct=5,
+                      turnover_pct=15, jeonse_n=8, jeonse_ratio_complex_pct=80, gap_eok=2)
+            for i in range(25)]
+    ds = {"complexes": rows, "count": len(rows), "listing_inventory": _inventory()}
+    macro = {"tistory_html": '<p><b>거시 지표</b> · 한국은행 기준금리 3.00% · 기준일 2026-09-05</p>',
+             "site_html": '<h2>거시 지표</h2><p>한국은행 기준금리 3.00%</p>'}
+    monkeypatch.setattr(blog.daily_digest, "_TISTORY_TEXT_BUDGET", 23000)
+    body = build_daily_digest(ds, "2026-09-05", "2026-09-04", macro=macro)["tistory_html"]
+    assert "아래 반복 상세 표는 각 최대" in body
+    assert "한국은행 기준금리 3.00%" in body
+    assert len(body.encode("utf-8")) <= 23000
+
+
+def test_full_macro_and_five_housing_indicators_survive_large_digest():
+    import json
+    from pathlib import Path
+    from agent_realestate.collectors.macro import build_indicator
+    from blog.macro_context import build_macro_context
+    snap = json.loads(Path("tests/fixtures/macro/snapshot_2026-09-07.json").read_text())
+    for code, unit, value in (("kr_mortgage_new", "%", 4.0), ("seoul_apt_sale", "2026.06=100", 102),
+                              ("seoul_apt_jeonse", "2026.06=100", 101), ("seoul_apt_sales", "호", 12345),
+                              ("seoul_unsold", "호", 0)):
+        snap["indicators"][code] = build_indicator(code, code, unit, "monthly", "공식 출처", "https://ecos.bok.or.kr/",
+                                                [("2026-07-01", 100), ("2026-08-01", value)])
+    rows = [_area_row(gu=f"구{i:02}", name=f"긴이름평형단지{i:02}", complex_no=str(i),
+                      molit_pos_52w=100, turnover_pct=15, jeonse_n=8, jeonse_ratio_complex_pct=80, gap_eok=2)
+            for i in range(25)]
+    ds = {"complexes": rows, "count": 25, "listing_inventory": _inventory()}
+    ctx = build_macro_context(snap, "2026-09-07")
+    body = build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=ctx)["tistory_html"]
+    assert len(body.encode()) <= 28000
+    for label in ("한국은행 기준금리", "신규취급액 코픽스", "국고채 3년", "주택담보대출 금리",
+                  "서울 아파트 매매가격지수", "서울 아파트 전세가격지수", "서울 아파트 매매거래량", "서울 미분양 주택"):
+        assert label in body
+    assert "12,345호" in body and "0호" in body
+    for i in range(25):
+        assert f"<b>구{i:02}</b>" in body
+
+
 @pytest.mark.parametrize("surface", ["tistory_html", "site_html"])
-def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface):
-    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
+def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface, required_browser):
     rows = [_area_row(name=f"평형관측긴단지이름{i}", complex_no=str(i),
                       turnover_pct=15-i, molit_pos_52w=i+1) for i in range(8)]
     digest = build_daily_digest({"complexes": rows, "count": len(rows)}, "2026-09-05", "2026-09-04")
@@ -580,22 +639,42 @@ def test_mobile_daily_area_tables_and_price_links_fit_viewport(surface):
         document = ('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">'
                     '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
                     '<body style="margin:0;padding:14px;font:14px/1.5 sans-serif">' + document + '</body></html>')
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        try:
-            page = browser.new_page(viewport={"width": 390, "height": 844})
-            page.route("**/*", lambda route: route.abort())
-            page.set_content(document, wait_until="domcontentloaded")
-            assert page.evaluate("document.documentElement.scrollWidth") <= 390
-            assert page.get_by_text("서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?", exact=True).is_visible()
-            assert page.get_by_text("12개월 회전율 상위 관측", exact=True).is_visible()
-            assert page.get_by_text("52주 범위 하단 근접 관측", exact=True).is_visible()
-            budget_links = page.locator('a[href*="explorer.html?seg="]')
-            assert budget_links.count() == 4
-            for link in budget_links.all():
-                assert link.bounding_box()["height"] >= 44
-            if surface == "site_html":
-                assert page.locator("#area-tracks tbody tr").count() == 8
-                assert page.locator("main article").count() == 1
-        finally:
-            browser.close()
+    page = required_browser.new_page(viewport={"width": 390, "height": 844})
+    try:
+        page.route("**/*", lambda route: route.abort())
+        page.set_content(document, wait_until="domcontentloaded")
+        assert page.evaluate("document.documentElement.scrollWidth") <= 390
+        if surface == "site_html":
+            assert page.locator('[data-reader-overview]').is_visible()
+            assert not page.locator('#reader-details').get_attribute('open')
+            page.locator('#reader-details > summary').click()
+        assert page.get_by_text("서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?", exact=True).is_visible()
+        assert page.get_by_text("12개월 회전율 상위 관측", exact=True).is_visible()
+        assert page.get_by_text("52주 범위 하단 근접 관측", exact=True).is_visible()
+        budget_links = page.locator('a[href*="explorer.html?seg="]')
+        assert budget_links.count() == 4
+        for link in budget_links.all():
+            assert link.bounding_box()["height"] >= 44
+        if surface == "site_html":
+            assert page.locator("#area-tracks tbody tr").count() == 8
+            assert page.locator("main article").count() == 1
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('surface', ['tistory_html', 'site_html'])
+def test_daily_footer_discloses_ai_assistance_on_both_surfaces(surface):
+    from html.parser import HTMLParser
+
+    class VisibleText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+
+        def handle_data(self, data):
+            self.text.append(data)
+
+    body = build_daily_digest({'complexes': []}, '2026-10-04', '2026-10-04')[surface]
+    parser = VisibleText()
+    parser.feed(body)
+    assert '공식 통계·공고를 AI로 정리했습니다. 지원 조건은 원문에서 확인하세요.' in ''.join(parser.text)

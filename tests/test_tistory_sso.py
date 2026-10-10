@@ -17,17 +17,8 @@ DELETE = '<button class="btn_delete" id="delete-account">간편로그인 계정 
 
 
 @pytest.fixture(scope="module")
-def browser():
-    api = pytest.importorskip("playwright.sync_api")
-    with api.sync_playwright() as playwright:
-        try:
-            chromium = playwright.chromium.launch()
-        except api.Error as error:
-            if "Executable doesn't exist" in str(error):
-                pytest.skip("설치된 Chromium이 없어 DOM 회귀 실행 불가")
-            raise
-        yield chromium
-        chromium.close()
+def browser(required_browser):
+    return required_browser
 
 
 @pytest.fixture

@@ -72,7 +72,7 @@ def test_wording_guards_and_tistory_budget():
     ctx = mc.build_macro_context(_snap(), "2026-09-07")
     for k in ("tistory_html", "site_html", "page_html"):
         assert_lead_wording_ok(_text(ctx[k]), k)
-    assert len(ctx["tistory_html"].encode()) < 3000 and "usdkrw" not in ctx["tistory_html"]
+    assert len(ctx["tistory_html"].encode()) < 10000 and "usdkrw" not in ctx["tistory_html"]
     assert set(re.findall(r"<(\w+)", ctx["tistory_html"])) <= {"p", "b", "br", "a", "span", "table", "tr", "td"}
     assert "macro_click" in ctx["site_html"] and "macro_click" not in ctx["tistory_html"]
     assert "None" not in _text(ctx["tistory_html"]) and "None" not in _text(ctx["page_html"])
@@ -149,7 +149,7 @@ def test_digest_wiring_inserts_strip_only_with_context():
     with_ = build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=ctx)
     without = build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=None)
     assert "거시 지표" in with_["tistory_html"] and "거시 지표" in with_["site_html"] and 'href="../macro.html"' in with_["site_html"]
-    assert "거시 지표" not in without["tistory_html"]
+    assert "거시 지표" in without["tistory_html"] and "자료 미수집" in without["tistory_html"]
     assert with_["tistory_html"].index("거시 지표") < with_["tistory_html"].index("오늘의 숫자")
 
 
@@ -160,13 +160,14 @@ def test_since_window_start_suppresses_since_text():
     assert by["kr_govt3y"]["since_txt"] == "" and by["fed_target_hi"]["since_txt"] == "2025-12-11 이후 같은 값"
 
 
-def test_digest_drops_strip_before_failing_budget(monkeypatch):
+def test_digest_rejects_oversize_required_macro_instead_of_silently_removing_it(monkeypatch):
+    import pytest
     import blog.daily_digest as dd
     ds = _sample_ds()
     ctx = mc.build_macro_context(_snap(), "2026-09-07")
     ctx["tistory_html"] = ctx["tistory_html"] + "<p>" + ("x" * 29_000) + "</p>"     # 스트립이 예산을 넘기는 상황
-    d = dd.build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=ctx)
-    assert "거시 지표" not in d["tistory_html"] and "거시 지표" in d["site_html"] and len(d["tistory_html"].encode()) <= 30000
+    with pytest.raises(ValueError, match="예산 초과"):
+        dd.build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=ctx)
 
 
 def test_release_block_does_not_present_previous_value_as_todays_release():

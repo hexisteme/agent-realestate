@@ -84,3 +84,24 @@ def test_build_site_keeps_complex_page_absent_when_no_complex_gates_this_round(t
 
     remaining = list((site_dir / "complex").glob("*.html"))
     assert remaining == [], f"게이트 전수탈락인데 옛 파일이 남음: {remaining}"
+
+
+def test_build_site_adds_official_housing_support_page_and_sitemap(tmp_path, monkeypatch):
+    """Omitting the support page creates a broken detail link in every daily digest."""
+    site_dir = tmp_path / "site"
+    src_dir = tmp_path / "src"
+    (src_dir / "daily").mkdir(parents=True)
+    ds = {"complexes": [_row("노원", "지원정보검증단지")], "count": 1,
+          "data_asof": "2026-10-01", "generated": "2026-10-03"}
+    (src_dir / "dataset.json").write_text(json.dumps(ds, ensure_ascii=False))
+    monkeypatch.setattr(build_site, "SITE", str(site_dir))
+    monkeypatch.setattr(build_site, "SRC", str(src_dir))
+    build_site.build(today="2026-10-03", molit_path=str(tmp_path / "missing-molit.json"))
+    support = site_dir / "housing-support.html"
+    assert support.exists()
+    body = support.read_text()
+    for required in ("SH", "LH", "청약홈", "청년", "신혼", "무순위", "2026-10-03"):
+        assert required in body
+    sitemap = (site_dir / "sitemap-core.xml").read_text()
+    assert f"{build_site.BASE_URL}/housing-support.html" in sitemap
+    assert 'href="housing-support.html"' in (site_dir / "index.html").read_text()

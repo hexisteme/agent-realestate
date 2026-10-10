@@ -3,10 +3,7 @@
 render_complex_page), blog.build_explorer.EXPLORER_HTML 의 프리셋 파서(deliverable 3).
 """
 from __future__ import annotations
-import functools
-import http.server
 import json
-import threading
 from urllib.parse import quote
 
 import pytest
@@ -249,17 +246,8 @@ def test_explorer_html_contains_preset_parser_and_query_keys():
     assert "applyPreset();init();render();" in html_out
 
 
-def _serve_dir(path):
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(path))
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
-
-
-def test_playwright_explorer_gu_preset_filters_rows(tmp_path):
+def test_playwright_explorer_gu_preset_filters_rows(tmp_path, required_browser, local_test_server):
     # file:// 는 fetch(./dataset.json) 가 크로미움 보안정책에 막혀 항상 실패 → 로컬 HTTP 로 서빙.
-    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
-
     ds = {
         "disclaimer": "테스트 면책", "data_asof": "2026-09-04", "license": "CC-BY-NC-4.0",
         "takedown": "테스트 이의제기", "count": 3,
@@ -273,22 +261,16 @@ def test_playwright_explorer_gu_preset_filters_rows(tmp_path):
     (tmp_path / "dataset.json").write_text(json.dumps(ds, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "explorer.html").write_text(be.EXPLORER_HTML, encoding="utf-8")
 
-    httpd = _serve_dir(tmp_path)
+    httpd = local_test_server
+    page = required_browser.new_page()
     try:
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch()
-            except Exception as e:
-                pytest.skip(f"chromium 실행 불가: {e}")
-            try:
-                page = browser.new_page()
-                page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/explorer.html?gu=노원")
-                page.wait_for_selector("#tbody tr")
-                rows_text = page.locator("#tbody tr").all_inner_texts()
-            finally:
-                browser.close()
+        origin = f"http://127.0.0.1:{httpd.server_address[1]}"
+        page.route("**/*", lambda route: route.continue_() if route.request.url.startswith(origin + "/") else route.abort())
+        page.goto(origin + "/explorer.html?gu=노원")
+        page.wait_for_selector("#tbody tr")
+        rows_text = page.locator("#tbody tr").all_inner_texts()
     finally:
-        httpd.shutdown()
+        page.close()
 
     assert len(rows_text) == 1
     assert "노원단지" in rows_text[0]

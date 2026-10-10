@@ -127,12 +127,15 @@ def check_operations(run_date: str, source: Path, site: Path, *, expected_count:
         card = next((c for c in (ctx or {}).get("cards", []) if c["code"] == "kr_m2"), None)
     except (KeyError, TypeError, ValueError, OverflowError):
         card = None
-    # 운영 HTML의 같은 행에 라벨·값·날짜가 함께 있어야 한다.
+    # 같은 행의 셀을 구형(라벨, 값·날짜) 또는 반응형(라벨·날짜, 값)과 정확히 비교한다.
     parsed = _CardRows()
     parsed.feed(pages.get("macro", ""))
+    expected_cells = (
+        (card["label"], f'{card["value_txt"]} {card["date"]}'),
+        (f'{card["label"]} {card["date"]}', card["value_txt"]),
+    ) if card else ()
     record("kr_m2_card", bool(card) and any(
-        len(row) >= 2 and row[0] == card["label"]
-        and row[1] == f'{card["value_txt"]} {card["date"]}' for row in parsed.rows))
+        len(row) >= 2 and tuple(row[:2]) in expected_cells for row in parsed.rows))
     if filing_base:
         for stamp in (filing_base, run_date):
             try:

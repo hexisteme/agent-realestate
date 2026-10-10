@@ -293,8 +293,8 @@ def _s5(by_gu: dict) -> dict | None:
         return None
     vals = list(gu_meds.values())
     mn, mx = min(vals), max(vals)
-    text = (f"실거래÷공시가 배율은 구 중위 {_fmt_ratio(mn)}~{_fmt_ratio(mx)}배"
-            f"(공시가 기준일 1월 1일, 실거래는 12개월 중위 — 시점이 다르다).")
+    text = (f"보관된 공시가로 계산한 실거래÷공시가 배율은 구 중위 {_fmt_ratio(mn)}~{_fmt_ratio(mx)}배입니다"
+            f"(공시연도·원문 미확인, 실거래는 12개월 중위).")
     return {"type": "맥락", "family": "S5", "text": text, "score": _CONTEXT_SCORE, "n": len(vals),
             "refs": {"min": round(mn, 2), "max": round(mx, 2)}}
 

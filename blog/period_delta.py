@@ -327,9 +327,14 @@ def _arrow(a, b) -> str:
 
 def _tbl(headers: list[str], rows: list[list[str]], inline: bool) -> str:
     if inline:
-        head = "".join(f'<td style="{_TH}"><b>{h}</b></td>' for h in headers)
-        body = "".join("<tr>" + "".join(f'<td style="{_TD}">{c}</td>' for c in r) + "</tr>" for r in rows)
-        return f'<table style="{_TBL}"><tr>{head}</tr>{body}</table>'
+        label_style = f"{_TD};width:38%;vertical-align:top;white-space:normal;word-break:keep-all;overflow-wrap:break-word"
+        detail_style = f"{_TD};vertical-align:top;white-space:normal;word-break:keep-all;overflow-wrap:break-word"
+        head = f'<td style="{_TH};width:38%"><b>{headers[0]}</b></td><td style="{_TH}"><b>관측 상세</b></td>'
+        body = ""
+        for row in rows:
+            details = "<br>".join(f"<b>{h}</b>: {value}" for h, value in zip(headers[1:], row[1:], strict=True))
+            body += f'<tr><td style="{label_style}">{row[0]}</td><td style="{detail_style}">{details}</td></tr>'
+        return f'<table style="{_TBL};table-layout:fixed"><tr>{head}</tr>{body}</table>'
     head = "".join(f"<th>{h}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
     return f"<div class=tblwrap><table><tr>{head}</tr>{body}</table></div>"

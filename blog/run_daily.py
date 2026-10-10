@@ -25,6 +25,24 @@ import blog.daily_digest as dd
 from blog.tistory_contract import parse_helper
 
 
+def collect_daily_housing_support(today: str, outdir: str) -> dict:
+    """공식 주거지원 안내를 수집하고 일간·상세 페이지의 같은 입력으로 보관한다."""
+    from agent_realestate.collectors.housing_support import (
+        collect_housing_support, empty_housing_support,
+        load_housing_support_latest, save_housing_support,
+    )
+    directory = str(Path(outdir) / "snapshots/housing-support")
+    try:
+        previous = load_housing_support_latest(directory, on_or_before=today)
+        snapshot = collect_housing_support(today, previous=previous)
+    except Exception as exc:  # noqa: BLE001 — 실패 상세에는 URL/개인 정보가 섞일 수 있다.
+        snapshot = empty_housing_support(today)
+        snapshot["errors"]["collection"] = "공식 공고 미확인"
+        print(f"주거지원 수집 미확인: {type(exc).__name__}")
+    save_housing_support(snapshot, directory)
+    return snapshot
+
+
 def _replace_digest_page(path: str, content: str) -> None:
     """Replace one generated daily page without exposing a partial HTML file."""
     destination = Path(path)
@@ -45,19 +63,32 @@ def _replace_digest_page(path: str, content: str) -> None:
 
 
 def write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None = None) -> dict[str, str]:
+    """일간 출력 + 본문이미지계약(시각 우선 글의 body_media). 계약이 없으면 예전 sidecar 를 지운다."""
+    from blog.body_media import bind_body_media
+    body_media = digest.get("body_media")
+    outputs = _write_checked_outputs({k: v for k, v in digest.items() if k != "body_media"}, today, outdir, ds=ds,
+                                     cover_safe=bool(body_media))
+    bound = bind_body_media(outputs["draft"], body_media)
+    if bound:
+        outputs["body_media"] = bound
+    return outputs
+
+
+def _write_checked_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None = None,
+                           cover_safe: bool = False) -> dict[str, str]:
     """일간 출력 검증 뒤 새 PNG만 마지막에 확정하고 기존 이미지 바이트를 보존한다."""
     required = {"title", "tags", "tistory_html", "site_html", "summary"}
     if set(digest) != required or any(not isinstance(digest[key], str) or not digest[key] for key in required):
         raise ValueError("daily digest output contract is incomplete")
     if ds is None:
-        return _write_digest_outputs(digest, today, outdir, ds=None)
+        return _write_digest_outputs(digest, today, outdir, ds=None, cover_safe=cover_safe)
     if digest["site_html"].count("</head>") != 1:
         raise ValueError("daily page has no unique metadata injection point")
 
     output_dir = Path(outdir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".daily-digest-", dir=output_dir.resolve()) as temporary:
-        staged = _write_digest_outputs(digest, today, temporary, ds=ds)
+        staged = _write_digest_outputs(digest, today, temporary, ds=ds, cover_safe=cover_safe)
         outputs = {key: str(output_dir / Path(path).relative_to(temporary)) for key, path in staged.items()}
         image = output_dir.resolve() / Path(staged["image"]).relative_to(temporary)
         image = image.parent.resolve() / image.name
@@ -83,7 +114,8 @@ def write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | No
         return outputs
 
 
-def _write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None) -> dict[str, str]:
+def _write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | None,
+                          cover_safe: bool = False) -> dict[str, str]:
     """일간 helper·정적 페이지·media를 같은 출력 디렉터리에서 작성하고 검증한다."""
 
     card = None
@@ -92,7 +124,7 @@ def _write_digest_outputs(digest: dict, today: str, outdir: str, *, ds: dict | N
             raise ValueError("daily page has no unique metadata injection point")
         from blog.thumbnail_card import build_daily_card, social_meta
         from blog.build_site import BASE_URL
-        card = build_daily_card(ds, Path(outdir) / "images", today=today)
+        card = build_daily_card(ds, Path(outdir) / "images", today=today, cover_safe=cover_safe)
         relative = f"images/{Path(card.path).name}"
         digest = dict(digest)
         digest["site_html"] = digest["site_html"].replace("</head>", social_meta(BASE_URL, relative, card.alt) + "\n</head>", 1)
@@ -292,7 +324,18 @@ def main():
         except Exception as e:                                   # noqa: BLE001
             print(f"거시 지표 수집 건너뜀: {type(e).__name__}")
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
-        digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx)
+        support_snapshot = collect_daily_housing_support(today, a.out)
+        # 시각 우선 글(2026-10-10) — RE_VISUAL_FIRST=1 일 때만. 대시보드를 못 만들면 기존 본문으로 발행한다.
+        visual = None
+        if config.visual_first_enabled() and macro_snap is not None:
+            try:
+                from blog.visual_first import prepare_visual_first
+                visual = prepare_visual_first(macro_snap, today, f"{a.out}/images")
+            except Exception as e:                               # noqa: BLE001
+                print(f"시각 우선 대시보드 건너뜀: {type(e).__name__}")
+        print(f"시각 우선 글: {'켜짐 · ' + visual.image.name if visual else '꺼짐'}")
+        digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx,
+                                       housing_support=support_snapshot, visual_first=visual)
         outputs = write_digest_outputs(digest, today, a.out, ds=ds)
         print(f"티스토리 원고: {outputs['draft']}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
         print(f"일간 다이제스트: {outputs['dated']} · {outputs['latest']}")

@@ -334,3 +334,16 @@ def test_real_data_render_lead_block_and_lines_shape():
     assert lines == [ld["text"] for ld in leads]
     assert render_lead_block([]) == ""
     assert render_lead_lines([]) == []
+
+
+def test_s5_labels_archived_assessment_without_claiming_verified_year():
+    from blog.fact_lead import _s5
+    source = {'가구': [_row('가구', '가1', molit_recent_eok=15.0, gongsi_man=100000)],
+              '나구': [_row('나구', '나1', molit_recent_eok=18.0, gongsi_man=100000)]}
+    result = _s5(source)
+    assert result['refs'] == {'min': 1.5, 'max': 1.8}
+    assert '1.5~1.8배' in result['text']
+    assert '보관된 공시가로 계산한' in result['text']
+    assert '공시연도·원문 미확인' in result['text']
+    assert '실거래는 12개월 중위' in result['text']
+    assert '1월 1일' not in result['text']

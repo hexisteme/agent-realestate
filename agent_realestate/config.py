@@ -80,6 +80,14 @@ def _env_file_items() -> list[tuple[str, str]]:
     return items
 
 
+VISUAL_FIRST_DEFAULT = "1"  # 시각 우선 일간 글 — 2026-10-10 사람 승인으로 켬(RE_VISUAL_FIRST=0 으로 실행별 끄기)
+
+
+def visual_first_enabled() -> bool:
+    """시각 우선 일간 글 모드. 미설정은 기본값(VISUAL_FIRST_DEFAULT), 설정하면 "1" 만 켜짐(실행별 덮어쓰기)."""
+    return os.environ.get("RE_VISUAL_FIRST", VISUAL_FIRST_DEFAULT) == "1"
+
+
 def load_env_file() -> None:
     """agent_realestate/.env (chmod 600, gitignored) 의 KEY=VALUE 를 os.environ 에 주입.
     시크릿(MOLIT_API_KEY 등)이 코드·로그·대화에 노출되지 않도록 파일에서만 읽는다.
