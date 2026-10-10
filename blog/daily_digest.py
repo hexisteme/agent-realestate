@@ -175,7 +175,7 @@ def _inventory_notice(inventory: dict | None) -> str:
 
 def _render_inventory_tistory(inventory: dict | None, today: str, limit: int = 8) -> str:
     if not inventory or not inventory.get("fresh"):
-        return (f'<p><b>구별 네이버 표시 매물</b></p><p style="{_MUT}">'
+        return (f'<h3>구별 네이버 표시 매물</h3><p style="{_MUT}">'
                 f'{html.escape(_inventory_notice(inventory))}</p>')
     total = inventory.get("total", {})
     districts = inventory.get("districts", {})
@@ -206,7 +206,7 @@ def _render_inventory_tistory(inventory: dict | None, today: str, limit: int = 8
                   f'<td style="{inv_th}"><b>전세</b></td></tr>{trs}</table>') if rows else ""
     displayed = f'{"절대 증감" if comparable else "표시 매물 수"}이 큰 {len(rows)}개 구만 표시합니다. ' if rows else "구별 상세 표는 축약했습니다. "
     return (
-        '<p><b>서울 25개 구 네이버 표시 매물</b></p>'
+        '<h3>서울 25개 구 네이버 표시 매물</h3>'
         f'<p>전체 {total.get("total_article_count", 0):,}건 · 매매 {total.get("sale_article_count", 0):,}건 · '
         f'전세 {total.get("lease_article_count", 0):,}건 · 월세 {total.get("rent_article_count", 0):,}건 · '
         f'단기 {total.get("short_term_rent_article_count", 0):,}건 · '
@@ -315,7 +315,7 @@ def _render_briefing_card(leads: list[dict]) -> str:
     return (
         f'<table style="width:100%;border-collapse:collapse;margin:12px 0 16px 0;background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #0d9488;">'
         f'<tr><td style="padding:14px 16px;">'
-        f'<p style="margin:0 0 8px 0;font-size:15px;font-weight:bold;color:#0f766e;">📊 오늘의 서울 아파트 핵심 요약 (30초 브리핑)</p>'
+        f'<h3 style="margin:0 0 8px 0;font-size:15px;font-weight:bold;color:#0f766e;">📊 오늘의 서울 아파트 핵심 요약 (30초 브리핑)</h3>'
         f'{bullets}'
         f'</td></tr></table>'
     )
@@ -382,7 +382,7 @@ def _area_track_note(asof: str) -> str:
 
 
 def _render_area_tracks_tistory(area_rows: list[dict], asof: str, today: str, limit: int = 4) -> str:
-    heading = '<p style="font-size:14px;font-weight:bold;margin:16px 0 6px">59㎡·84㎡ 실거래 중위 관측</p>'
+    heading = '<h3 style="font-size:14px;font-weight:bold;margin:16px 0 6px">59㎡·84㎡ 실거래 중위 관측</h3>'
     note = f'<p style="{_MUT}">{html.escape(_area_track_note(asof))}</p>'
     if not area_rows:
         return heading + note + f'<p style="{_MUT}">양쪽 평형의 표본·신원 기준 충족 단지 없음</p>'
@@ -447,18 +447,18 @@ def _pos_txt_tistory(r: dict) -> str:
     return f"{v:g}%"
 
 
-def _render_ranked_summary(sel: dict, compact: bool = False) -> str:
-    """선택된 회전율·범위 하단 관측을 최대 세 개씩 먼저 답한다. compact=True(시각 우선)는 빈 묶음을 제목째 생략한다."""
+def _render_ranked_summary(sel: dict, compact: bool = False, level: int = 2) -> str:
+    """선택된 회전율·범위 하단 관측을 최대 세 개씩 먼저 답한다. compact=True(시각 우선)는 빈 묶음을 제목째 생략한다.
+    level = 질문 제목 레벨, 묶음 제목은 한 단계 아래. 사이트는 h1 아래 2, Tistory 는 스킨 글 제목 h2 아래 3."""
     parts = [
-        '<p style="font-size:15px;margin:12px 0">'
-        '<b>서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?</b></p>',
+        f'<h{level}>서울 아파트 매수를 검토할 때, 어떤 실거래 관측부터 확인하면 좋을까요?</h{level}>',
     ]
     for key, heading in (("tv", "12개월 회전율 상위 관측"), ("lo", "52주 범위 하단 근접 관측")):
         rows = sel[key][:3]
         if compact and not rows:
             continue
-        parts.append(f'<p><b>{heading}</b> ({len(rows)}개 관측)</p>' if compact
-                     else f'<p><b>{heading}</b> ({len(rows)}개 관측 · 최대 3개)</p>')
+        parts.append(f'<h{level + 1}>{heading}</h{level + 1}>'
+                     f'<p>({len(rows)}개 관측{"" if compact else " · 최대 3개"})</p>')
         if not rows:
             parts.append(f'<p style="{_MUT}">기준 충족 관측 없음</p>')
         for r in rows:
@@ -479,7 +479,7 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
                     visual_html="", overview_html="", visual_first=False) -> str:
     # 본문 예산에서 선택 상세 행만 줄인다. 핵심 요약·25개 구·출처와 고지는 보존한다.
     # visual_first=True: overview_html 자리에 관측요약·대시보드·지리타일맵이 오고, 빈 절·중복 블록을 생략한다.
-    ranked_summary = _render_ranked_summary(sel, compact=visual_first)
+    ranked_summary = _render_ranked_summary(sel, compact=visual_first, level=3)
     selected_counts = {key: len(rows) for key, rows in sel.items()}
     if detail_limit is not None:
         sel = {key: rows[:detail_limit] for key, rows in sel.items()}
@@ -550,26 +550,26 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
         *([macro_html] if macro_html else []),   # 거시 지표 스트립(2026-09-07 S2) — 컨텍스트 없으면 생략
         *([support_html] if support_html else []),
         *([] if visual_first else [
-        f'<p style="{h2_c}">오늘의 숫자 <span style="{_MUT}">— 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
+        f'<h3 style="{h2_c}">오늘의 숫자 <span style="{_MUT}">— 기준일 {asof} · 발행 {counts["n_total"]}단지 · 표본 {counts["n_sample"]}건 · '
         f'<span style="color:#dc2626;font-weight:bold">상승 {counts["up"]}</span> · '
-        f'<span style="color:#2563eb;font-weight:bold">하락 {counts["down"]}</span> · 보합 {counts["flat"]}(국토부 실거래 사실)</span></p>']),
-        *([ f'<p style="{h2_c}">가격대별 요약 <span style="{_MUT}">(12개월 중위 구간·사실)</span></p>',
+        f'<span style="color:#2563eb;font-weight:bold">하락 {counts["down"]}</span> · 보합 {counts["flat"]}(국토부 실거래 사실)</span></h3>']),
+        *([ f'<h3 style="{h2_c}">가격대별 요약 <span style="{_MUT}">(12개월 중위 구간·사실)</span></h3>',
             _render_budget_links(intent, "tistory"),
             f'<table style="{_TBL}"><tr><td style="{th_c}"><b>가격대</b></td><td style="{th_c}"><b>단지 수</b></td>'
              f'<td style="{th_c}"><b>중위(억)</b></td><td style="{th_c}"><b>52주 상단·하단</b></td></tr>{band_tr}</table>'] if band_rows else []),
         *([] if visual_first and not area_rows else [_render_area_tracks_tistory(area_rows or [], asof, today, area_limit)]),
         *detail_note,
-        *detail("hi", f'<p style="{h2_c}">12개월 범위 상단 근접 <span style="{_MUT}">(52주 위치 99% 이상)</span></p>',
+        *detail("hi", f'<h3 style="{h2_c}">12개월 범위 상단 근접 <span style="{_MUT}">(52주 위치 99% 이상)</span></h3>',
                 ["단지(구)", "실거래·관측 지표"], hi_rows),
-        *detail("lo", f'<p style="{h2_c}">12개월 범위 하단 근접 <span style="{_MUT}">(52주 위치 6% 이하)</span></p>',
+        *detail("lo", f'<h3 style="{h2_c}">12개월 범위 하단 근접 <span style="{_MUT}">(52주 위치 6% 이하)</span></h3>',
                 ["단지(구)", "실거래·관측 지표"], lo_rows),
-        *detail("jr", f'<p style="{h2_c}">전세가율 상위 {selected_counts["jr"]} <span style="{_MUT}">(매매-전세 갭 구간)</span></p>',
+        *detail("jr", f'<h3 style="{h2_c}">전세가율 상위 {selected_counts["jr"]} <span style="{_MUT}">(매매-전세 갭 구간)</span></h3>',
                 ["단지(구)", "실거래·전세가율·갭"], jr_rows),
-        *detail("tv", f'<p style="{h2_c}">회전율 상위 {selected_counts["tv"]} <span style="{_MUT}">(12개월 거래 활발 단지)</span></p>',
+        *detail("tv", f'<h3 style="{h2_c}">회전율 상위 {selected_counts["tv"]} <span style="{_MUT}">(12개월 거래 활발 단지)</span></h3>',
                 ["단지(구)", "실거래·회전율·표본"], tv_rows),
         _render_inventory_tistory(inventory, today, inventory_limit),
         *([] if visual_first else [
-        visual_html if 'data-market-visuals="districts"' in visual_html else (visual_html + f'<p style="{h2_c}">서울 25개 구 요약</p>'
+        visual_html if 'data-market-visuals="districts"' in visual_html else (visual_html + f'<h3 style="{h2_c}">서울 25개 구 요약</h3>'
         f'<table style="{_TBL}"><tr><td style="{th_c}"><b>구</b></td><td style="{th_c}"><b>단지 수</b></td>'
         f'<td style="{th_c}"><b>구 중위(억)</b></td><td style="{th_c}"><b>추세</b></td></tr>{gu_tr}</table>')]),
         f'<p style="{_MUT}">* 25개 구 전체 상세 시세는 <a href="{BASE_URL}/">구 허브</a>에서 확인할 수 있습니다.</p>',
@@ -736,10 +736,12 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     from blog.housing_support import render_housing_support_brief
     from blog.market_visuals import build_market_visuals
     visual = build_market_visuals({**ds, "data_asof": asof}, today)
-    support_html = render_housing_support_brief(housing_support or {
+    support_snapshot = housing_support or {
         "schema_version": 1, "target_date": today, "collected_at": None,
         "sources": {}, "notices": [], "errors": {},
-    }, today=today)
+    }
+    support_html = render_housing_support_brief(support_snapshot, today=today)
+    support_site_html = render_housing_support_brief(support_snapshot, today=today, heading_level=2)
     overview = build_reader_overview(macro, housing_support, today=today, asof=asof)
     macro_tistory = (macro or {}).get("tistory_html", "")
     budget, media = _TISTORY_TEXT_BUDGET, None
@@ -756,7 +758,7 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
                                   area_rows=area_rows, visual_html=visual["tistory_html"], overview_html=overview["tistory_html"],
                                   visual_first=media is not None)
     site_html = _render_site(today, asof, counts, sel, gu_rows, intent, leads, band_rows=band_rows,
-                            macro_html=(macro or {}).get("site_html", ""), support_html=support_html, inventory=inventory,
+                            macro_html=(macro or {}).get("site_html", ""), support_html=support_site_html, inventory=inventory,
                             area_rows=area_rows, visual_html=visual["site_html"], overview_html=overview["site_html"])
 
     assert_wording_ok(tistory_html, "daily_digest:tistory_html")

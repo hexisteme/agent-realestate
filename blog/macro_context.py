@@ -290,7 +290,7 @@ def render_macro_strip_tistory(ctx: dict, housing: bool = True) -> str:
     from blog.build_site import BASE_URL
     rel = ctx.get("release_block")
     rel_p = f'<p><b>발표 직후</b> — {" / ".join(html.escape(x) for x in rel["lines"])}</p>' if rel else ""
-    return ('<p><b>거시 지표 — 금리와 주택시장</b></p>'
+    return ('<h3>거시 지표 — 금리와 주택시장</h3>'
             '<p style="font-size:12px;color:#64748b">지표마다 기준일이 다릅니다. 값과 출처를 함께 확인하세요. '
             '자료 미수집·기준월 오래됨은 최신 관측값이 없는 상태입니다.</p>' + rel_p
             + render_reader_table(ctx, TISTORY_STRIP_CODES, site=False)
@@ -311,7 +311,7 @@ def render_macro_strip_site(ctx: dict) -> str:
 def render_macro_unavailable(today: str) -> dict:
     """Keep readers informed when collection or context validation failed."""
     ctx = {"today": today, "cards": [], "release_block": None}
-    return {"tistory_html": '<p><b>거시 지표 — 금리와 주택시장</b></p><p>자료 미수집 · 최신 관측값을 확인하지 못했습니다.</p>'
+    return {"tistory_html": '<h3>거시 지표 — 금리와 주택시장</h3><p>자료 미수집 · 최신 관측값을 확인하지 못했습니다.</p>'
                             '<p>한국은행 기준금리·코픽스·국고채 3년·미 정책금리·미 국채 10년, '
                             '주택담보대출 금리·서울 아파트 매매가격지수·전세가격지수·매매거래량·미분양 주택을 확인합니다.</p>'
                             '<p><a href="https://ecos.bok.or.kr/">한국은행 ECOS</a> · '

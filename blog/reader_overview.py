@@ -197,10 +197,10 @@ def build_reader_overview(macro, support, *, today: str, asof: str) -> dict[str,
                 cards.append(f'<section class="reader-card" data-reader-card="{key}"><h2>{title}</h2>{body}<p>{explanation}</p></section>')
             else:
                 static_body = body.replace('<p>', '').replace('</p>', '<br>')
-                cards.append(f'<p data-reader-card="{key}" style="font-size:14px">'
-                             f'<b>{title}</b><br>{static_body}{explanation}</p>')
+                cards.append(f'<h4>{title}</h4><p data-reader-card="{key}" style="font-size:14px">'
+                             f'{static_body}{explanation}</p>')
         date_text = html.escape(asof if _date(asof) and _date(today) and _date(asof) <= _date(today) else '미확인')
-        intro = f'<p><b>서울 집값과 주거지원, 한눈에</b><br>실거래 자료 {date_text} · 지표마다 기준일이 다릅니다.</p>'
+        intro = f'<h3>서울 집값과 주거지원, 한눈에</h3><p>실거래 자료 {date_text} · 지표마다 기준일이 다릅니다.</p>'
         if site:
             intro = '<p>대출금리부터 매매·전세 흐름, 주거지원 공고까지 확인하세요. 지표마다 기준일이 다릅니다.</p>'
             from blog.build_site import BASE_URL

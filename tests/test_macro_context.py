@@ -73,7 +73,7 @@ def test_wording_guards_and_tistory_budget():
     for k in ("tistory_html", "site_html", "page_html"):
         assert_lead_wording_ok(_text(ctx[k]), k)
     assert len(ctx["tistory_html"].encode()) < 10000 and "usdkrw" not in ctx["tistory_html"]
-    assert set(re.findall(r"<(\w+)", ctx["tistory_html"])) <= {"p", "b", "br", "a", "span", "table", "tr", "td"}
+    assert set(re.findall(r"<(\w+)", ctx["tistory_html"])) <= {"p", "b", "br", "a", "span", "table", "tr", "td", "h3", "h4"}  # h3·h4: 본문 절 제목(스킨 글 제목 h2 아래, design-review 2026-10-09 floker-114 B-3)
     assert "macro_click" in ctx["site_html"] and "macro_click" not in ctx["tistory_html"]
     assert "None" not in _text(ctx["tistory_html"]) and "None" not in _text(ctx["page_html"])
 

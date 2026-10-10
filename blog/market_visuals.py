@@ -202,12 +202,12 @@ def _tistory(rows, scales, ds, asof):
     bar_rows = "".join(f'<tr><td>{_escape(label)}</td><td><span style="color:#267b72">'
                        f'{"▰" * max(1, round(n / largest * 10)) if n and largest else "—"}</span> {n}곳</td></tr>'
                        for label, n in bands.items())
-    return ('<p><b>서울 25개 구 요약 · 가격 히트맵</b></p>'
+    return ('<h3>서울 25개 구 요약 · 가격 히트맵</h3>'
             '<table data-market-visuals="districts" style="width:100%;table-layout:fixed;font-size:12px">'
             + grid + '</table>'
             f'<p>기준일 {asof} · 색: 밝음→진함 0→{_fmt(scales["price"])}억 · 회색 —는 표본 없음. '
             '값은 게이트 통과 단지 중위의 중위. 곳은 전체 관측단지, ▲·▼는 추세 방향 단지 수입니다.</p>'
-            '<p><b>가격대 분포 · 관측 단지 수</b></p><table style="width:100%;font-size:12px">'
+            '<h3>가격대 분포 · 관측 단지 수</h3><table style="width:100%;font-size:12px">'
             + bar_rows + '</table><p>국토교통부 RTMS · 가격 집계: 아파트·전용40㎡+·매매10건+. 가격대는 모든 관측단지의 유효 중위 기준입니다.</p>')
 
 

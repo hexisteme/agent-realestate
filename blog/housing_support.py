@@ -80,11 +80,12 @@ def _format_application_period(item, reference_day):
     return "접수일 미확인"
 
 
-def render_housing_support_brief(snapshot, *, today=None, detail_url=None):
-    """허용 태그 p/b/br/a만 사용; 짧은 원고는 상세 페이지와 공식 원문으로 이어진다."""
+def render_housing_support_brief(snapshot, *, today=None, detail_url=None, heading_level=3):
+    """허용 태그 h2·h3(절 제목)/p/b/br/a만 사용; 짧은 원고는 상세 페이지와 공식 원문으로 이어진다.
+    heading_level: Tistory 는 스킨 글 제목 h2 아래라 3, 사이트 일일 페이지는 h1 아래라 2."""
     ctx = _context(snapshot, today)
     detail_url = detail_url or os.environ.get("BLOG_BASE_URL", _BASE_URL).rstrip("/") + "/housing-support.html"
-    heading = f'<p><b>청약·공공임대 안내</b> · 공고 확인 {_e(ctx["day"])}</p>'
+    heading = f'<h{heading_level}>청약·공공임대 안내</h{heading_level}><p>공고 확인 {_e(ctx["day"])}</p>'
     guidance = "<p>" + "<br>".join(f'<b>{_e(item["label"])}</b> {_e(item["brief"])}' for item in GUIDANCE) + "</p>"
     note = '<p>자격·소득/자산·거주지는 공고별 확인. 시작·마감일은 접수시각도 확인하세요.</p>'
     if ctx["stale"]:

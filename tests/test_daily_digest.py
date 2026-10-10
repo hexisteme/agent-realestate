@@ -18,7 +18,7 @@ from blog.tistory_draft import TISTORY_TAGS, write_digest_draft
 from blog.tistory_publish import _parse_helper
 from blog.wording_guard import FORBIDDEN_WORDS
 
-_ALLOWED_TAGS = {"p", "b", "br", "a", "span", "table", "tr", "td"}
+_ALLOWED_TAGS = {"p", "b", "br", "a", "span", "table", "tr", "td", "h3", "h4"}  # h3·h4: 본문 절 제목(스킨 글 제목 h2 아래, design-review 2026-10-09 floker-114 B-3)
 
 
 @pytest.fixture(autouse=True)

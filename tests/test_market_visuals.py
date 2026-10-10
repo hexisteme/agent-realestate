@@ -144,7 +144,7 @@ def test_tistory_is_safe_compact_and_keeps_twenty_five_districts():
     rows = [_row(gu, molit_recent_eok=(i + 1) / 2) for i, gu in enumerate(sorted(be.GU_LAWD))]
     html = _api().build_market_visuals(_dataset(rows), TODAY)["tistory_html"]
     parsed = _HTML(html)
-    assert {tag for tag, _ in parsed.elements} <= {"table", "tr", "td", "b", "p", "span", "a", "br"}
+    assert {tag for tag, _ in parsed.elements} <= {"table", "tr", "td", "b", "p", "span", "a", "br", "h3"}  # h3·h4: 본문 절 제목(스킨 글 제목 h2 아래, design-review 2026-10-09 floker-114 B-3)
     assert parsed.elements[1][0] in {"b", "span", "table"}
     tables = [attrs for tag, attrs in parsed.elements if tag == "table"]
     assert tables[0]["data-market-visuals"] == "districts"

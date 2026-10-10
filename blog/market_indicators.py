@@ -149,7 +149,7 @@ def render_reader_table(ctx: dict, codes: tuple[str, ...], *, site: bool) -> str
 
 
 def render_housing_indicators(ctx: dict, *, site: bool) -> str:
-    title = '<h2>집을 알아볼 때 함께 볼 지표 5가지</h2>' if site else '<p><b>집을 알아볼 때 함께 볼 지표 5가지</b></p>'
+    title = '<h2>집을 알아볼 때 함께 볼 지표 5가지</h2>' if site else '<h4>집을 알아볼 때 함께 볼 지표 5가지</h4>'
     return (title + render_reader_table(ctx, HOUSING_CODES, site=site)
             + '<p style="font-size:12px;color:#64748b">주담대는 개인의 적용금리와 다릅니다. 가격지수는 개별 단지 가격이 아니며 '
               '기준월=100인 상대 지수입니다. 거래량은 신고월 기준으로 계약월 통계와 다릅니다. '
