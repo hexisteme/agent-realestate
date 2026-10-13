@@ -113,6 +113,16 @@ def test_visual_first_site_puts_visuals_before_details_with_accessible_tips(tmp_
     assert "data-reader-overview" not in site[:details]
 
 
+def test_dashboard_offers_full_size_view_on_both_surfaces(tmp_path):
+    """U6 — 한 장 그래프를 휴대폰 폭으로 줄여 보이므로 원본 크기로 여는 길을 둔다(티스토리는 글 링크, 사이트는 그림 링크)."""
+    digest = _digest(tmp_path)
+    name = re.search(rf"dashboard-{TODAY}-[0-9a-f]{{16}}\.png", digest["site_html"]).group(0)
+    assert re.search(rf'<p data-dashboard-zoom><a href="{re.escape(BASE_URL)}/images/{name}">[^<]*크게 보기</a></p>',
+                     digest["tistory_html"])
+    assert re.search(rf'<a href="\.\./images/{name}" data-dashboard-zoom[^>]*><img src="\.\./images/{name}"',
+                     digest["site_html"])
+
+
 def test_visual_first_digest_lists_body_media(tmp_path):
     visual = _visual(tmp_path)
     digest = build_daily_digest(_sample_ds(), TODAY, ASOF, visual_first=visual)

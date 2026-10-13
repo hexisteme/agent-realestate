@@ -57,6 +57,34 @@ def resolve_editor_url(post_id: str | None = None) -> str:
         return NEWPOST_URL
     return NEWPOST_URL.rstrip("/") + "/" + str(post_id).strip("/") + "/"
 CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")
+# 외부 리뷰 U13(2026-10-13) — 주간·월간 결산은 일간과 다른 카테고리. 과거 글은 옮기지 않는다(소급 금지).
+PERIODIC_CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY_PERIODIC", "주간·월간 결산")
+
+
+# 카테고리 후보를 앞부터: ① 보이는 메뉴 항목(.mce-menu-item)의 정확한 이름 ② 없으면 종전 부분일치(짧은 요소 첫 항목).
+# ①이 안내 문구·숨은 항목을 집지 않게 한다(R6 Codex U13-1). 고른 후보 이름(없으면 null)을 돌려준다.
+CATEGORY_PICK_JS = """(names) => {
+    const norm = x => (x.textContent || '').replace(/\\s+/g, ' ').trim();
+    const shown = x => !!(x.offsetWidth || x.offsetHeight || x.getClientRects().length);
+    for (const M of names) {
+      const exact = [].slice.call(document.querySelectorAll('.mce-menu-item')).filter(x => shown(x) && norm(x) === M)[0];
+      if (exact) { exact.click(); return M; }
+      const it = [].slice.call(document.querySelectorAll('.mce-menu-item,.mce-text,li,a,span'))
+        .filter(x => norm(x).indexOf(M) > -1 && (x.textContent || '').length < 40)[0];
+      if (!it) continue;
+      ((it.closest && it.closest('.mce-menu-item')) || it).click();
+      return M;
+    }
+    return null;
+}"""
+
+
+def category_candidates(kind: str = "daily") -> tuple[str, ...]:
+    """원고 종류별 카테고리 후보(앞부터 시도). periodic 은 전용 카테고리가 블로그에 없을 때 '분류 없음'으로 새지 않게
+    일간 카테고리로 물러선다."""
+    if kind == "periodic":
+        return (PERIODIC_CATEGORY_MATCH, CATEGORY_MATCH)
+    return (CATEGORY_MATCH,)
 # 영속 프로필: EXT_SSD (APFS 가드 — 내장 디스크 금지). Tistory 로그인 쿠키 보관.
 PROFILE_DIR = os.environ.get(
     "TISTORY_PW_PROFILE", "/Volumes/EXT_SSD/bot/agent_realestate/.pw-profile")
@@ -581,16 +609,11 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             try:
                 page.evaluate("document.getElementById('category-btn').click()")
                 page.wait_for_timeout(900)
-                ok = page.evaluate(
-                    """(M) => {
-                        const it = [].slice.call(document.querySelectorAll('.mce-menu-item,.mce-text,li,a,span'))
-                          .filter(x => ((x.textContent||'').replace(/\\s+/g,' ').trim()).indexOf(M) > -1
-                                       && (x.textContent||'').length < 40)[0];
-                        if (!it) return false;
-                        ((it.closest && it.closest('.mce-menu-item')) || it).click();
-                        return true;
-                    }""", CATEGORY_MATCH)
-                log.append("CAT" if ok else "CAT_NOTFOUND")
+                picked = page.evaluate(CATEGORY_PICK_JS, list(category_candidates(kind)))
+                if not picked:
+                    log.append("CAT_NOTFOUND")
+                else:
+                    log.append("CAT" if picked == category_candidates(kind)[0] else f"CAT_FALLBACK:{picked}")
             except Exception as e:
                 log.append(f"CAT_FAIL:{type(e).__name__}")
 

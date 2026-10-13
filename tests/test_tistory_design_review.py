@@ -405,6 +405,8 @@ class _Page:
         return _Locator()
 
     def evaluate(self, script, *args):
+        if args and isinstance(args[0], list):  # 카테고리 후보 선택 — 실제 스크립트처럼 고른 이름을 돌려준다(U13)
+            return args[0][0]
         return 5 if "innerHTML.length" in script else True
 
 

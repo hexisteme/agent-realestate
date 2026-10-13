@@ -18,7 +18,7 @@ from agent_realestate.collectors.macro import ECOS_EXPECTED_UNITS
 from blog.wording_guard import assert_lead_wording_ok, assert_wording_ok
 
 DASHBOARD_MONTHS = 24
-DASHBOARD_WIDTH = 800  # 티스토리 모바일 본문 폭 310px 에서 가장 작은 글자가 10px 이상 되게(1080 이면 8px)
+DASHBOARD_WIDTH = 640  # 외부 리뷰 U6 — 티스토리 모바일 본문 폭 295px 에서 가장 작은 글자(28)가 12px 이상 되게(800 이면 10px)
 _SCALE = 2
 _FRESH_DAYS = 100
 _INDEX_UNIT = re.compile(r"(\d{4})\.(\d{2})=100")
@@ -32,7 +32,7 @@ _RATE = (29, 78, 216)
 _BASE = (100, 116, 139)
 _BAR = (203, 213, 225)
 
-_SOURCE_LINES = ("출처 한국부동산원(가격지수·R-ONE 거래량) · 한국은행 ECOS(금리)", "정리 서울 아파트 실거래 데이터랩")
+_SOURCE_LINES = ("출처 한국부동산원(가격지수·R-ONE 거래량)", "한국은행 ECOS(금리)", "정리 서울 아파트 실거래 데이터랩")
 
 
 @dataclass(frozen=True)
@@ -403,9 +403,9 @@ class _Canvas:
 
 _PAD = 48
 _GUTTER = 84  # 왼쪽 눈금 글자 자리 — 선이 눈금 글자와 겹치지 않게 플롯 밖에 둔다
-_PANEL_H = 440
-_HEADER_H = 160
-_FOOTER_H = 100
+_PANEL_H = 480
+_HEADER_H = 196
+_FOOTER_H = 150
 
 
 def _short_month(month: str) -> str:
@@ -494,10 +494,19 @@ def _axis(c, top, bottom, left, right, ticks, fmt, months, xpos):
             c.text((mid, bottom + 12), _short_month(month), 28, _MUTED, anchor="ma")
 
 
+def _panel_title(c, y, title) -> int:
+    """패널 제목. 괄호 단서(기준·단위)는 640px 폭에 한 줄로 안 들어가므로 제목 아래 흐린 줄로 내린다. 다음 줄 y 를 돌려준다."""
+    head, _, note = title.partition(" (")
+    c.text((_PAD, y), head, 40, _INK, bold=True)
+    if not note:
+        return y + 60
+    c.text((_PAD, y + 54), "(" + note, 28, _MUTED)
+    return y + 98
+
+
 def _panel_header(c, y, title, lines) -> int:
     """패널 제목과 머리줄 값. 폭을 넘는 값은 다음 줄로 넘기고, 그 아래 플롯 윗변 y 를 돌려준다."""
-    c.text((_PAD, y), title, 40, _INK, bold=True)
-    x, row = _PAD, y + 60
+    x, row = _PAD, _panel_title(c, y, title)
     for text, color, bold in lines:
         width = c.width_of(text, 34, bold)
         if x > _PAD and x + width > DASHBOARD_WIDTH - _PAD:
@@ -508,8 +517,7 @@ def _panel_header(c, y, title, lines) -> int:
 
 
 def _missing(c, y, title):
-    c.text((_PAD, y), title, 40, _INK, bold=True)
-    c.text((_PAD, y + 64), "자료 미수집 — 출처 확인 중", 34, _MUTED)
+    c.text((_PAD, _panel_title(c, y, title)), "자료 미수집 — 출처 확인 중", 34, _MUTED)
 
 
 def _draw_prices(c, y, d):
@@ -615,11 +623,17 @@ def _draw_rate(c, y, d):
                 pts.append((xpos[m], pts[-1][1]))
             pts.append((xpos[m], ymap(v)))
         c.line(pts, _BASE, 3, dash=(10, 8))
-        c.text((right + 12, pts[-1][1]), "기준금리", 28, _BASE, anchor="lm")
     for seg in _segments(p.points, xpos, ymap):
         c.line(seg, _RATE, 4)
     c.dot((xpos[month], ymap(value)), 6, _RATE)
-    c.text((right + 12, ymap(value)), "주담대", 28, _RATE, bold=True, anchor="lm")
+    # 오른쪽 범례 — 두 끝값이 가까우면(같은 금리 포함) 가격 패널처럼 위아래로 벌린다(R6 Codex U6-1).
+    labels = [(ymap(value), "주담대", _RATE, True)] + ([(pts[-1][1], "기준금리", _BASE, False)] if d.base_rate else [])
+    labels.sort(key=lambda r: (r[0], r[1] != "주담대"))
+    if len(labels) == 2 and labels[1][0] - labels[0][0] < 36:
+        mid = (labels[0][0] + labels[1][0]) / 2
+        labels = [(mid - 19, *labels[0][1:]), (mid + 19, *labels[1][1:])]
+    for yy, label, color, bold in labels:
+        c.text((right + 12, yy), label, 28, color, bold=bold, anchor="lm")
 
 
 def dashboard_height() -> int:
@@ -631,14 +645,15 @@ def render_dashboard_png(d: MarketDashboard, font_path: str | Path | None = None
     from blog.thumbnail_card import _resolve_font
     c = _Canvas(DASHBOARD_WIDTH, dashboard_height(), _resolve_font(font_path))
     c.text((_PAD, 36), "서울 아파트 시장 흐름", 54, _INK, bold=True)
-    c.text((_PAD, 106), f"최근 {DASHBOARD_MONTHS}개월 월별 공식 통계 · 확인일 {d.today}", 30, _MUTED)
+    c.text((_PAD, 106), f"최근 {DASHBOARD_MONTHS}개월 월별 공식 통계", 30, _MUTED)
+    c.text((_PAD, 146), f"확인일 {d.today}", 30, _MUTED)
     y = _HEADER_H
     for draw in (_draw_prices, _draw_trades, _draw_rate):
         c.line([(_PAD, y - 14), (DASHBOARD_WIDTH - _PAD, y - 14)], _GRID, 2)
         draw(c, y, d)
         y += _PANEL_H
     for i, line in enumerate(_SOURCE_LINES):
-        c.text((_PAD, y + 8 + i * 38), line, 26, _MUTED)
+        c.text((_PAD, y + 8 + i * 40), line, 28, _MUTED)
     return c.png()
 
 

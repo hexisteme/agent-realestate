@@ -363,6 +363,126 @@ def build_daily_card(ds: Mapping[str, Any], output_dir: str | Path, *,
                          len(payload), data.observed_date, data.data_asof, str(font))
 
 
+@dataclass(frozen=True)
+class PeriodicCardData:
+    """결산 대표 그림 입력. signal='filings' = 구별 새로 나타난 실거래 기록 수(기간마다 달라짐, 기본),
+    'price' = 기준 스냅샷 대비 같은 단지 짝의 구 중위 변화(%) — 신고 비교 자료가 없는 기간의 대체 신호."""
+
+    kind: str
+    today: str
+    base_date: str
+    data_asof: str
+    signal: str
+    gu_values: tuple[tuple[str, float | None], ...]
+
+
+# 종류별 도형·색(외부 리뷰 U12, R1 합의) — 일간은 청록 둥근 사각(_draw_cover_safe_card).
+_PERIODIC_STYLE = {
+    "weekly": {"label": "주간 결산", "shape": "circle", "shape_txt": "원", "accent": "#f59e0b",
+               "up": ((0x3A, 0x2A, 0x10), (0xF5, 0x9E, 0x0B))},
+    "monthly": {"label": "월간 결산", "shape": "diamond", "shape_txt": "마름모", "accent": "#a78bfa",
+                "up": ((0x2A, 0x1F, 0x4A), (0xA7, 0x8B, 0xFA))},
+}
+_PERIOD_DOWN = ((0x14, 0x24, 0x3A), (0x60, 0xA5, 0xFA))
+_PERIOD_FULL_PCT = 3.0     # |변화| 3% 이상이면 가장 진한 색
+_PERIOD_MIN_SHADE = 0.3    # 0 이 아닌 변화는 최소 이 농도로 보이게
+
+
+def prepare_periodic_card(delta: Mapping[str, Any]) -> PeriodicCardData:
+    """build_period_delta 결과 → 결산 대표 그림 입력. 종류·날짜가 없으면 거부한다."""
+    kind = delta.get("kind")
+    if kind not in _PERIODIC_STYLE:
+        raise ValueError("결산 대표 그림은 weekly·monthly 만 지원합니다.")
+    today, base = _date_label(delta.get("today")), _date_label(delta.get("base_date"))
+    if "미확인" in (today, base):
+        raise ValueError("결산 대표 그림에는 이번·기준 날짜가 필요합니다.")
+    from blog.visual_first import SEOUL_GEO_TILES
+
+    by_gu = (delta.get("filings") or {}).get("by_gu") if isinstance(delta.get("filings"), Mapping) else None
+    values: dict[str, float | None] = {}
+    if isinstance(by_gu, Mapping):
+        # 주간 중위 변화는 대부분 0 이라 매주 같은 그림이 된다(10-11 실측 25개 구 전부 0.0) → 새 기록 수가 기본.
+        signal = "filings"
+        for row in delta.get("gus") or []:
+            if isinstance(row, Mapping) and isinstance(row.get("gu"), str):
+                values[row["gu"]] = 0.0
+        for gu, n in by_gu.items():
+            count = _number(n)
+            values[str(gu)] = count if count is not None and count >= 0 else None   # 건수는 음수가 없다(R6)
+    else:
+        signal = "price"
+        for row in delta.get("gus") or []:
+            if isinstance(row, Mapping) and isinstance(row.get("gu"), str):
+                # alt 가 말하는 '구 중위 변화' = 유효짝 구 중위끼리의 변화율(단지별 변화율의 중위가 아니다, R6)
+                values[row["gu"]] = _number(row.get("gu_median_delta_pct"))
+    # 그리지 않는 구(25구 밖 키)가 진하기 기준(최대값)을 오염시키지 않게 서울 25개 구만 남긴다(R6).
+    values = {gu: v for gu, v in values.items() if gu in SEOUL_GEO_TILES}
+    return PeriodicCardData(kind, today, base, _date_label(delta.get("asof") or today), signal,
+                            tuple(sorted(values.items())))
+
+
+def _period_fill(kind: str, change: float) -> tuple[int, int, int]:
+    dark, bright = _PERIODIC_STYLE[kind]["up"] if change > 0 else _PERIOD_DOWN
+    t = _PERIOD_MIN_SHADE + (1 - _PERIOD_MIN_SHADE) * min(1.0, abs(change) / _PERIOD_FULL_PCT)
+    return tuple(round(d + (b - d) * t) for d, b in zip(dark, bright))
+
+
+def draw_periodic_card(data: PeriodicCardData, font_path: Path) -> CardCanvas:
+    """글자 없는 결산 대표 그림 — 일간과 같은 25개 구 지리 배치·커버 안전영역, 종류별 도형·색."""
+    from blog.visual_first import SEOUL_GEO_TILES
+
+    style = _PERIODIC_STYLE[data.kind]
+    card = CardCanvas(font_path)
+    card.draw.rectangle((0, 0, 1200, 9), fill=style["accent"])
+    values = dict(data.gu_values)
+    peak = max((v for v in values.values() if v), default=0)
+    cell_w, cell_h, gap_x, gap_y, left, top = 82, 44, 7, 8, 337, 38
+    for gu, (r, c) in SEOUL_GEO_TILES.items():
+        x0, y0 = left + c * (cell_w + gap_x), top + r * (cell_h + gap_y)
+        cx, cy = x0 + cell_w // 2, y0 + cell_h // 2
+        value = values.get(gu)
+        if not value:
+            fill = None
+        elif data.signal == "filings":
+            fill = _period_fill(data.kind, _PERIOD_FULL_PCT * value / peak)   # 가장 많은 구 = 가장 진함
+        else:
+            fill = _period_fill(data.kind, value)
+        outline = None if fill else "#294356"
+        if style["shape"] == "circle":
+            box = (cx - cell_h // 2, y0, cx + cell_h // 2, y0 + cell_h)
+            card.draw.ellipse(box, fill=fill, outline=outline, width=2)
+        else:
+            box = (cx - 30, y0, cx + 30, y0 + cell_h)
+            card.draw.polygon([(cx, y0), (cx + 30, cy), (cx, y0 + cell_h), (cx - 30, cy)],
+                              fill=fill, outline=outline, width=2)
+        card.tile_boxes.append(box)
+    return card
+
+
+def _periodic_alt(data: PeriodicCardData) -> str:
+    style = _PERIODIC_STYLE[data.kind]
+    head = f"{CARD_BRAND} {style['label']} 대표 그림(글자 없음). 서울 25개 구를 위치대로 놓은 {style['shape_txt']}. "
+    if data.signal == "filings":
+        body = (f"칸이 진할수록 기준 스냅샷({data.base_date}) 이후 이번({data.today})까지 그 구에서 새로 나타난 실거래 기록이 "
+                "많습니다(가장 많은 구 기준 상대 농도, 계약 시점이 아니라 목록에 나타난 시점). 테두리만 있는 칸은 새 기록 없음. ")
+    else:
+        body = (f"색이 있는 칸은 기준 스냅샷({data.base_date}) 대비 이번({data.today}) 같은 단지 짝의 구 중위 변화가 있는 구로, "
+                "따뜻한 색은 플러스·푸른색은 마이너스이며 진할수록 변화가 큽니다. 테두리만 있는 칸은 변화 0 또는 비교 단지 없음. ")
+    return head + body + "출처 국토교통부 RTMS."
+
+
+def build_periodic_card(delta: Mapping[str, Any], output_dir: str | Path, *,
+                        font_path: str | Path | None = None) -> ThumbnailCard:
+    """결산 delta → 글자 없는 대표 그림 PNG(원자적 출력, 파일명 {kind}-{이번 날짜}-{해시16}.png)."""
+    data = prepare_periodic_card(delta)
+    font = _resolve_font(font_path)
+    payload = draw_periodic_card(data, font).png_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    destination = _write_card_bytes(Path(output_dir).resolve(), f"{data.kind}-{data.today}-{digest[:16]}.png", payload)
+    return ThumbnailCard(str(destination), digest, CARD_WIDTH, CARD_HEIGHT, _periodic_alt(data),
+                         len(payload), data.today, data.data_asof, str(font))
+
+
 def social_meta(base_url: str, relative_image: str, alt: str) -> str:
     """허용된 사이트 하위 PNG의 절대 HTTPS OG/Twitter 메타를 만든다."""
     parsed = urlsplit(base_url)

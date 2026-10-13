@@ -43,12 +43,54 @@ def _unique_fields(pairs):
     return result
 
 
+_MARKER_RE = r'<meta name="tistory-representative-sha256" content="[0-9a-f]{64}">\n?'
+
+
+def _card_prefix(helper: Path, data) -> str:
+    """원고가 받는 대표 그림 접두사. 일간 원고는 daily, 결산 원고는 주간·월간이 같은 파일명이라 태그(주간결산/월간결산)로
+    weekly·monthly 를 가른다 — 태그가 둘 다거나 없으면 둘 다 허용(외부 리뷰 U12, R6)."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-periodic-tistory-draft\.html", helper.name):
+        return "daily"
+    tags = {tag.strip() for tag in str((data or {}).get("tags") or "").split(",")}
+    kinds = [kind for kind, label in (("weekly", "주간결산"), ("monthly", "월간결산")) if label in tags]
+    return kinds[0] if len(kinds) == 1 else "(?:weekly|monthly)"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def discard_media_manifest(helper) -> None:
+    """대표 그림 없이 발행할 원고에서 이전 실행의 표지(meta)와 sidecar 를 지운다. 남으면 새 원고와 어긋나
+    발행이 ERR:representative image contract invalid 로 막힌다(R6)."""
+    helper = Path(helper).resolve()
+    sidecar = media_path(helper)
+    if sidecar.exists() or sidecar.is_symlink():
+        sidecar.unlink()
+    source = helper.read_text(encoding="utf-8")
+    cleaned = re.sub(_MARKER_RE, "", source)
+    if cleaned != source:
+        _write_atomic(helper, cleaned)
+
+
 def write_media_manifest(helper, data, card) -> str:
     """Generated sidecar; the PNG must be inside the sibling images directory."""
     helper = Path(helper).resolve()
     image = Path(card.path).resolve()
     image_dir = (helper.parent.parent / "images").resolve()
-    if image.parent != image_dir or not re.fullmatch(r"daily-[0-9-]+-[0-9a-f]{16}\.png", image.name):
+    if image.parent != image_dir or not re.fullmatch(r"(?:daily|weekly|monthly)-[0-9-]+-[0-9a-f]{16}\.png", image.name):
+        raise MediaContractError()
+    # 종류·날짜가 원고와 안 맞는 그림은 원고를 건드리기 전에 거부한다(쓰고 나서 검증 실패하면 반쯤 쓴 계약이 남는다).
+    if not re.fullmatch(rf"{_card_prefix(helper, data)}-{re.escape(str(card.observed_date))}-[0-9a-f]{{16}}\.png", image.name):
         raise MediaContractError()
     record = {
         "schema": "TistoryMedia/v1", "draft": helper.name,
@@ -61,18 +103,8 @@ def write_media_manifest(helper, data, card) -> str:
     source = helper.read_text(encoding="utf-8")
     if source.count("</head>") != 1:
         raise MediaContractError()
-    source = re.sub(r'<meta name="tistory-representative-sha256" content="[0-9a-f]{64}">\n?', "", source)
-    updated = source.replace("</head>", marker + "\n</head>", 1)
-    fd, temporary_helper = tempfile.mkstemp(prefix=f".{helper.name}.", dir=helper.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_helper, helper)
-    finally:
-        if os.path.exists(temporary_helper):
-            os.unlink(temporary_helper)
+    source = re.sub(_MARKER_RE, "", source)
+    _write_atomic(helper, source.replace("</head>", marker + "\n</head>", 1))
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -153,7 +185,7 @@ def _read_media_manifest(helper, data, *, required=False) -> DraftMedia | None:
                 or not isinstance(record["alt"], str) or not record["alt"].strip()
                 or len(record["alt"]) > 2_000
                 or not isinstance(record["image"], str)
-                or not re.fullmatch(r"\.\./images/daily-[0-9-]+-[0-9a-f]{16}\.png", record["image"])
+                or not re.fullmatch(r"\.\./images/(?:daily|weekly|monthly)-[0-9-]+-[0-9a-f]{16}\.png", record["image"])
                 or not isinstance(record["sha256"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
                 or (declared and declared[0] != record["sha256"])):
@@ -164,13 +196,17 @@ def _read_media_manifest(helper, data, *, required=False) -> DraftMedia | None:
                     or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value)
                     or date.fromisoformat(value).isoformat() != value):
                 raise MediaContractError()
+        # 그림 종류는 원고 종류와 맞아야 한다 — 일간 원고는 daily-, 결산(periodic) 원고는 weekly-·monthly-(외부 리뷰 U12).
+        daily_date = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2})-tistory-draft\.html", helper.name)
+        periodic_date = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2})-periodic-tistory-draft\.html", helper.name)
+        prefix = _card_prefix(helper, data)
         if (record["data_asof"] > record["observed_date"]
                 or not re.fullmatch(
-                    rf"\.\./images/daily-{re.escape(record['observed_date'])}-[0-9a-f]{{16}}\.png",
+                    rf"\.\./images/{prefix}-{re.escape(record['observed_date'])}-[0-9a-f]{{16}}\.png",
                     record["image"])):
             raise MediaContractError()
-        daily_date = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2})-tistory-draft\.html", helper.name)
-        if daily_date and daily_date[1] != record["observed_date"]:
+        helper_date = daily_date or periodic_date
+        if helper_date and helper_date[1] != record["observed_date"]:
             raise MediaContractError()
         image = (helper.parent / record["image"]).resolve()
         if image.parent != (helper.parent.parent / "images").resolve():

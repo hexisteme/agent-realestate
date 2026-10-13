@@ -192,7 +192,8 @@ def test_x_labels_mark_januaries_clear_of_the_ends():
     assert mch._x_labels(months[2:]) == ["2024-11", "2026-01", "2026-08"]
 
 
-TISTORY_PHONE_COLUMN = 310  # floker 스킨 본문 폭(390px 화면 실측) — 이미지가 이 폭으로 줄어든다
+TISTORY_PHONE_COLUMN = 295  # 외부 리뷰(2026-10-13) U6 실측 모바일 본문 폭 — 이미지가 이 폭으로 줄어든다
+PHONE_MIN_TEXT_PX = 12      # U6 — 축·범례·출처가 휴대폰에서 읽히는 하한(종전 10px)
 
 
 def test_png_text_fits_canvas_and_stays_legible_in_phone_column(monkeypatch):
@@ -215,7 +216,7 @@ def test_png_text_fits_canvas_and_stays_legible_in_phone_column(monkeypatch):
     mch.render_dashboard_png(d)
     for text, size, (x0, y0, x1, y1), (width, height) in boxes:
         assert 0 <= x0 and x1 <= width and 0 <= y0 and y1 <= height, (text, (x0, x1), width)
-        assert size / width * TISTORY_PHONE_COLUMN >= 10, (text, size / width * TISTORY_PHONE_COLUMN)
+        assert size / width * TISTORY_PHONE_COLUMN >= PHONE_MIN_TEXT_PX, (text, size / width * TISTORY_PHONE_COLUMN)
 
 
 def test_flat_series_still_draws_with_at_least_three_ticks():
@@ -244,3 +245,24 @@ def test_png_texts_never_overlap_each_other(monkeypatch):
     for i, (a, (ax0, ay0, ax1, ay1)) in enumerate(boxes):
         for b, (bx0, by0, bx1, by1) in boxes[i + 1:]:
             assert ax1 <= bx0 or bx1 <= ax0 or ay1 <= by0 or by1 <= ay0, (a, b)
+
+
+def test_rate_legends_do_not_overlap_when_mortgage_equals_base_rate(monkeypatch):
+    """R6(Codex U6-1) — 주담대 끝값 = 기준금리 끝값(3.0%)이면 오른쪽 범례 '주담대'·'기준금리'가 같은 y 에 겹쳤다."""
+    pytest.importorskip("PIL")
+    from PIL import ImageDraw
+    boxes = []
+    original = ImageDraw.ImageDraw.text
+
+    def spy(self, xy, text, *args, **kwargs):
+        boxes.append((text, self.textbbox(xy, text, font=kwargs.get("font"), anchor=kwargs.get("anchor"))))
+        return original(self, xy, text, *args, **kwargs)
+
+    snap = snapshot()
+    snap["indicators"]["kr_mortgage_new"] = _ind("kr_mortgage_new", "%", [(d, 3.0) for d in _months("2024-01", 32)])
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", spy)
+    mch.render_dashboard_png(mch.build_market_dashboard(snap, "2026-10-10"))
+    legends = [b for t, b in boxes if t in ("주담대", "기준금리")]
+    assert len(legends) == 2
+    (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = legends
+    assert ax1 <= bx0 or bx1 <= ax0 or ay1 <= by0 or by1 <= ay0

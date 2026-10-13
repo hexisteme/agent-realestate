@@ -742,5 +742,19 @@ def write_period_post(ds: dict, today: str, outdir: str = "report/blog", molit_p
     from blog.tistory_draft import write_digest_draft   # lazy — tistory_draft 는 top-level 에서 이미 import 되지만 관례 유지
     draft = write_digest_draft({"title": post["title"], "tags": post["tags"], "tistory_html": post["tistory_html"]},
                                today, outdir, kind="periodic")
-    return {"kind": kind, "post": path, "draft": draft, "base_date": base_date.isoformat(), "n_pairs": delta["n_pairs"],
-            "n_migrations": len(delta["migrations"]), "filings": bool(filings), "tistory_level": post["tistory_level"]}
+    result = {"kind": kind, "post": path, "draft": draft, "base_date": base_date.isoformat(), "n_pairs": delta["n_pairs"],
+              "n_migrations": len(delta["migrations"]), "filings": bool(filings), "tistory_level": post["tistory_level"]}
+    # 결산 대표 그림(외부 리뷰 U12) — 글자 없는 구별 변화 그림. 실패하면 그림 없이 발행(종전 동작)하고 사유를 남긴다.
+    try:
+        from blog.thumbnail_card import build_periodic_card
+        from blog.tistory_contract import parse_helper
+        from blog.tistory_media import write_media_manifest
+        card = build_periodic_card(delta, f"{outdir}/images")
+        result["media"] = write_media_manifest(draft, parse_helper(draft), card)
+        result["image"] = card.path
+    except Exception as e:                                       # noqa: BLE001 — 대표 그림 실패는 결산 발행을 막지 않는다
+        print(f"[period_delta] 결산 대표 그림 생략: {type(e).__name__}: {str(e)[:120]}")
+        # 같은 날 이전 실행의 표지·sidecar 가 남으면 새 원고와 어긋나 발행이 막힌다 — 그림 없는 원고로 되돌린다(R6).
+        from blog.tistory_media import discard_media_manifest
+        discard_media_manifest(draft)
+    return result

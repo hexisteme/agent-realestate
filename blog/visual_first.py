@@ -184,6 +184,8 @@ def render_tistory_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, b
             f'<p>{summary}</p>'
             f'<p><img src="{base_url}/images/{image.name}" width="{image.width}" height="{image.height}" '
             f'alt="{html.escape(dashboard_alt(d))}"></p>'
+            # U6 — 휴대폰에선 그림이 본문 폭으로 줄어든다. 원본 크기로 여는 링크(티스토리 붙여넣기는 img 를 감싼 a 를 보장 못 함).
+            f'<p data-dashboard-zoom><a href="{base_url}/images/{image.name}">그래프 원본 크게 보기</a></p>'
             + (f'<p data-dashboard-caption style="color:{_MUTED}">{html.escape(caption)}</p>' if caption else "")
             + f'<p><b>최근 6개월 값</b> <span style="color:{_MUTED}">· 그래프와 같은 원자료</span></p>'
             '<table data-dashboard-table style="width:100%;table-layout:fixed;border-collapse:collapse">'
@@ -276,8 +278,9 @@ def render_site_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, brie
     rows = "".join("<tr>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>" for row in _table_rows(d))
     return (f'<section class="vf" data-visual-first><style>{SITE_CSS}</style>'
             f'<p class="vf-summary">{summary}</p>'
-            f'<figure class="vf-dash"><img src="../images/{image.name}" width="{image.width}" height="{image.height}" '
-            f'alt="{html.escape(dashboard_alt(d))}" decoding="async">'
+            f'<figure class="vf-dash"><a href="../images/{image.name}" data-dashboard-zoom title="원본 크게 보기">'
+            f'<img src="../images/{image.name}" width="{image.width}" height="{image.height}" '
+            f'alt="{html.escape(dashboard_alt(d))}" decoding="async"></a>'
             + (f'<figcaption class="vf-note" data-dashboard-caption>{html.escape(caption)}</figcaption>' if caption else "")
             + '</figure>'
             '<h2>최근 6개월 값</h2><div class=tblwrap><table class="vf-table" data-dashboard-table>'
