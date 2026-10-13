@@ -147,9 +147,9 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
     gu_med = be.compute_gu_median(rows)
     p25 = round(be._pctile(gated_vals, 0.25), 2) if gated_vals else None
     p75 = round(be._pctile(gated_vals, 0.75), 2) if gated_vals else None
-    up = sum(1 for r in rows if r.get("molit_trend_dir") == "▲")
-    down = sum(1 for r in rows if r.get("molit_trend_dir") == "▼")
-    flat = sum(1 for r in rows if r.get("molit_trend_dir") == "—")
+    gated = be.count_gated_trends(rows)  # 표본기준추세수 — 일간 글·지도와 같은 기준(C1)
+    up, down, n_judged = gated["up"], gated["down"], gated["n_judged"]
+    flat = n_judged - up - down
     jeonse_med = be.compute_gu_jeonse_ratio_median(rows)
     inventory_panel = _inventory_panel(gu, rows, ds)
     community_panel = render_gu_panel(gu)
@@ -181,7 +181,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
         f'<div class=tile><span class=k>구 중위(중위의 중위)</span><span class=v>{_eok(gu_med)}</span></div>'
         f'<div class=tile><span class=k>P25–P75(거래의 가운데 절반)</span>'
         f'<span class=v style="font-size:16px">{_eok(p25)}–{_eok(p75)}</span></div>'
-        f'<div class=tile><span class=k>추세(3/9개월)</span>'
+        f'<div class=tile><span class=k>추세(3/9개월) · 판정 {n_judged}단지</span>'
         f'<span class=v style="font-size:16px"><span class=up>▲{up}</span> · <span class=down>▼{down}</span> · —{flat}</span></div>'
         f'<div class=tile><span class=k>전세가율 중위(게이트)</span><span class=v>{_pct(jeonse_med)}</span></div>'
     )
@@ -216,7 +216,7 @@ def render_gu_hub(gu: str, rows: list[dict], asof: str, today: str,
 <a href="../daily/latest.html">오늘의 변화</a><a href="../methodology.html">방법론</a></nav>
 <div class=crumb><a href="../index.html">서울</a> › {gu}</div>
 <h1>{gu} 아파트 실거래</h1>
-<p class=meta>{n}단지 · 기준 {asof} · 국토부 실거래(신고 지연 최대 30일) · 매일 자동 갱신</p>
+<p class=meta>{n}단지 · 기준 {asof} · 국토부 실거래(계약일 기준 · 법정 신고기한 30일이라 최근 계약분은 잠정) · 매일 자동 갱신</p>
 {lead_html}
 {inventory_panel}
 {community_panel}

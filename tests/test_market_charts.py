@@ -109,7 +109,7 @@ def test_observation_summary_is_slot_template_without_judgement():
     counts = {"n_total": 1756, "n_judged": 482, "up": 460, "down": 20}
     s = mch.compose_observation_summary(counts, d, asof="2026-10-10")
     assert s.startswith("2026-10-10 관측")
-    assert "1,756단지 중 표본 기준을 채운 482단지" in s and "높은 곳 460" in s and "낮은 곳 20" in s and "8월" in s
+    assert "1,756단지 중 3·9개월 비교가 가능한 482단지(관측의 27.4%)" in s and "높은 곳 460" in s and "낮은 곳 20" in s and "8월" in s
     for word in ("적기", "추천", "전망", "오를", "내릴", "기회", "매수", "매도", "바닥", "고점", "판정"):
         assert word not in s
     assert_wording_ok(s, "observation_summary")

@@ -267,7 +267,7 @@ def reading_notes(d: MarketDashboard | None) -> list[tuple[str, str, str]]:
         notes.append((
             "아파트 매매거래량",
             "서울 아파트 매매 신고 건수(호 단위) 합계입니다. 매물 수와 다릅니다.",
-            "한국부동산원 R-ONE, 신고일 기준 집계. 계약일과 최대 30일 차이가 날 수 있습니다.",
+            "한국부동산원 R-ONE, 신고일 기준 집계. 법정 신고기한이 계약 후 30일이라 계약 시점과 어긋나며, 기한을 넘긴 신고·정정도 있습니다.",
         ))
     if d.mortgage:
         notes.append((
@@ -280,13 +280,44 @@ def reading_notes(d: MarketDashboard | None) -> list[tuple[str, str, str]]:
     return notes
 
 
+def _trend_windows(asof: str) -> tuple[str, str]:
+    """3·9개월 비교의 실제 계약월 창(당월 제외, build_explorer._month_windows 와 같은 정의) — '(2026-07~09)' 꼴."""
+    from blog.build_explorer import _month_windows
+    try:
+        windows = _month_windows(asof)
+    except (TypeError, ValueError):
+        return "", ""
+
+    def fmt(months):
+        a, b = min(months), max(months)
+        end = b[4:] if a[:4] == b[:4] else f"{b[:4]}-{b[4:]}"
+        return f"({a[:4]}-{a[4:]}~{end})"
+    return fmt(windows[0]), fmt(windows[1])
+
+
 def observation_summary_lines(counts: dict, d: MarketDashboard | None, *, asof: str) -> list[str]:
     """관측요약 두 줄 — ① 오늘 실거래 관측 ② 월간 공식 통계. 슬롯만 채우는 고정 템플릿, 평가·전망·권유 없음."""
     lines = []
     if all(isinstance(counts.get(k), int) for k in ("n_total", "n_judged", "up", "down")):
-        # 표본기준추세수(GatedTrendCount) — 같은 글의 사실 리드 S1 과 같은 규칙·같은 숫자.
-        lines.append(f"{asof} 관측 {counts['n_total']:,}단지 중 표본 기준을 채운 {counts['n_judged']:,}단지에서 "
-                     f"최근 3개월 실거래 중위가 직전 9개월보다 높은 곳 {counts['up']:,} · 낮은 곳 {counts['down']:,}.")
+        # 표본기준추세수(GatedTrendCount) — 같은 글의 제목·사실 리드 S1 과 같은 규칙·같은 숫자.
+        # 외부 리뷰(2026-10-13) C3·C4·C5·C10: 관측 대비 비율·최근 3개월 5건+ 보조 집계·깔때기·구성 효과를 붙인다.
+        n_total, n_judged = counts["n_total"], counts["n_judged"]
+        share = f"(관측의 {n_judged / n_total * 100:.1f}%)" if n_total else ""
+        recent, prior = _trend_windows(asof)
+        line = (f"{asof} 관측 {n_total:,}단지 중 3·9개월 비교가 가능한 {n_judged:,}단지{share}에서 "
+                f"최근 3개월{recent} 실거래 중위가 직전 9개월{prior}보다 높은 곳 {counts['up']:,} · 낮은 곳 {counts['down']:,}"
+                + (f" · 보합 {flat:,}." if (flat := n_judged - counts["up"] - counts["down"]) else "."))
+        if counts.get("n_robust"):
+            line += (f" 최근 3개월 거래 {counts['robust_min_recent']}건 이상인 {counts['n_robust']:,}단지만 보면 "
+                     f"높은 곳 {counts['up_robust']:,} · 낮은 곳 {counts['down_robust']:,}"
+                     + (f" · 보합 {rflat:,}." if (rflat := counts["n_robust"] - counts["up_robust"] - counts["down_robust"]) else "."))
+        lines.append(line)
+        f = counts.get("funnel")
+        # C3(R2 Codex): 단계 숫자와 함께 단계별 제외 사유·수(미산출은 '거래 없음'이 아니라 중위를 못 낸 것).
+        scope = (f"집계 범위: 관측 {f['n_total']:,} → 12개월 가격 {f['n_priced']:,}(가격 미산출 {f['n_no_price']:,}) → "
+                 f"아파트·전용 40㎡+·매매 10건+ {f['n_gated']:,}(비아파트 {f['excl_non_apt']:,} · 40㎡ 미만 {f['excl_small']:,} · "
+                 f"매매 10건 미만 {f['excl_thin']:,}) → 3·9개월 각 2건+ {f['n_judged']:,}(한 기간이라도 2건 미만 {f['n_unjudged']:,}). ") if f else ""
+        lines.append(scope + "중위 변화에는 두 기간에 거래된 동·층·면적 구성 차이도 섞여 같은 집의 가격 변화와 다릅니다.")
     parts = []
     if d and d.sale:
         month, value = d.sale.latest

@@ -45,7 +45,7 @@ def build_tistory_section(gu: str, rows: list[dict]) -> str:
             if r.get("molit_p25_eok") is not None:   # 분포 병기 — P25–P75 협상 레인지(중위는 헤드라인)
                 px += f'<br><span style="{_MUT}">P25–75: {r["molit_p25_eok"]}–{r["molit_p75_eok"]}억</span>'
         else:
-            px = f'<span style="{_MUT}">실거래 없음</span>'
+            px = f'<span style="{_MUT}">대표면적 중위 미산출</span>'
         tf = be._tier_facts(r)                       # 추세·52주위치(무점수 사실)
         if tf:
             px += f'<br><span style="{_MUT}">{" · ".join(tf)}ᶠ</span>'
@@ -113,9 +113,6 @@ def build_tistory_section(gu: str, rows: list[dict]) -> str:
             life.append(f'주민평점 {r["review_score"]}/5')
         if r.get("gongsi_man") is not None:
             life.append(f'공시가 {r["gongsi_man"]:,}만')
-        # 1만원 미만은 K-apt 부분응답 의심(관리비 0만원/월 오표기 방지) — 미표기. round 는 탐색기와 동일.
-        if r.get("maint_fee_won") and r["maint_fee_won"] >= 10000:
-            life.append(f'관리비 {round(r["maint_fee_won"] / 10000)}만원/월')
         if life:
             lines.append(f'<b>생활·투자</b> <span style="{_MUT}">{" · ".join(life)}</span>')
         if r.get("complex_no"):

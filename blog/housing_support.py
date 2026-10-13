@@ -17,6 +17,14 @@ _NOTICE_FIELDS = {field.name for field in fields(HousingNotice)}
 _BASE_URL = "https://hexisteme.github.io/seoul-re-snapshot"
 
 
+_NON_SEOUL = re.compile(r"\[(?!서울)[가-힣]{2,4}지역본부\]|(경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|충청|전북|전남|전라|경북|경남|경상|제주)(도|시|광역시|특별자치)")
+
+
+def is_seoul_relevant(title: str) -> bool:
+    """서울 글에 실을 공고인가 — LH 목록의 '전국' 지역 공고 중 제목이 서울 밖 지역본부·시도를 명시한 것은 뺀다(교차검증 A3)."""
+    return not _NON_SEOUL.search(title or "")
+
+
 def _context(snapshot, today):
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     try:
@@ -44,7 +52,7 @@ def _context(snapshot, today):
         for item in raw_notices if isinstance(raw_notices, list) else []:
             try:
                 notice = HousingNotice(**{key: value for key, value in item.items() if key in _NOTICE_FIELDS})
-                if notice.published_on <= current.isoformat():
+                if notice.published_on <= current.isoformat() and is_seoul_relevant(notice.title):
                     notices.append(notice.as_dict(current.isoformat(), asof_datetime=asof))
             except (ValueError, TypeError, AttributeError):
                 continue

@@ -116,19 +116,78 @@ def _median_iqr(vals: list[float]) -> tuple[float | None, float | None]:
     return round(st.median(vals), 1), round(q3 - q1, 1)
 
 
-def pair_complexes(cur_ds: dict, base_ds: dict) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
-    """(짝 [(cur,base)], 이번에만 있는 단지, 기준에만 있던 단지) — 키 = (구, 표시명, 전용)."""
-    base = {_key(r): r for r in base_ds.get("complexes", [])}
-    pairs, added = [], []
-    for r in cur_ds["complexes"]:
-        b = base.get(_key(r))
-        if b is None:
-            added.append(r)
+def _match_identities(cur_rows: list[dict], base_rows: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+    """단지 신원 짝(외부 리뷰 W1, R2) — 양쪽에 complex_no 가 있으면 번호로만 맞춘다(번호가 다르면 다른 단지).
+    한쪽이라도 번호가 없으면 (구, 이름)으로 보조 매칭. 반환: (신원 짝 [(cur, base)], 이번에만, 기준에만)."""
+    def no(r):
+        v = r.get("complex_no")
+        return str(v) if v not in (None, "") else None
+
+    # 한쪽 안에서 번호가 겹치면 그 번호 행은 신원 미확정 — 먼저 온 행이 짝을 선점하지 않게 번호·이름 매칭 모두에서 뺀다(R5 Codex).
+    dup = {k for rows in (base_rows, cur_rows) for k, n in Counter(no(r) for r in rows if no(r)).items() if n > 1}
+    base_by_no = {no(b): b for b in base_rows if no(b) and no(b) not in dup}
+    matched, used = [], set()
+    rest_cur = []
+    for c in cur_rows:
+        b = base_by_no.get(no(c)) if no(c) else None
+        if b is not None and id(b) not in used:
+            matched.append((c, b)); used.add(id(b))
         else:
-            pairs.append((r, b))
-    cur_keys = {_key(r) for r in cur_ds["complexes"]}
-    removed = [b for k, b in base.items() if k not in cur_keys]
+            rest_cur.append(c)
+    # (구, 이름) 보조 매칭 — 같은 이름 후보가 여럿이면 '같은 면적·번호 호환' 후보가 서로에게 유일한 짝만 잇고,
+    # 남은 후보가 양쪽 1개씩일 때만 면적이 다른 짝(대표면적 변경)으로 본다. 그 밖은 추측하지 않고 양쪽 목록에 남긴다.
+    # 짝 판정이 행 순서에 의존하지 않는다(R3 Codex 동명 후보 · R4 Codex·agy 순서 의존 반례).
+    base_by_name: dict[tuple, list[dict]] = defaultdict(list)
+    for b in base_rows:
+        if id(b) not in used and no(b) not in dup:
+            base_by_name[(b.get("gu"), b.get("name"))].append(b)
+    cur_by_name: dict[tuple, list[dict]] = defaultdict(list)
+    for c in rest_cur:
+        if no(c) not in dup:
+            cur_by_name[(c.get("gu"), c.get("name"))].append(c)
+    paired_cur = set()
+    for key, cs in cur_by_name.items():
+        bs = base_by_name.get(key, [])
+        fits = lambda c, b: not (no(c) and no(b)) and c.get("area_m2") == b.get("area_m2")
+        for c in cs:
+            cands = [b for b in bs if fits(c, b)]
+            if len(cands) == 1 and sum(fits(x, cands[0]) for x in cs) == 1:
+                matched.append((c, cands[0])); used.add(id(cands[0])); paired_cur.add(id(c))
+        left_c = [c for c in cs if id(c) not in paired_cur]
+        left_b = [b for b in bs if id(b) not in used]
+        if len(left_c) == 1 and len(left_b) == 1 and not (no(left_c[0]) and no(left_b[0])):
+            matched.append((left_c[0], left_b[0])); used.add(id(left_b[0])); paired_cur.add(id(left_c[0]))
+    added = [c for c in rest_cur if id(c) not in paired_cur]
+    removed = [b for b in base_rows if id(b) not in used]
+    return matched, added, removed
+
+
+def pair_complexes(cur_ds: dict, base_ds: dict) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+    """(가격 짝 [(cur,base)], 이번에만 있는 행, 기준에만 있던 행) — 같은 단지 신원(_match_identities)이면서
+    전용면적이 같은 행만 가격 짝. 신원은 같고 면적이 다른 행은 양쪽 목록에 남겨 _membership_changes 가 '대표면적 변경'으로 센다."""
+    matched, added, removed = _match_identities(cur_ds["complexes"], base_ds.get("complexes", []))
+    pairs = []
+    for c, b in matched:
+        if c.get("area_m2") == b.get("area_m2"):
+            pairs.append((c, b))
+        else:
+            added.append(c); removed.append(b)
     return pairs, added, removed
+
+
+def _area_txt(v) -> str:
+    return f"{v:g}" if isinstance(v, (int, float)) else "—"
+
+
+def _membership_changes(added: list[dict], removed: list[dict]) -> dict:
+    """발행 풀 변화 표기 — 신원이 양쪽에 있는(면적만 다른) 단지는 '대표면적 변경'(가격 짝 없음)으로 따로 센다.
+    (구, 이름, 전용) 키만 쓰면 대표면적이 바뀐 단지가 '새로 포함'과 '기준에만 있던 단지'에 동시에 실린다(외부 리뷰 W1).
+    신원은 complex_no 우선, 한쪽이라도 없으면 (구, 이름)(R1 합의 · R2 반례)."""
+    changed, only_added, only_removed = _match_identities(added, removed)
+    return {"added": sorted(f'{r["name"]}({r["gu"]})' for r in only_added),
+            "removed": sorted(f'{r["name"]}({r["gu"]})' for r in only_removed),
+            "area_changed": sorted(f'{c["name"]}({c["gu"]}) {_area_txt(b.get("area_m2"))}→{_area_txt(c.get("area_m2"))}㎡'
+                                   for c, b in changed)}
 
 
 def valid_pairs(pairs: list[tuple[dict, dict]]) -> list[tuple[dict, dict]]:
@@ -209,15 +268,30 @@ def _filing_key(rec: dict) -> tuple:
     return (rec.get("apt"), round(float(rec.get("area") or 0), 2), int(rec.get("price") or 0), rec.get("ym"))
 
 
-def diff_filings(prev: dict, cur: dict) -> dict:
+def molit_window_start(day: str) -> str:
+    """수집 창 시작월 'YYYYMM' — 수집기와 같은 정의(당월 제외 직전 12개 완결월, be._month_windows)."""
+    recent, prior = be._month_windows(day)
+    return min(recent | prior)
+
+
+def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict:
     """MOLIT 원본 두 시점의 multiset 차. cur 에만 있는 레코드 = 그 사이 새로 확인된 신고(체결일이 아니라 API 반영
     시점), prev 에만 있던 레코드 = 사라진 건(창 이탈·해제·정정 등, 사유 미확인). 레코드 신원 = (apt, area, price, ym) — 현재 수집기가
     거래일·층을 버려 동일 튜플의 중복은 개수 차로 처리한다(P1 FilingDelta 가 필드 보존 뒤 정밀화).
-    record_highs = 같은 단지·같은 전용(반올림)의 prev 12개월 표본(≥3건) 최고가를 넘는 신규 레코드."""
+    record_highs = 같은 단지·같은 전용(반올림)의 prev 12개월 표본(≥3건) 최고가를 넘는 신규 레코드.
+    window_start = 현재 수집 창 시작월(molit_window_start). 사라진 기록 중 그보다 이른 계약월 = 창 이탈. 모르면 None
+    (관측된 최저 계약월을 창 경계로 쓰면 창 안 삭제가 창 이탈로 잡힌다 — R2 Codex). 직전에 있던 구가 오늘 통째로
+    없으면(수집 누락) 그 구는 비교에서 빼고 n_lawd_skipped 로 센다(R2 agy)."""
     lawd_gu = {v: k for k, v in be.GU_LAWD.items()}
     new, highs, gone = [], [], 0
+    gone_window = 0
+    cur_yms = [str(r.get("ym")) for k, recs in cur.items() if k != "_done" and isinstance(recs, list)
+               for r in recs if isinstance(r, dict) and r.get("ym")]
+    ref_ym = max(cur_yms) if cur_yms else None
+    skipped = {lawd for lawd, recs in prev.items() if lawd != "_done" and isinstance(recs, list) and recs
+               and not (isinstance(cur.get(lawd), list) and cur.get(lawd))}
     for lawd, recs in cur.items():
-        if lawd == "_done" or not isinstance(recs, list):
+        if lawd == "_done" or not isinstance(recs, list) or lawd in skipped:   # 고지한 누락 구는 집계에서도 뺀다(R3)
             continue
         prev_recs = [r for r in (prev.get(lawd) or []) if isinstance(r, dict)]
         pc, cc = Counter(_filing_key(r) for r in prev_recs), Counter(_filing_key(r) for r in recs)
@@ -230,9 +304,33 @@ def diff_filings(prev: dict, cur: dict) -> dict:
             hist = prev_by_apt.get((apt, round(area)), [])
             if len(hist) >= 3 and price > max(hist):
                 highs.append({"gu": gu, "apt": apt, "area": area, "price": price, "prev_max": max(hist), "n_prev": len(hist)})
-        gone += sum((pc - cc).values())
+        lost = pc - cc
+        gone += sum(lost.values())
+        gone_window += sum(n for key, n in lost.items() if window_start and str(key[3]) < window_start)
     return {"new": new, "n_new": len(new), "n_gone": gone,
+            "ref_ym": ref_ym, "new_by_age": _contract_age_buckets(new, ref_ym),
+            "n_gone_window": gone_window if window_start else None,
+            "n_gone_other": gone - gone_window if window_start else None, "n_lawd_skipped": len(skipped),
             "record_highs": sorted(highs, key=lambda x: (x["gu"], x["apt"]))}
+
+
+def _months_between(ref_ym: str, ym: str) -> int | None:
+    try:
+        return (int(ref_ym[:4]) - int(str(ym)[:4])) * 12 + int(ref_ym[4:6]) - int(str(ym)[4:6])
+    except (TypeError, ValueError):
+        return None
+
+
+def _contract_age_buckets(new: list[dict], ref_ym: str | None) -> dict:
+    """새로 확인된 신고의 계약월 분포(외부 리뷰 C13) — 기준월(현재 목록의 최신 계약월)에서 0~1개월 = 최근 계약,
+    2~3개월 = 신고기한을 넘겼을 수 있는 계약, 4개월 이상 = 늦은 신고·정정 반영 가능성이 큰 과거 계약."""
+    out = {"recent": 0, "mid": 0, "old": 0}
+    for r in new:
+        age = _months_between(ref_ym, r.get("ym")) if ref_ym else None
+        if age is None:
+            continue
+        out["recent" if age <= 1 else "mid" if age <= 3 else "old"] += 1
+    return out
 
 
 def summarize_filings(f: dict) -> dict:
@@ -242,6 +340,9 @@ def summarize_filings(f: dict) -> dict:
         by_band[be.price_segment(r["price"] / 1e8)].append(r["price"] / 1e8)
         by_gu[r["gu"]] += 1
     return {"n_new": f["n_new"], "n_gone": f["n_gone"], "by_gu": dict(by_gu),
+            "ref_ym": f.get("ref_ym"), "new_by_age": f.get("new_by_age"),
+            "n_gone_window": f.get("n_gone_window"), "n_gone_other": f.get("n_gone_other"),
+            "n_lawd_skipped": f.get("n_lawd_skipped"),
             "bands": [{"band": b, "n": len(by_band[b]),
                        "median_eok": round(st.median(by_band[b]), 2) if by_band[b] else None} for b in BANDS],
             "record_highs": f.get("record_highs", [])}
@@ -295,8 +396,7 @@ def build_period_delta(cur_ds: dict, base_ds: dict, kind: str, today: str, base_
     return {"kind": kind, "today": today, "asof": cur_ds.get("data_asof", today), "base_date": base_date.isoformat(),
             "base_asof": base_ds.get("data_asof"), "n_cur": len(cur_ds["complexes"]), "n_base": len(base_ds["complexes"]),
             "n_pairs": len(pairs), "n_valid": len(vp),
-            "added": sorted(f'{r["name"]}({r["gu"]})' for r in added),
-            "removed": sorted(f'{r["name"]}({r["gu"]})' for r in removed),
+            **_membership_changes(added, removed),
             "seoul_median_cur": be.compute_gu_median([c for c, _ in vp]),               # 양쪽 게이트 통과 짝만(풀 640→927 에서 +22.8% 로 오인되던 경로, 게이트 ② Codex)
             "seoul_median_base": be.compute_gu_median([b for _, b in vp]),
             "seoul_median_pool_cur": be.compute_gu_median(cur_ds["complexes"]),         # 이번 풀 전체 수준(기준과 비교하지 않음)
@@ -341,7 +441,8 @@ def _tbl(headers: list[str], rows: list[list[str]], inline: bool) -> str:
 
 
 def _h(text: str, inline: bool) -> str:
-    return f"<p><b>{text}</b></p>" if inline else f"<h2>{text}</h2>"
+    """절 제목 — Tistory 는 스킨 글 제목(h2) 아래 h3(일간 afed177 과 같은 규칙, 외부 리뷰 U11), 사이트는 h2."""
+    return f"<h3>{text}</h3>" if inline else f"<h2>{text}</h2>"
 
 
 def _p(text: str, inline: bool, mut: bool = False) -> str:
@@ -363,6 +464,38 @@ def _band_table(bands: list[dict], inline: bool) -> str:
     return _tbl(["가격대", "단지 수(기준→이번)", "밴드 중위(억, 시점별 소속 짝 n)", "단지별 Δ중위", "밴드 이동"], rows, inline)
 
 
+def _ym_txt(ym: str | None) -> str:
+    return f"{ym[:4]}-{ym[4:6]}" if ym and len(str(ym)) >= 6 else "—"
+
+
+def _ym_shift(ym: str, k: int) -> str:
+    """'YYYYMM' 에서 k 개월 이동."""
+    n = int(ym[:4]) * 12 + int(ym[4:6]) - 1 + k
+    return f"{n // 12:04d}{n % 12 + 1:02d}"
+
+
+def filing_age_txt(fil: dict) -> str:
+    """새로 확인된 신고의 계약월 분포 — 그 주 체결 건수로 읽히지 않게(C13). 계약월 정보가 없으면 빈 문자열."""
+    a = fil.get("new_by_age")
+    ref = fil.get("ref_ym")
+    if not a or not ref or not sum(a.values()):
+        return ""
+    # R3: '직전 달 N건'이 한 달치로 읽히고 '반영 포함'이 사유를 단정했다 → 구간을 달로 적고 사유는 미확인.
+    m = lambda k: _ym_txt(_ym_shift(ref, -k))
+    span = lambda a_, b_: f"{m(a_)}~{m(b_)[5:] if m(a_)[:4] == m(b_)[:4] else m(b_)}"   # 해가 바뀌면 끝 연도도(R4)
+    return (f'(계약월 {span(1, 0)} {a["recent"]}건 · {span(3, 2)} {a["mid"]}건 · '
+            f'{m(4)} 이전 {a["old"]}건 — 늦은 신고·정정이 섞였을 수 있으나 사유 미확인)')
+
+
+def filing_gone_txt(fil: dict) -> str:
+    skipped = (f" · 오늘 수집 누락 {fil['n_lawd_skipped']}개 구는 비교에서 뺌"
+               if fil.get("n_lawd_skipped") else "")
+    if fil.get("n_gone_window") is None:
+        return f"(창 이탈·해제·정정 등, 사유 미확인{skipped})"
+    return (f'(12개월 창 이탈 {fil["n_gone_window"]}건 · 창 안에서 사라짐 {fil["n_gone_other"]}건 — '
+            f'해제·정정 등 사유 미확인{skipped})')
+
+
 def _sections(d: dict, inline: bool, level: int = 0) -> str:
     opt = _TRIM_LEVELS[level]
     label = POST_LABEL[d["kind"]]
@@ -371,10 +504,14 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
                 f'발행 {d["n_base"]} → {d["n_cur"]}단지, 같은 단지로 짝지은 {d["n_pairs"]}단지 기준(중위 비교는 그중 양쪽 집계 게이트 통과 {d["n_valid"]}단지). '
                 f'국토부 실거래 12개월 동일평형 중위의 변화(사실), '
                 f'자체 점수·순위 없음.', inline)]
-    if d["added"] or d["removed"]:
-        add_txt = (", ".join(d["added"][:10]) + (f' 외 {len(d["added"]) - 10}' if len(d["added"]) > 10 else "")) if d["added"] else "없음"
-        rem_txt = (", ".join(d["removed"][:10]) + (f' 외 {len(d["removed"]) - 10}' if len(d["removed"]) > 10 else "")) if d["removed"] else "없음"
-        parts.append(_p(f'이번에 새로 포함 {len(d["added"])}: {add_txt} · 기준에만 있던 단지 {len(d["removed"])}: {rem_txt}', inline, mut=True))
+    area_changed = d.get("area_changed") or []
+    if d["added"] or d["removed"] or area_changed:
+        def _names(xs: list[str]) -> str:
+            return (", ".join(xs[:10]) + (f' 외 {len(xs) - 10}' if len(xs) > 10 else "")) if xs else "없음"
+        moved = (f' · 대표면적 변경 {len(area_changed)}(같은 면적 짝이 없어 가격 비교 제외): {_names(area_changed)}'
+                 if area_changed else "")
+        parts.append(_p(f'이번에 새로 포함 {len(d["added"])}: {_names(d["added"])} · '
+                        f'기준에만 있던 단지 {len(d["removed"])}: {_names(d["removed"])}{moved}', inline, mut=True))
         parts.append(_p(f'발행 풀이 바뀌어 아래 중위 비교는 짝지은 {d["n_pairs"]}단지 중 양쪽 집계 게이트 통과 {d["n_valid"]}단지만으로 계산. '
                         f'이번 풀 전체 중위 {_eok(d.get("seoul_median_pool_cur"))}'
                         f'({d["n_cur"]}단지)는 구성이 달라 기준과 비교하지 않음.', inline, mut=True))
@@ -420,8 +557,9 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
     parts.append(_tbl(heads, rows, inline))
     parts.append(_h("신고 델타", inline))
     if fil:
-        parts.append(_p(f'기준 아카이브 대비 새로 확인된 신고 {fil["n_new"]}건 · 현재 목록에서 사라진 건 {fil["n_gone"]}건(창 이탈·해제·정정 등, 사유 미확인). '
-                        f'신고 시점 기준이며 체결일이 아님(신고 지연 최대 30일).', inline))
+        parts.append(_p(f'기준 아카이브 대비 새로 나타난 실거래 기록 {fil["n_new"]}건{filing_age_txt(fil)} · '
+                        f'현재 목록에서 사라진 건 {fil["n_gone"]}건{filing_gone_txt(fil)}. '
+                        f'신고 확인 시점 기준이며 그 주 체결 건수가 아님(법정 신고기한은 계약 후 30일이며, 공개·정정·해제 반영으로 최근 계약 자료는 잠정).', inline))
         parts.append(_tbl(["가격대(신고가)", "건수", "중위(억)"],
                           [[b["band"], str(b["n"]), _eok(b["median_eok"])] for b in fil["bands"]], inline))
         highs, hcap = fil["record_highs"], opt["highs"]
@@ -494,7 +632,7 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
 
 def render_period_post(d: dict) -> dict:
     label = POST_LABEL[d["kind"]]
-    title = f'서울 아파트 {label} — {d["today"]} · {d["base_date"]} 대비 · {d["n_cur"]}단지'
+    title = f'서울 아파트 {label} — {d["today"]} ({str(d["base_date"])[5:]} 대비)'   # U8 — 모바일 첫 화면을 덮지 않게 짧게
     desc = (f'서울 아파트 {d["n_cur"]}단지 국토부 공공 실거래 12개월 중위의 {label} 변화({d["base_date"]}→{d["asof"]}). '
             f'가격대·구별 단지 수와 중위 변화, 가격대 이동 {len(d["migrations"])}곳. 자체 평가·점수·순위 없음, 투자자문 아님.')
     body_site = _sections(d, inline=False, level=0)
@@ -575,7 +713,7 @@ def write_period_post(ds: dict, today: str, outdir: str = "report/blog", molit_p
         prev = load_molit_archive_on(base_date, 1, f"{snap_dir}/molit")
         if prev:
             with open(molit_path, encoding="utf-8") as fh:
-                filings = diff_filings(prev, json.load(fh))
+                filings = diff_filings(prev, json.load(fh), window_start=molit_window_start(today))
     weekly, weekly_rows = None, None
     if kind == "monthly":
         wb = resolve_base("weekly", today, snap_dir)

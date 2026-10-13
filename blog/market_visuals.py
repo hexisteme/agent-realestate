@@ -99,8 +99,8 @@ def _district_rows(ds):
         trends = [r for r in priced if _number(r.get("molit_trend_pct")) is not None
                   and all(_number(r.get(k)) is not None and r[k] >= 2
                           for k in ("molit_trend_n_recent", "molit_trend_n_prior"))]
-        result.append({"gu": gu, "n": len(rows), "up": sum(r.get("molit_trend_dir") == "▲" for r in rows),
-                       "down": sum(r.get("molit_trend_dir") == "▼" for r in rows),
+        gated = be.count_gated_trends(rows)  # 표본기준추세수 — 제목·관측요약과 같은 기준(C1)
+        result.append({"gu": gu, "n": len(rows), "n_judged": gated["n_judged"], "up": gated["up"], "down": gated["down"],
                        "price": _number(be.compute_gu_median(priced)), "price_n": len(priced),
                        "jeonse": be.compute_gu_jeonse_ratio_median(rented), "jeonse_n": len(rented),
                        "trend": _number(round(statistics.median(r["molit_trend_pct"] for r in trends), 1)) if trends else None,
@@ -188,7 +188,7 @@ def _tistory(rows, scales, ds, asof):
         price = row["price"]
         cells.append(f'<td data-district="{_escape(row["gu"])}" style="background:{_color(price, scales["price"], end=_TISTORY_PRICE_END)};'
                      'padding:1px;font-size:12px">'
-                     f'<b>{_escape(row["gu"])}</b><br>{_fmt(price)}{"억" if price is not None else ""}<br>{row["n"]}곳<br>'
+                     f'<b>{_escape(row["gu"])}</b><br>{_fmt(price)}{"억" if price is not None else ""}<br>{row["n"]}곳({row["n_judged"]})<br>'
                      f'▲{row["up"]}<br>▼{row["down"]}</td>')
     grid = "".join("<tr>" + "".join(cells[i:i + 5]) + "</tr>" for i in range(0, len(cells), 5))
     bands = {name: 0 for _, name in be.PRICE_SEGMENTS}
@@ -205,10 +205,10 @@ def _tistory(rows, scales, ds, asof):
     return ('<h3>서울 25개 구 요약 · 가격 히트맵</h3>'
             '<table data-market-visuals="districts" style="width:100%;table-layout:fixed;font-size:12px">'
             + grid + '</table>'
-            f'<p>기준일 {asof} · 색: 밝음→진함 0→{_fmt(scales["price"])}억 · 회색 —는 표본 없음. '
-            '값은 게이트 통과 단지 중위의 중위. 곳은 전체 관측단지, ▲·▼는 추세 방향 단지 수입니다.</p>'
+            f'<p>기준일 {asof} · 색 밝음→진함 0→{_fmt(scales["price"])}억 · —=표본 없음 · '
+            '값=게이트 통과 단지 중위의 중위 · 곳=관측, 괄호=추세 비교 단지(▲▼는 그중).</p>'
             '<h3>가격대 분포 · 관측 단지 수</h3><table style="width:100%;font-size:12px">'
-            + bar_rows + '</table><p>국토교통부 RTMS · 가격 집계: 아파트·전용40㎡+·매매10건+. 가격대는 모든 관측단지의 유효 중위 기준입니다.</p>')
+            + bar_rows + '</table><p>국토교통부 RTMS · 가격 집계 아파트·40㎡+·매매10건+ · 가격대=관측단지 유효 중위.</p>')
 
 
 def build_market_visuals(ds: dict, today: str) -> dict[str, str]:

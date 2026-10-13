@@ -146,7 +146,7 @@ def _assert_answer_first(body, surface):
         for name, metric, count in zip(names, metrics, counts):
             row = section.split(name, 1)[1].split("건", 1)[0] + "건"
             assert metric in row
-            assert f"12개월 표본 {count}건" in row
+            assert ("가격 표본" if "회전율" in row else "12개월 가격 표본") + f" {count}건" in row
     assert "합성회전넷" not in tv
     assert "합성하단넷" not in lo
     assert not any(name in tv + lo for name in ("합성제외유형", "합성제외면적", "합성제외표본"))
@@ -292,7 +292,7 @@ def test_gu_summary_rows_one_per_distinct_gu_sorted():
 def test_build_daily_digest_return_shape_and_title():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     assert set(d.keys()) == {"title", "tags", "tistory_html", "site_html", "summary"}
-    assert d["title"] == "서울 아파트 실거래가 — 강남좋은아파트 등 상승 1단지 · 강남전세단지 갭 2억 (2026-09-05, 7단지)"
+    assert d["title"] == "서울 아파트 실거래가 — 추세 비교 2단지 중 상승 1·하락 1 (2026-09-05)"
     assert all(t in d["tags"] for t in TISTORY_TAGS.split(","))
     assert "강남구아파트" in d["tags"]
     assert "서초구아파트" in d["tags"]
@@ -302,7 +302,7 @@ def test_build_daily_digest_return_shape_and_title():
     assert '<h1>서울 집값과 주거지원, 한눈에</h1>' in d["site_html"]
     assert f"<title>{d['title']}</title>" in d["site_html"]
     assert '<link rel="canonical" href="https://hexisteme.github.io/seoul-re-snapshot/daily/2026-09-05.html">' in d["site_html"]
-    assert "서울 아파트 7단지 전체 직접 필터·비교하기" in d["tistory_html"]
+    assert "서울 관측 7단지 직접 필터·비교하기" in d["tistory_html"]   # Codex X3 — 주상복합·도생 포함이라 '아파트 전체' 아님
     assert "utm_source=tistory" in d["tistory_html"]
     assert "utm_source=owned_daily" in d["site_html"]
     assert "acquisition_cta_click" in d["site_html"]
@@ -479,23 +479,19 @@ def test_tistory_visual_accent_colors():
 
 def test_build_digest_title_downside_market():
     from blog.daily_digest import _build_digest_title
-    counts = {"n_total": 1000, "up": 100, "down": 450, "flat": 50}
+    counts = {"n_total": 1000, "n_judged": 550, "up": 100, "down": 450, "flat": 0}
     sel = {"hi": [], "lo": [{"name": "하락단지", "gu": "노원"}]}
     title = _build_digest_title("2026-09-26", counts, sel)
-    assert "하락 450단지" in title
-    assert "1년 저점대 1곳" in title
+    assert title == "서울 아파트 실거래가 — 추세 비교 550단지 중 상승 100·하락 450 (2026-09-26)"
 
 
-def test_build_digest_title_micro_intent():
+def test_build_digest_title_names_no_complex():
+    """외부 리뷰(2026-10-13) C2 — 제목에 단지명·매매·전세 중위 차이를 올리지 않는다(2026-09-26 마이크로 인텐트 폐기)."""
     from blog.daily_digest import _build_digest_title
     ds = _sample_ds()
     sel = _select_ranked(ds)
-    counts = {"n_total": 7, "up": 1, "down": 1, "flat": 0}
-    title = _build_digest_title("2026-09-05", counts, sel)
-    # 대표 고점 단지(강남좋은아파트) 및 갭단지(강남전세단지 갭 2억) 실명이 제목에 반영되어야 함
-    assert "강남좋은아파트" in title
-    assert "강남전세단지" in title
-    assert "갭 2억" in title
+    title = _build_digest_title("2026-09-05", {"n_total": 7, "n_judged": 2, "up": 1, "down": 1}, sel)
+    assert "강남좋은아파트" not in title and "강남전세단지" not in title and "갭" not in title
 
 
 def test_tistory_micro_budget_anchors():
@@ -559,7 +555,8 @@ def test_tistory_partial_area_table_has_all_rows_on_owned_daily():
     rows = [_area_row(name=f"평형단지{i:02}", complex_no=str(i)) for i in range(8)]
     ds = {"complexes": rows, "count": len(rows), "data_asof": "2026-09-04"}
     digest = build_daily_digest(ds, "2026-09-05", "2026-09-04")
-    assert "기준 충족 8단지 중 구·단지명 가나다순 4개" in digest["tistory_html"]
+    # 외부 리뷰 C15 — 가나다순 첫 N개 대신 84㎡ 중위 가격대마다 표본 많은 예시 1곳(이 표본은 모두 10~15억대).
+    assert "기준 충족 8단지 중 84㎡ 중위 가격대별 두 평형 표본 최다 1곳" in digest["tistory_html"]
     assert "#area-tracks" in digest["tistory_html"]
     assert "평형단지07" not in digest["tistory_html"]
     assert "평형단지07" in digest["site_html"]
@@ -677,4 +674,6 @@ def test_daily_footer_discloses_ai_assistance_on_both_surfaces(surface):
     body = build_daily_digest({'complexes': []}, '2026-10-04', '2026-10-04')[surface]
     parser = VisibleText()
     parser.feed(body)
-    assert '공식 통계·공고를 AI로 정리했습니다. 지원 조건은 원문에서 확인하세요.' in ''.join(parser.text)
+    # 외부 리뷰 C16 — 생성일과 사람 검수 여부를 따로 적는다.
+    assert ('공식 통계·공고를 AI로 정리했습니다(생성 2026-10-04·사람 검수 미실시). '
+            '지원 조건은 원문에서 확인하세요.') in ''.join(parser.text)

@@ -161,12 +161,17 @@ def _match_records(c, lawd, molit) -> list[dict]:
     return [r for r in recs if r.get("price") and abs(r["area"] - ar) <= 3.5 and r["apt"] in matched]
 
 
-def _median_of(recs: list[dict]) -> tuple[float | None, int]:
-    """매칭표본 → 이상치(−40%)컷 후 중위(억)·표본수 n. molit_median 의 결정론 코어."""
+OUTLIER_CUT = 0.6   # 이상치 컷 — 12개월 전체 중위의 60% 미만(−40% 이하) 거래 제외
+
+
+def _median_of(recs: list[dict], cut: float | None = OUTLIER_CUT) -> tuple[float | None, int]:
+    """매칭표본 → 이상치(−40%)컷 후 중위(억)·표본수 n. molit_median 의 결정론 코어.
+    cut=None 은 컷 민감도(C11) 비교용 — 발행 경로는 기본값만 쓴다."""
     px = [r["price"] for r in recs]
     if len(px) < 2:
         return None, 0
-    m0 = st.median(px); px = [p for p in px if p >= m0 * 0.6]
+    if cut is not None:
+        m0 = st.median(px); px = [p for p in px if p >= m0 * cut]
     return (round(st.median(px) / 1e8, 2) if px else None), len(px)
 
 
@@ -215,7 +220,7 @@ def _month_windows(asof: str) -> tuple[set, set]:
     return set(yms[:3]), set(yms[3:12])
 
 
-def derive_tier_now(recs: list[dict], asof: str) -> dict:
+def derive_tier_now(recs: list[dict], asof: str, cut: float | None = OUTLIER_CUT) -> dict:
     """동일평형 매칭 12개월 RTMS 표본에서 무점수 사실 3종 파생 — molit_median 과 *동일 outlier-cut* 표본 사용.
       ① 분포   : 실거래 P25·P75(억) — 중위와 함께 'P25–중위–P75' 협상 레인지(분위수 사실, 등급화 없음).
       ② 추세   : 최근3개월 중위 vs 직전9개월(4~12개월 전) 중위, 방향(▲/▼/—)·변화%. 과거 비교 사실(전망 단정 없음).
@@ -232,7 +237,7 @@ def derive_tier_now(recs: list[dict], asof: str) -> dict:
     if len(px_all) < 2:
         return out
     m0 = st.median(px_all)
-    clean = [r for r in recs if r["price"] >= m0 * 0.6]   # molit_median(_median_of) 과 동일 컷
+    clean = [r for r in recs if cut is None or r["price"] >= m0 * cut]   # molit_median(_median_of) 과 동일 컷
     px = sorted(r["price"] for r in clean)
     n = len(px)
     # ① IQR 분포 — n>=5 일 때만(4점 이하는 사분위 불안정 → null)
@@ -758,6 +763,108 @@ def passes_turnover_gate(r: dict) -> bool:
     return passes_rank_gate(r) and r.get("turnover_pct") is not None
 
 
+ROBUST_MIN_RECENT = 5  # 보조 집계(RobustTrendCount): 최근 3개월 표본 5건 이상만 다시 센다
+
+
+def count_gated_trends(rows: list[dict]) -> dict:
+    """표본기준추세수(GatedTrendCount) — 랭킹 게이트 통과 + 추세값 있는 단지와 그중 ▲·▼.
+    제목·썸네일·관측요약·구 요약·지도·주간 요약이 모두 이 함수 하나로 센다(외부 리뷰 2026-10-13 C1).
+    보조 집계(RobustTrendCount)는 같은 단지 중 최근 3개월 표본 ROBUST_MIN_RECENT건 이상만 다시 센 값(C5)."""
+    judged = [r for r in rows if passes_rank_gate(r) and r.get("molit_trend_pct") is not None]
+    robust = [r for r in judged if (r.get("molit_trend_n_recent") or 0) >= ROBUST_MIN_RECENT]
+    return {"n_judged": len(judged),
+            "up": sum(r.get("molit_trend_dir") == "▲" for r in judged),
+            "down": sum(r.get("molit_trend_dir") == "▼" for r in judged),
+            "n_robust": len(robust),
+            "up_robust": sum(r.get("molit_trend_dir") == "▲" for r in robust),
+            "down_robust": sum(r.get("molit_trend_dir") == "▼" for r in robust),
+            "robust_min_recent": ROBUST_MIN_RECENT}
+
+
+def compute_observation_funnel(rows: list[dict]) -> dict:
+    """관측깔때기(ObservationFunnel) — 관측 → 12개월 실거래 중위 있음 → 집계 기준 통과 → 추세 판정.
+    탈락 사유는 게이트 순서(비아파트 → 전용 40㎡ 미만 → 매매표본 10건 미만)로 한 번씩만 센다(C3)."""
+    priced = [r for r in rows if r.get("molit_recent_eok") is not None]
+    non_apt = [r for r in priced if r.get("product_type") != "아파트"]
+    small = [r for r in priced if r.get("product_type") == "아파트" and (r.get("area_m2") or 0) < 40]
+    thin = [r for r in priced if r.get("product_type") == "아파트" and (r.get("area_m2") or 0) >= 40
+            and (r.get("molit_n") or 0) < 10]
+    gated = [r for r in rows if passes_rank_gate(r)]
+    judged = count_gated_trends(rows)["n_judged"]
+    return {"n_total": len(rows), "n_priced": len(priced), "n_no_price": len(rows) - len(priced),
+            "excl_non_apt": len(non_apt), "excl_small": len(small), "excl_thin": len(thin),
+            "n_gated": len(gated), "n_judged": judged, "n_unjudged": len(gated) - judged}
+
+
+def _is_judged(r: dict) -> bool:
+    return passes_rank_gate(r) and r.get("molit_trend_pct") is not None
+
+
+_REPRO_KEYS = ("molit_recent_eok", "molit_n", "molit_trend_dir", "molit_trend_pct",
+               "molit_trend_n_recent", "molit_trend_n_prior")
+
+
+def compute_outlier_cut_sensitivity(ds: dict, molit: dict) -> dict:
+    """이상치 컷 민감도(외부 리뷰 C11) — 발행 단지마다 같은 매칭 표본을 컷 켬/끔으로 다시 계산해
+    빠진 거래 수, 추세 비교 단지·상승·하락 수, 두 경우 모두 비교되는 고정 집합의 방향 변화,
+    한쪽에서만 비교되는 단지 수를 따로 센다. 발행값(중위·n·추세 방향·변화율·두 기간 n)을 재현하지 못한 단지는
+    제외하고 그 수를 남긴다(R2 Codex — 중위·n 만 같고 추세가 다른 원본이 컷 효과로 잡히던 반례)."""
+    asof = ds.get("data_asof")
+    with_rows, without_rows = [], []
+    n_records = n_cut = n_complexes_cut = n_unreproduced = 0
+    for r in ds.get("complexes") or []:
+        lawd = GU_LAWD.get(r.get("gu"))
+        recs = _match_records_public(r["name"], r["area_m2"], lawd, molit) if lawd and r.get("area_m2") else []
+        md, n = _median_of(recs)
+        t = derive_tier_now(recs, asof)
+        if ((md, n, t["trend_dir"], t["trend_pct"], t["trend_n_recent"], t["trend_n_prior"])
+                != tuple(r.get(k) for k in _REPRO_KEYS)):
+            n_unreproduced += 1
+            continue
+        md0, n0 = _median_of(recs, cut=None)
+        t0 = derive_tier_now(recs, asof, cut=None)
+        n_records += len(recs)
+        if len(recs) >= 2:                                 # 1건 단지는 중위·컷 없음(분모에는 포함)
+            n_cut += len(recs) - n
+            n_complexes_cut += len(recs) > n
+        with_rows.append(r)
+        without_rows.append({**r, "molit_recent_eok": md0, "molit_n": n0, "molit_trend_dir": t0["trend_dir"],
+                             "molit_trend_pct": t0["trend_pct"], "molit_trend_n_recent": t0["trend_n_recent"],
+                             "molit_trend_n_prior": t0["trend_n_prior"]})
+
+    def _summary(rows):
+        g = count_gated_trends(rows)
+        return {"n_judged": g["n_judged"], "up": g["up"], "down": g["down"]}
+
+    both = [(a, b) for a, b in zip(with_rows, without_rows) if _is_judged(a) and _is_judged(b)]
+    return {"asof": asof, "cut_ratio": OUTLIER_CUT, "n_rows": len(with_rows), "n_unreproduced": n_unreproduced,
+            "n_records": n_records, "n_records_cut": n_cut, "n_complexes_with_cut": n_complexes_cut,
+            "with_cut": _summary(with_rows), "without_cut": _summary(without_rows),
+            "fixed_set": {"n": len(both),
+                          "n_dir_changed": sum(a.get("molit_trend_dir") != b.get("molit_trend_dir") for a, b in both)},
+            "judged_only_with_cut": sum(_is_judged(a) and not _is_judged(b) for a, b in zip(with_rows, without_rows)),
+            "judged_only_without_cut": sum(_is_judged(b) and not _is_judged(a) for a, b in zip(with_rows, without_rows))}
+
+
+def render_outlier_cut_note(sens: dict | None) -> str:
+    """방법론 페이지의 이상치 컷 민감도 문단. 집계가 없으면 빈 문자열."""
+    if not sens:
+        return ""
+    w, wo, fx = sens["with_cut"], sens["without_cut"], sens["fixed_set"]
+    pct = sens["n_records_cut"] / sens["n_records"] * 100 if sens["n_records"] else 0.0
+    skipped = (f" 발행값을 다시 계산해 재현하지 못한 {sens['n_unreproduced']:,}단지는 이 비교에서 뺐다."
+               if sens["n_unreproduced"] else "")
+    return (f"<h2>이상치 컷 민감도</h2><p>각 단지의 12개월 동일평형 실거래에서 전체 중위의 "
+            f"{sens['cut_ratio'] * 100:.0f}% 미만(−40% 이하) 거래를 이상치로 빼고 중위·추세를 계산한다"
+            f"(빠진 거래가 지분·특수관계 거래인지 등 사유는 확인하지 않는다). 기준일 {sens['asof']} 발행 "
+            f"{sens['n_rows']:,}단지의 매칭 실거래 {sens['n_records']:,}건 중 {sens['n_records_cut']:,}건"
+            f"({pct:.1f}%)이 빠졌고, 컷이 적용된 단지는 {sens['n_complexes_with_cut']:,}곳이다.{skipped} "
+            f"컷을 끄면 추세 비교 단지는 {w['n_judged']:,}→{wo['n_judged']:,}단지, 상승 {w['up']:,}→{wo['up']:,} · "
+            f"하락 {w['down']:,}→{wo['down']:,}. 두 경우 모두 비교되는 {fx['n']:,}단지 중 방향이 바뀌는 곳 "
+            f"{fx['n_dir_changed']:,}곳, 컷을 꺼야만 비교되는 단지 {sens['judged_only_without_cut']:,}곳 · "
+            f"컷을 켜야만 비교되는 단지 {sens['judged_only_with_cut']:,}곳.</p>")
+
+
 def select_gated_medians(rows: list[dict]) -> list[float]:
     """구 중위(중위의 중위)·P25-P75 등 구 단위 집계의 공용 입력 — passes_rank_gate 통과 단지의
     molit_recent_eok 오름차순 정렬 리스트(억). _pctile 은 정렬 입력을 가정하므로(2026-09-05 발견:
@@ -1204,7 +1311,7 @@ const COLS=[
    fmt:r=>r.gu_jeonse_ratio_pct!=null?`${r.gu_jeonse_ratio_pct}%<span class=muted> 서울전체 R-ONE</span>`:`<span class=muted>—</span>`},
   {k:"jeonse_ratio_complex_pct",t:"전세가율(단지)",num:true,extra:true,
    fmt:r=>r.jeonse_ratio_complex_pct!=null?`${r.jeonse_ratio_complex_pct}%`:`<span class=muted>—</span>`},
-  {k:"gap_eok",t:"매매-전세 갭",num:true,extra:true,
+  {k:"gap_eok",t:"매매·전세 중위 차이",num:true,extra:true,
    fmt:r=>r.gap_eok!=null?`${r.gap_eok}억<br><span class=muted>전세${r.jeonse_recent_eok}억 n${r.jeonse_n}</span>`:`<span class=muted>—</span>`},
   {k:"trade_annual",t:"연거래수",num:true,extra:true,
    fmt:r=>r.trade_annual!=null?`${r.trade_annual}건/년`:`<span class=muted>—</span>`},
@@ -1220,8 +1327,6 @@ const COLS=[
    fmt:r=>r.park_1k!=null?`${r.park_1k}개`:`<span class=muted>—</span>`},
   {k:"dept_1500",t:"백화점(1.5km)",num:true,extra:true,
    fmt:r=>r.dept_1500!=null?`${r.dept_1500}개`:`<span class=muted>—</span>`},
-  {k:"maint_fee_won",t:"월관리비",num:true,extra:true,
-   fmt:r=>r.maint_fee_won!=null?`${Math.round(r.maint_fee_won/10000)}만원`:`<span class=muted>—</span>`},
   {k:"heating",t:"난방방식",num:false,extra:true,
    fmt:r=>r.heating?esc(r.heating):`<span class=muted>—</span>`},
   {k:"corridor_type",t:"복도유형",num:false,extra:true,
@@ -1335,7 +1440,7 @@ function init(){
     +`<br>• P25·중위·P75 = 동일평형 실거래 분위수(협상 레인지). 추세 = 최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주위치 = <b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지에서 차지하는 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 구간은 —.`
     +`<br>• 자체 평가·점수·순위를 매기지 않습니다. 공개된 사실 수치만 제공합니다.`
     +`<br>• <b>가격대</b> = 매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천을 의미하지 않습니다 — 대출 가능 여부·금리·한도는 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오.`
-    +`<br>• <b>전세가율(단지)</b>·<b>매매-전세 갭</b> = 동일평형 전세 실거래(공공 RTMS) 매칭 사실. <b>전세가율(서울전체)</b>은 개별 단지가 아닌 한국부동산원 R-ONE 서울 전체 월간 평균(참고용 거시지표)입니다.`
+    +`<br>• <b>전세가율(단지)</b>·<b>매매·전세 중위 차이</b> = 동일평형 전세 실거래(공공 RTMS) 매칭 사실. <b>전세가율(서울전체)</b>은 개별 단지가 아닌 한국부동산원 R-ONE 서울 전체 월간 평균(참고용 거시지표)입니다.`
     +`<br>• <b>거래회전율</b> = 그 단지 12개월 전체 실거래 건수÷세대수×100(%) — 거주만족·매물희소 등 다양한 이유로 낮을 수 있어 '환금성 나쁨'의 단정적 지표가 아닙니다.`
     +`<br>• <b>공시가 배율</b> = 국토부 실거래 12개월 동일평형 중위÷같은 평형 공시가격(공시가를 찾은 면적과 발행 면적이 일치하는 단지만) — 보유세 산정 기준 대비 시세 배율의 사실이며 가치 판단이 아닙니다.`
     +`<br>• <b>평형 격차</b> = 같은 단지 59㎡대와 84㎡대(각 ±3.5㎡, 양쪽 n≥5)의 ㎡당 실거래 중위 비(59÷84−1, %). 같은 구에서 이름매칭이 겹치는 단지가 있거나(공공 프레임 대조) K-apt 면적대 세대수와 맞지 않거나 대조 자료가 없거나 84 총액 중위가 59 보다 낮으면 빈칸 — 국토부 실거래 원본에 동 정보가 없어 이름이 같은 단지의 거래는 가를 수 없습니다. 격차의 사실만 적고 원인은 적지 않습니다.`
@@ -1456,14 +1561,14 @@ def render_gu_post(gu: str, rows: list[dict], asof: str, today: str) -> dict:
     trs = ""
     for r in srt:
         px = (f'{r["molit_recent_eok"]}억<sup>F</sup> <span class=mut>n{r["molit_n"]}</span>'
-              if r["molit_recent_eok"] is not None else '<span class=mut>공공 실거래 없음</span>')
+              if r["molit_recent_eok"] is not None else '<span class=mut>대표면적 중위 미산출</span>')
         if r.get("molit_p25_eok") is not None:                    # ① 분포 병기 — P25–중위–P75 협상 레인지
             px += (f'<br><span class=mut>{r["molit_p25_eok"]}–{r["molit_recent_eok"]}–{r["molit_p75_eok"]}'
                    f'<sup>F</sup> P25·중위·P75</span>')
         if r.get("price_segment"):                                # 가격대(사실 구간화, 2026-07-10)
             px += f'<br><span class=mut>가격대 {r["price_segment"]}</span>'
         if r.get("gap_eok") is not None:                           # 매매-전세 갭(D, 2026-07-10)
-            px += f'<br><span class=mut>전세{r["jeonse_recent_eok"]}억<sup>F</sup>·갭{r["gap_eok"]}억</span>'
+            px += f'<br><span class=mut>전세{r["jeonse_recent_eok"]}억<sup>F</sup>·차이{r["gap_eok"]}억</span>'
         tier = _tier_cell(r)                                       # ②③ 추세·52주위치
         if r.get("turnover_pct") is not None:                      # 거래회전율(C, 2026-07-10)
             tier += f'<br><span class=mut>회전율{r["turnover_pct"]}%<sup>F</sup></span>'
@@ -1491,7 +1596,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}}th,td{{
 <table><tr><th>단지명</th><th>전용</th><th>규모·연식</th><th>유형</th><th>공공 실거래(중위)</th><th>추세·52주</th><th>평단가</th></tr>{trs}</table>
 <p class=mut><sup>F</sup>=국토부 실거래 사실 · n=표본수 · 평단가=실거래÷평형. 사설 시세(호가)는 게재하지 않습니다.<br>
 P25·중위·P75=동일평형 실거래 분위수(협상 레인지). 추세=최근3개월 중위 vs 직전9개월 중위(과거 비교 사실 — 전망 아님). 52주=<b>최근 3개월 체결 중위</b>가 12개월(52주) 실거래 최저~최고 레인지 내 위치(%) — 헤드라인 중위(12개월)와 기준점 다름(최근 거래 없으면 —). 표본 부족 항목은 —.<br>
-가격대=매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천이 아닙니다 — 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오. 갭=매매-전세 중위 차액(동일평형 전세 실거래 매칭). 회전율=12개월 전체 실거래 건수÷세대수×100(%) — 환금성 단정 아님.</p>
+가격대=매매 중위 기준 단순 구간화(사실)이며 대출 적격·추천이 아닙니다 — 소득 등 개별조건에 따라 다르므로 은행 등 금융기관에 직접 확인하십시오. 매매·전세 중위 차이=12개월 매매 중위−전세 중위(동일평형 전세 실거래 매칭, 같은 집 거래 아님) — 필요 자기자본 아님(취득세·대출·보증금 반환 미반영). 회전율=12개월 전체 실거래 건수÷세대수×100(%) — 환금성 단정 아님.</p>
 <div class=disc>
 <b>방법론·출처</b><br>
 • 실거래 = 국토교통부 RTMS 공공데이터(12개월 동일평형 중위), 매일 자동 재수집. 세대수·연식·전용면적·유형 = 공개정보.<br>

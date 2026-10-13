@@ -9,8 +9,10 @@ from blog import thumbnail_card as card
 
 
 def _row(n=12, price=8.0, area=59.0, kind="아파트", trend=None):
+    # 추세 행은 molit_trend_pct 가 있어야 표본기준추세수(count_gated_trends)에 든다(외부 리뷰 2026-10-13 C1).
+    pct = {"▲": 3.0, "▼": -3.0}.get(trend)
     return {"molit_n": n, "molit_recent_eok": price, "area_m2": area,
-            "product_type": kind, "molit_trend_dir": trend}
+            "product_type": kind, "molit_trend_dir": trend, "molit_trend_pct": pct}
 
 
 def _dataset():
@@ -39,7 +41,7 @@ def test_counts_use_actual_rows_and_median_obeys_existing_gate():
     assert data.band_counts == (1, 1, 0, 0)
     assert "9,000" not in data.alt
     assert "5단지" in data.alt and "53건" in data.alt
-    assert "수집 대상은 아파트·다세대·연립 등 주거 유형" in data.alt
+    assert "수집 대상은 아파트·주상복합·도시형생활주택" in data.alt   # 데이터 유형과 같은 이름(외부 리뷰 X3)
     assert "단지 대표면적 실거래 표본 53건" in data.alt
 
 

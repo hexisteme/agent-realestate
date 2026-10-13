@@ -97,16 +97,10 @@ def _jeonse_extractor(r: dict) -> float | None:
     return r.get("jeonse_ratio_complex_pct") if be.passes_jeonse_gate(r) else None
 
 
-def _maint_extractor(r: dict) -> float | None:
-    if be.passes_rank_gate(r) and r.get("maint_fee_won") is not None:
-        return r["maint_fee_won"] / 1e4
-    return None
-
-
 def _gongsi_ratio_extractor(r: dict) -> float | None:
-    if be.passes_rank_gate(r) and r.get("gongsi_man") and r.get("molit_recent_eok") is not None:
-        return r["molit_recent_eok"] * 1e4 / r["gongsi_man"]
-    return None
+    """면적 일치(±0.5㎡)를 통과한 단지 배율(gongsi_multiple)만 — 단지 페이지·월간 결산과 같은 정의(외부 리뷰 C7)."""
+    v = r.get("gongsi_multiple")
+    return v if be.passes_rank_gate(r) and isinstance(v, (int, float)) else None
 
 
 def _gu_value_medians(by_gu: dict[str, list[dict]], extractor) -> dict[str, float]:
@@ -127,12 +121,6 @@ def _gu_jeonse_stats(gu_rows: list[dict]) -> tuple[float | None, float | None, i
 
 def _gu_turnover_stats(gu_rows: list[dict]) -> tuple[float | None, float | None, int, list[float]]:
     vals = [r["turnover_pct"] for r in gu_rows if be.passes_turnover_gate(r)]
-    med, iqr = _median_iqr(vals)
-    return med, iqr, len(vals), vals
-
-
-def _gu_maint_stats(gu_rows: list[dict]) -> tuple[float | None, float | None, int, list[float]]:
-    vals = [r["maint_fee_won"] / 1e4 for r in gu_rows if be.passes_rank_gate(r) and r.get("maint_fee_won") is not None]
     med, iqr = _median_iqr(vals)
     return med, iqr, len(vals), vals
 
@@ -328,37 +316,11 @@ def _s6(by_gu: dict, cx: list[dict]) -> dict | None:
             "refs": {"hi": hi, "lo": lo, "over95": over95}}
 
 
-def _s7(by_gu: dict, cx: list[dict]) -> dict | None:
-    gu_meds = _gu_value_medians(by_gu, _maint_extractor)
-    if not gu_meds:
-        return None
-    vals = list(gu_meds.values())
-    med, iqr = _median_iqr(vals)
-    hi, lo = round(med + iqr, 1), round(med - iqr, 1)
-    hi_gus = sorted((g for g, v in gu_meds.items() if v > hi), key=lambda g: (-gu_meds[g], g))
-    lo_gus = sorted((g for g, v in gu_meds.items() if v < lo), key=lambda g: (gu_meds[g], g))
-    if not hi_gus and not lo_gus:
-        return None
-    base_elig = [r for r in cx if be.passes_rank_gate(r)]
-    total = len(base_elig)
-    covered = sum(1 for r in base_elig if r.get("maint_fee_won") is not None)
-    parts = []
-    if hi_gus:
-        parts.append(f"{_fmt_man(hi)}를 넘는 구는 {'·'.join(hi_gus)}({len(hi_gus)}곳)")
-    if lo_gus:
-        parts.append(f"{_fmt_man(lo)} 미만은 {'·'.join(lo_gus)}({len(lo_gus)}곳)")
-    text = "구 중위 관리비가 " + ", ".join(parts) + f"이다(K-apt, {covered}/{total}단지 기준)."
-    extreme = max(vals, key=lambda v: abs(v - med))
-    score = compute_surprise_score(extreme, med, iqr, len(vals))
-    return {"type": "편차", "family": "S7", "text": text, "score": score, "n": len(vals),
-            "refs": {"hi": hi, "lo": lo, "covered": covered, "total": total}}
-
-
 def _seoul_candidates(cx: list[dict], prev_ds: dict | None, asof: str) -> list[dict | None]:
     elig = [r for r in cx if be.passes_rank_gate(r)]
     by_gu = _group_by_gu(cx)
-    return [_s1(elig, asof), _s2(by_gu), _s3(elig, prev_ds), _s4(elig),
-            _s5(by_gu), _s6(by_gu, cx), _s7(by_gu, cx)]
+    # S5(공시가 배율, 공시연도 미확인)는 서울 핵심 요약에서 뺀다(외부 리뷰 C7). 관리비(S7)는 공개 표면 전체에서 뺐다(C8).
+    return [_s1(elig, asof), _s2(by_gu), _s3(elig, prev_ds), _s4(elig), _s6(by_gu, cx)]
 
 
 # ── 구 스코프 패밀리(G1~G6) ──────────────────────────────────────────────
@@ -458,26 +420,19 @@ def _g3(gu: str, gu_rows: list[dict], cx: list[dict]) -> dict | None:
 
 
 def _g4(gu_rows: list[dict]) -> dict | None:
-    maint_named = sorted(((r["name"], r["maint_fee_won"] / 1e4) for r in gu_rows
-                           if be.passes_rank_gate(r) and r.get("maint_fee_won") is not None), key=lambda t: t[1])
-    if not maint_named:
-        return None
-    mn_name, mn_v = maint_named[0]
-    mx_name, mx_v = maint_named[-1]
-    ratio = round(mx_v / mn_v, 2) if mn_v else None
-    covered = len(maint_named)
-    text = (f"관리비는 {mn_name} {_fmt_man(mn_v)}부터 {mx_name} {_fmt_man(mx_v)}까지 "
-            f"{_fmt_ratio(ratio)}배 차이(K-apt 월, {covered}단지).")
+    """세대당 주차 범위(K-apt). 관리비는 공용관리비 일부 7항목·산출월 미기록이라 싣지 않는다(외부 리뷰 2026-10-13 C8)."""
     park_named = sorted(((r["name"], r["parking_per_unit"]) for r in gu_rows
-                          if be.passes_rank_gate(r) and r.get("parking_per_unit") is not None), key=lambda t: t[1])
-    if park_named:
-        pmn_name, pmn_v = park_named[0]
-        pmx_name, pmx_v = park_named[-1]
-        text += f" 세대당 주차 {pmn_name} {pmn_v:g}대 ~ {pmx_name} {pmx_v:g}대."
-    med, iqr = _median_iqr([v for _, v in maint_named])
+                         if be.passes_rank_gate(r) and r.get("parking_per_unit") is not None), key=lambda t: t[1])
+    if not park_named:
+        return None
+    mn_name, mn_v = park_named[0]
+    mx_name, mx_v = park_named[-1]
+    covered = len(park_named)
+    text = f"세대당 주차는 {mn_name} {mn_v:g}대부터 {mx_name} {mx_v:g}대까지(K-apt, {covered}단지)."
+    med, iqr = _median_iqr([v for _, v in park_named])
     score = compute_surprise_score(mx_v, med, iqr, covered)
     return {"type": "편차", "family": "G4", "text": text, "score": score, "n": covered,
-            "refs": {"min": mn_v, "max": mx_v, "ratio": ratio}}
+            "refs": {"min": mn_v, "max": mx_v}}
 
 
 def _g5(gu_rows: list[dict]) -> dict | None:
@@ -572,7 +527,7 @@ def _c3(row: dict, gu_rows: list[dict]) -> dict | None:
     gap = row.get("gap_eok")
     text = f"전세가율 {_fmt_pct(ratio)}는 구 중위 {_fmt_pct(gm)}보다 {_direction(ratio, gm)}."
     if gap is not None:
-        text += f" 매매–전세 갭 {_fmt_eok(gap)}."
+        text += f" 매매·전세 중위 차이 {_fmt_eok(gap)}."
     score = compute_surprise_score(ratio, gm, iqr, n)
     return {"type": "편차", "family": "C3", "text": text, "score": score, "n": n, "refs": {"gu_median": gm}}
 
@@ -590,21 +545,16 @@ def _c4(row: dict, gu_rows: list[dict]) -> dict | None:
 
 
 def _c5(row: dict, gu_rows: list[dict]) -> dict | None:
-    m = row.get("maint_fee_won")
-    if m is None or not be.passes_rank_gate(row):
-        return None
-    m_man = m / 1e4
-    gm, iqr, n, _vals = _gu_maint_stats(gu_rows)
-    if gm is None:
-        return None
-    d_pct = round(abs(m_man - gm) / gm * 100, 1) if gm else None
-    text = f"관리비 {_fmt_man(m_man)}/월은 구 중위 {_fmt_man(gm)}보다 {_fmt_pct(d_pct)} {_direction(m_man, gm)}."
+    """세대당 주차 vs 구 중위(K-apt). 관리비는 싣지 않는다(외부 리뷰 2026-10-13 C8)."""
     pk = row.get("parking_per_unit")
-    gpk, _pk_iqr, pk_n, _pk_vals = _gu_parking_stats(gu_rows)
-    if pk is not None and gpk is not None and pk_n:
-        text += f" 세대당 주차 {pk:g}대(구 중위 {gpk:g}대)."
-    score = compute_surprise_score(m_man, gm, iqr, n)
-    return {"type": "편차", "family": "C5", "text": text, "score": score, "n": n, "refs": {"gu_median_man": gm}}
+    if pk is None or not be.passes_rank_gate(row):
+        return None
+    gpk, iqr, n, _vals = _gu_parking_stats(gu_rows)
+    if gpk is None:
+        return None
+    text = f"세대당 주차 {pk:g}대는 구 중위 {gpk:g}대보다 {_direction(pk, gpk)}."
+    score = compute_surprise_score(pk, gpk, iqr, n)
+    return {"type": "편차", "family": "C5", "text": text, "score": score, "n": n, "refs": {"gu_median": gpk}}
 
 
 def _c6(row: dict, gu_rows: list[dict]) -> dict | None:

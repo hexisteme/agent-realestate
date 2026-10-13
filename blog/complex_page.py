@@ -178,7 +178,7 @@ def _header_block(row: dict, asof: str) -> str:
         + "</p>"
         '<div class="chips">'
         f'<span class="chip">기준 {asof}</span>'
-        '<span class="chip">국토부 실거래 · 신고 지연 최대 30일</span>'
+        '<span class="chip">국토부 실거래 · 최근 계약분 잠정(신고기한 30일·정정·해제)</span>'
         '<span class="chip">자체 점수·등급 없음</span>'
         "</div>"
     )
@@ -351,7 +351,7 @@ def _jeonse_card(row: dict) -> str:
         '<div class="statgrid" style="border-top:0;padding-top:0">'
         f'<div class="stat"><span class="k">전세 중위</span><span class="v">{_eok(jm)}</span><span class="k">n{jn}</span></div>'
         f'<div class="stat"><span class="k">전세가율</span><span class="v">{_pct(ratio)}</span></div>'
-        f'<div class="stat"><span class="k">매매–전세 갭</span><span class="v">{_eok(gap)}</span></div>'
+        f'<div class="stat"><span class="k">매매·전세 중위 차이</span><span class="v">{_eok(gap)}</span></div>'
         "</div>"
         f'<div class="jbar"><div style="width:{bar_w}%"></div></div>'
         '<div style="display:flex;justify-content:space-between;font-size:12px;color:#5c584f">'
@@ -380,7 +380,6 @@ _FACT_SPECS = [
     ("cbd_km", "업무지구", lambda v, r: f"{v:g}km" + (f" ({r['cbd_name']})" if r.get("cbd_name") else "")),
     ("nearest_elem_school", "인근 초등학교", lambda v, r: v),
     ("academy_exam", "학원가(1km)", lambda v, r: f"{v:g}곳"),
-    ("maint_fee_won", "관리비", lambda v, r: f"{v:,.0f}원/월"),
     ("parking_per_unit", "세대당 주차", lambda v, r: (
         f"{v:g}대"
         + (f" · 총 {r['parking_total']:,}대" if r.get("parking_total") is not None else "")

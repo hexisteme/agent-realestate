@@ -128,7 +128,7 @@ def test_snapshot_c3_complex_jeonse():
     gu_rows = [r for r in ds["complexes"] if r["gu"] == "가구"]
     row = next(r for r in gu_rows if r["name"] == "가6")
     fam = _leads_by_family(build_fact_leads(ds, "complex", row, peers=[]))
-    assert fam["C3"]["text"] == "전세가율 58.7%는 구 중위 60.0%보다 낮다. 매매–전세 갭 2.62억."
+    assert fam["C3"]["text"] == "전세가율 58.7%는 구 중위 60.0%보다 낮다. 매매·전세 중위 차이 2.62억."
 
 
 def test_snapshot_c7_complex_threshold_hi_and_lo():
@@ -338,8 +338,9 @@ def test_real_data_render_lead_block_and_lines_shape():
 
 def test_s5_labels_archived_assessment_without_claiming_verified_year():
     from blog.fact_lead import _s5
-    source = {'가구': [_row('가구', '가1', molit_recent_eok=15.0, gongsi_man=100000)],
-              '나구': [_row('나구', '나1', molit_recent_eok=18.0, gongsi_man=100000)]}
+    # 외부 리뷰 C7(2026-10-13): 면적 일치를 통과한 gongsi_multiple 만 쓴다
+    source = {'가구': [_row('가구', '가1', molit_recent_eok=15.0, gongsi_man=100000, gongsi_multiple=1.5)],
+              '나구': [_row('나구', '나1', molit_recent_eok=18.0, gongsi_man=100000, gongsi_multiple=1.8)]}
     result = _s5(source)
     assert result['refs'] == {'min': 1.5, 'max': 1.8}
     assert '1.5~1.8배' in result['text']

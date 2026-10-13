@@ -46,10 +46,12 @@ class DailyCardData:
     sample_count: int | None
     up_count: int | None
     down_count: int | None
+    judged_count: int | None
     median_eok: float | None
     median_complex_count: int
     band_counts: tuple[int, int, int, int]
     issues: tuple[str, ...]
+    gu_up_shares: tuple[tuple[str, float | None], ...] = ()
 
     @property
     def alt(self) -> str:
@@ -58,10 +60,11 @@ class DailyCardData:
         sample = "미확인" if self.sample_count is None else f"{self.sample_count:,}"
         up = "미확인" if self.up_count is None else f"{self.up_count:,}"
         down = "미확인" if self.down_count is None else f"{self.down_count:,}"
+        judged = "미확인" if self.judged_count is None else f"{self.judged_count:,}"
         return (f"{CARD_BRAND}. 관측일 {self.observed_date}, 데이터 기준 {self.data_asof}. "
-                "수집 대상은 아파트·다세대·연립 등 주거 유형입니다. "
+                "수집 대상은 아파트·주상복합·도시형생활주택 등 주거 유형입니다. "
                 f"관측 {count}단지, 단지 대표면적 실거래 표본 {sample}건, "
-                f"상승 {up}단지·하락 {down}단지. "
+                f"집계 기준을 채워 추세를 판정한 {judged}단지 중 상승 {up}·하락 {down}. "
                 f"출처 국토교통부 RTMS. {CARD_NOTICE}")
 
 
@@ -112,7 +115,7 @@ def _count(raw: Any) -> int | None:
 def prepare_daily_card(ds: Mapping[str, Any], *, today: str | None = None,
                        asof: str | None = None) -> DailyCardData:
     """원본 데이터셋에서 관측 범위·표본 합계·기존 정책의 가격 집계를 계산한다."""
-    from blog.build_explorer import passes_rank_gate
+    from blog.build_explorer import count_gated_trends, passes_rank_gate
 
     observed = _date_label(today if today is not None else ds.get("generated"))
     data_asof = _date_label(asof if asof is not None else ds.get("data_asof"))
@@ -149,14 +152,34 @@ def prepare_daily_card(ds: Mapping[str, Any], *, today: str | None = None,
         idx = 0 if price < 10 else 1 if price < 15 else 2 if price < 20 else 3
         bands[idx] += 1
 
+    # 표본기준추세수 — 본문·제목과 같은 기준(C1). 게이트 입력은 위에서 검증한 표본·면적만 쓴다(오염값이 비교 연산에 닿지 않게).
+    gated = count_gated_trends([{**row, "molit_n": n, "area_m2": _number(row.get("area_m2"))}
+                                for row, n in zip(rows, counts)]) if trend_valid else None
     return DailyCardData(
         observed_date=observed, data_asof=data_asof,
         complex_count=len(rows) if complete else None, sample_count=sample_count,
-        up_count=sum(row.get("molit_trend_dir") == "▲" for row in rows) if trend_valid else None,
-        down_count=sum(row.get("molit_trend_dir") == "▼" for row in rows) if trend_valid else None,
+        up_count=gated["up"] if gated else None,
+        down_count=gated["down"] if gated else None,
+        judged_count=gated["n_judged"] if gated else None,
         median_eok=round(statistics.median(medians), 2) if medians else None,
         median_complex_count=len(medians), band_counts=tuple(bands), issues=tuple(issues),
+        gu_up_shares=_gu_up_shares(rows, counts) if trend_valid else (),
     )
+
+
+def _gu_up_shares(rows: list, counts: list) -> tuple[tuple[str, float | None], ...]:
+    """구별 상승 비율(표본기준추세수 기준 상승÷비교 단지). 비교 단지가 없는 구는 None."""
+    from blog.build_explorer import count_gated_trends
+    from blog.visual_first import SEOUL_GEO_TILES
+
+    by_gu: dict[str, list[dict]] = {}
+    for row, n in zip(rows, counts):
+        by_gu.setdefault(row.get("gu"), []).append({**row, "molit_n": n, "area_m2": _number(row.get("area_m2"))})
+    shares = []
+    for gu in SEOUL_GEO_TILES:
+        gated = count_gated_trends(by_gu.get(gu, []))
+        shares.append((gu, gated["up"] / gated["n_judged"] if gated["n_judged"] else None))
+    return tuple(shares)
 
 
 def _resolve_font(font_path: str | Path | None = None) -> Path:
@@ -185,6 +208,7 @@ class CardCanvas:
         self.font_path = font_path
         self._fonts: dict[tuple[int, bool], Any] = {}
         self.text_boxes: list[tuple[int, int, int, int]] = []
+        self.tile_boxes: list[tuple[int, int, int, int]] = []
 
     def font(self, size: int, bold: bool = False):
         key = size, bold
@@ -234,27 +258,32 @@ def format_card_count(value: int | None, unit: str = "") -> str:
     return "미확인" if value is None else f"{value:,}{unit}"
 
 
+_TILE_DARK = (0x10, 0x2C, 0x41)
+_TILE_BRIGHT = (0x2D, 0xD4, 0xBF)
+
+
+def _tile_fill(share: float) -> tuple[int, int, int]:
+    return tuple(round(d + (b - d) * share) for d, b in zip(_TILE_DARK, _TILE_BRIGHT))
+
+
 def _draw_cover_safe_card(data: DailyCardData, card: CardCanvas) -> CardCanvas:
-    """커버 안전 배치(2026-10-10) — 스킨이 가로 중앙 48~55%만 남기고 세로 50% 아래에 제목을 겹치므로
-    브랜드·관측 단지 수·상승/하락을 x 312~888, y 300 이내 가운데에 둔다. 아래쪽은 링크 미리보기용 보조 정보."""
+    """글자 없는 대표 카드(외부 리뷰 2026-10-13 U1·U12) — 데스크톱 스킨이 대표이미지를 제목 배경으로 깔아
+    카드 글자와 제목이 겹쳤다. 서울 25개 구를 지리타일(5행×6열)로 그리고 칸 밝기 = 구별 상승 단지 비율.
+    비교 단지가 없는 구는 테두리만. 모바일 커버 크롭 안전영역(x 312~888, y ≤ 300) 안에 둔다."""
+    from blog.visual_first import SEOUL_GEO_TILES
+
     card.draw.rectangle((0, 0, 1200, 9), fill="#2dd4bf")
-    card.text(CARD_BRAND, (312, 40, 888, 76), size=26, fill="#c7d6e2", bold=True, center=True)
-    card.text("오늘 관측 단지", (312, 98, 888, 134), size=32, fill="#c7d6e2", center=True)
-    card.text(format_card_count(data.complex_count), (312, 146, 888, 240),
-              size=100, min_size=46, fill="#5eead4", bold=True, center=True)
-    card.text(f"상승 {format_card_count(data.up_count)} · 하락 {format_card_count(data.down_count)}",
-              (312, 254, 888, 296), size=36, bold=True, center=True)
-    card.draw.line((56, 330, 1144, 330), fill="#294356", width=2)
-    card.text(f"대표면적 실거래 표본 {format_card_count(data.sample_count, '건')}", (56, 362, 1144, 400),
-              size=30, fill="#c7d6e2", center=True)
-    card.text("상승·하락은 각 단지의 비교기간 거래 중위값 기준", (56, 414, 1144, 442), size=22,
-              fill="#a6bfcd", center=True)
-    card.draw.line((56, 511, 1144, 511), fill="#294356", width=2)
-    card.text(f"관측일 {data.observed_date}  ·  데이터 기준 {data.data_asof}",
-              (56, 530, 1144, 564), size=25, fill="#c7d6e2")
-    card.text(CARD_SOURCE, (56, 581, 589, 608), size=21, fill="#9ab2c3")
-    card.text("입력 일부 미확인 · 원문 확인 필요" if data.issues else CARD_NOTICE,
-              (594, 581, 1144, 608), size=21, fill="#9ab2c3")
+    shares = dict(data.gu_up_shares)
+    cell_w, cell_h, gap_x, gap_y, left, top = 82, 44, 7, 8, 337, 38
+    for gu, (r, c) in SEOUL_GEO_TILES.items():
+        x0, y0 = left + c * (cell_w + gap_x), top + r * (cell_h + gap_y)
+        box = (x0, y0, x0 + cell_w, y0 + cell_h)
+        share = shares.get(gu)
+        if share is None:
+            card.draw.rounded_rectangle(box, radius=6, outline="#294356", width=2)
+        else:
+            card.draw.rounded_rectangle(box, radius=6, fill=_tile_fill(share))
+        card.tile_boxes.append(box)
     return card
 
 
@@ -271,7 +300,7 @@ def draw_daily_card(data: DailyCardData, font_path: Path, cover_safe: bool = Fal
     card.text(format_card_count(data.complex_count), (56, 295, 694, 428),
               size=130, min_size=46, fill="#5eead4", bold=True)
     card.text("관측 단지 · 대표면적 표본", (61, 443, 680, 477), size=26, fill="#c7d6e2")
-    card.text("아파트·다세대·연립 등 수집 대상", (61, 484, 680, 508), size=21, fill="#9ab2c3")
+    card.text("아파트·주상복합·도생 등 수집 대상", (61, 484, 680, 508), size=21, fill="#9ab2c3")
 
     card.draw.rounded_rectangle((747, 137, 1144, 481), radius=20, fill="#102c41")
     card.text("대표면적 실거래 표본", (777, 164, 1114, 197), size=24, fill="#c7d6e2")
@@ -311,6 +340,13 @@ def _write_card_bytes(output_dir: Path, file_name: str, payload: bytes) -> Path:
     return destination
 
 
+def _cover_alt(data: DailyCardData) -> str:
+    """글자 없는 타일 그림을 숫자가 있는 카드처럼 설명하지 않는다."""
+    return (f"{CARD_BRAND}. 서울 25개 구를 위치대로 놓은 타일 그림(글자 없음). 칸이 밝을수록 그 구의 추세 비교가 가능한 단지 중 "
+            "최근 3개월 실거래 중위가 직전 9개월보다 높은 단지 비율이 큽니다. 테두리만 있는 칸은 비교 단지 없음. "
+            f"관측일 {data.observed_date}, 데이터 기준 {data.data_asof}. 출처 국토교통부 RTMS.")
+
+
 def build_daily_card(ds: Mapping[str, Any], output_dir: str | Path, *,
                      today: str | None = None, asof: str | None = None,
                      font_path: str | Path | None = None, cover_safe: bool = False) -> ThumbnailCard:
@@ -322,7 +358,8 @@ def build_daily_card(ds: Mapping[str, Any], output_dir: str | Path, *,
     file_date = data.observed_date if data.observed_date != "미확인" else "undated"
     name = f"daily-{file_date}-{digest[:16]}.png"
     destination = _write_card_bytes(Path(output_dir).resolve(), name, payload)
-    return ThumbnailCard(str(destination), digest, CARD_WIDTH, CARD_HEIGHT, data.alt,
+    alt = _cover_alt(data) if cover_safe else data.alt
+    return ThumbnailCard(str(destination), digest, CARD_WIDTH, CARD_HEIGHT, alt,
                          len(payload), data.observed_date, data.data_asof, str(font))
 
 

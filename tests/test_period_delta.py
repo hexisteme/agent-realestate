@@ -95,7 +95,7 @@ def test_write_period_post_renders_meta_claims_and_periodic_draft(tmp_path, monk
     p = tmp_path / "posts" / "2026-09-13-주간결산.html"
     assert p.exists()
     d, t, desc = _post_meta(str(p))
-    assert d == "2026-09-13" and "주간결산" in t and "2026-09-06" in t and desc and '"' not in desc
+    assert d == "2026-09-13" and "주간결산" in t and "09-06 대비" in t and desc and '"' not in desc   # U8 짧은 제목
     claims = [json.loads(l) for l in (tmp_path / "posts" / "2026-09-13-주간결산.claims.jsonl").read_text(encoding="utf-8").splitlines()]
     assert {c["claim"] for c in claims} == {"weekly_band_change", "weekly_gu_change", "price_band_migration"}
     assert (tmp_path / "tistory" / "2026-09-13-periodic-tistory-draft.html").exists()

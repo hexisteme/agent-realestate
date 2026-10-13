@@ -24,7 +24,6 @@ SEOUL_GEO_TILES = {
     "양천": (3, 0), "영등포": (3, 1), "용산": (3, 2), "서초": (3, 3), "강남": (3, 4), "송파": (3, 5),
     "구로": (4, 0), "금천": (4, 1), "동작": (4, 2), "관악": (4, 3),
 }
-_GRID_ROWS, _GRID_COLS = 5, 6
 _MUTED = "#64748b"
 _HEAD = "background-color:#f1f5f9;color:#0f172a"
 
@@ -73,16 +72,14 @@ def _text_color(background: str) -> str:
     return "#000000" if (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) else "#ffffff"
 
 
-def count_gated_trends(rows: list[dict]) -> dict:
-    """표본기준추세수(GatedTrendCount) — 사실 리드 S1 과 같은 규칙: 랭킹 게이트 통과 + 추세값 있는 단지와 그중 ▲·▼."""
-    judged = [r for r in rows if be.passes_rank_gate(r) and r.get("molit_trend_pct") is not None]
-    return {"n_judged": len(judged), "up": sum(r.get("molit_trend_dir") == "▲" for r in judged),
-            "down": sum(r.get("molit_trend_dir") == "▼" for r in judged)}
+count_gated_trends = be.count_gated_trends  # 표본기준추세수 — 정본은 build_explorer 하나
 
 
 def _summary_lines(counts: dict, d, asof: str, ds: dict) -> list[str]:
-    gated = count_gated_trends(ds.get("complexes") or [])
-    return mch.observation_summary_lines({"n_total": counts.get("n_total"), **gated}, d, asof=asof)
+    rows = ds.get("complexes") or []
+    gated = count_gated_trends(rows)
+    return mch.observation_summary_lines({"n_total": counts.get("n_total"), **gated,
+                                          "funnel": be.compute_observation_funnel(rows)}, d, asof=asof)
 
 
 def _tiles(ds: dict):
@@ -97,7 +94,7 @@ def _tiles(ds: dict):
     return rows, scale
 
 
-_TILE_KEY = "칸마다 구 이름 · 구 중위가격 · ▲ 높아진 단지 수 · ▼ 낮아진 단지 수"
+_TILE_KEY = "구 이름 · 구 중위가격 · ▲ 높아진 단지 수 · ▼ 낮아진 단지 수"
 
 
 def render_geo_tile_heatmap(ds: dict, asof: str, *, surface: str) -> str:
@@ -113,29 +110,21 @@ def render_geo_tile_heatmap(ds: dict, asof: str, *, surface: str) -> str:
     note = (f"기준일 {html.escape(asof)} · 색이 진할수록 구 중위가격이 높습니다(0~{mv._fmt(scale)}억). "
             "구 중위는 게이트 통과 단지 중위의 중위, ▲·▼는 표본 기준(아파트·전용 40㎡ 이상·매매 10건 이상)을 채운 단지 중 "
             "최근 3개월 실거래 중위가 직전 9개월보다 높거나 낮은 단지 수입니다. "
-            "회색 —는 표본 없음. 위치는 실제 지도를 단순화한 배치입니다.")
+            "회색 —는 표본 없음." + ("" if surface == "tistory" else " 위치는 실제 지도를 단순화한 배치입니다."))
     if surface == "tistory":
-        grid = []
-        for r in range(_GRID_ROWS):
-            tds = []
-            for c in range(_GRID_COLS):
-                if (r, c) not in cells:
-                    tds.append('<td style="padding:2px"></td>')
-                    continue
-                gu, row, bg, fg, price = cells[(r, c)]
-                tds.append(f'<td data-district="{html.escape(gu)}" style="background-color:{bg};color:{fg};'
-                           f'text-align:center;padding:4px 1px;border:2px solid #ffffff">'
-                           f'<b>{html.escape(gu)}</b><br>{price}<br>▲{row["up"]}<br>▼{row["down"]}</td>')
-            grid.append("<tr>" + "".join(tds) + "</tr>")
-        legend = "".join(
-            f'<td style="background-color:{bg};color:{_text_color(bg)};text-align:center;padding:2px">{label}</td>'
-            for bg, label in ((mv._color(scale * f, scale, end=end), f"{scale * f:.0f}억") for f in (0, .25, .5, .75, 1)))
-        return ('<p><b>구별 가격 지도</b> <span style="color:#64748b">· 서울 25개 구</span><br>'
+        # U2(외부 리뷰 2026-10-13, Codex·agy 합의) — 6열 격자는 390px에서 57px 칸·4줄이 된다. 티스토리는 가나다순 목록 표,
+        # 사이트는 지도를 유지한다. 중위 칸 배경색으로 가격 높낮이를 남기고 글자색은 배경 대비로 명시한다.
+        # 본문 예산(28KB) 때문에 칸 스타일은 중위 칸 배경·글자색만 둔다(25행).
+        trs = "".join(
+            f'<tr><td>{html.escape(gu)}</td>'
+            f'<td data-district="{html.escape(gu)}" style="background-color:{bg};color:{fg}">{price}</td>'
+            f'<td>▲{row["up"]}</td><td>▼{row["down"]}</td></tr>'
+            for gu, row, bg, fg, price in sorted(cells.values(), key=lambda c: c[0]))
+        head = "".join(f'<td style="{_HEAD}"><b>{h}</b></td>' for h in ("구", "구 중위", "▲ 높아짐", "▼ 낮아짐"))
+        return ('<p><b>구별 가격·추세</b> <span style="color:#64748b">· 서울 25개 구 가나다순</span><br>'
                 f'<span style="color:{_MUTED}">{_TILE_KEY}</span></p>'
-                '<table data-geo-tiles="districts" style="width:100%;table-layout:fixed;border-collapse:collapse;'
-                'word-break:keep-all">' + "".join(grid) + '</table>'
-                '<table style="width:100%;table-layout:fixed;border-collapse:collapse;margin-top:4px"><tr>'
-                + legend + '</tr></table>'
+                '<table data-district-list style="width:100%;table-layout:fixed;border-collapse:collapse">'
+                f'<tr>{head}</tr>{trs}</table>'
                 f'<p><span style="color:{_MUTED}">{note}</span></p>')
     tiles = []
     for (r, c), (gu, row, bg, fg, price) in sorted(cells.items()):
@@ -156,14 +145,38 @@ def _table_rows(d: mch.MarketDashboard):
     return [(_short(m), *values) for m, *values in mch.dashboard_table_rows(d)]
 
 
-def render_tistory_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, base_url: str) -> str:
+def _briefing_html(briefing) -> str:
+    """상단 요약에 잇는 사실 리드(U9) — 관측 요약 바로 아래 '• ' 줄."""
+    return "".join(f"<br>• {html.escape(text)}" for text in briefing or ())
+
+
+def dashboard_caption(d: mch.MarketDashboard) -> str:
+    """그래프 아래 보이는 설명(U3, 티스토리는 alt 를 지운다) — 패널별 기간과 시작→최근 값."""
+    parts, first, last = [], None, None
+    for label, panel, fmt in (("매매지수", d.sale, "{:.1f}"), ("전세지수", d.jeonse, "{:.1f}"),
+                              ("매매 신고", d.trades, "{:,.0f}호"), ("주담대 금리", d.mortgage, "{:.2f}%")):
+        if not panel or not panel.points:
+            continue
+        (m0, v0), (m1, v1) = panel.points[0], panel.points[-1]
+        first, last = min(first or m0, m0), max(last or m1, m1)
+        parts.append(f"{label} {fmt.format(v0)}→{fmt.format(v1)}")
+    if not parts:
+        return ""
+    return f"그래프 기간 {first}~{last}: " + " · ".join(parts) + "."
+
+
+def render_tistory_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, base_url: str,
+                       briefing=()) -> str:
     d = visual.dashboard
-    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds))
+    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds)) + _briefing_html(briefing)
     image = visual.image
     td = "padding:4px 2px;text-align:center"
     head = "".join(f'<td style="{_HEAD};{td}"><b>{h}</b></td>'
                    for h in ("월", "매매지수", "전세지수", "거래(호)", "주담대(%)"))
-    body = "".join("<tr>" + "".join(f'<td style="{td}">{v}</td>' for v in row) + "</tr>" for row in _table_rows(d))
+    # U4 — 월 칸만 줄바꿈 금지('26.03' 5자). 다른 칸 nowrap 은 좁은 화면에서 표 넘침을 만들 수 있다(Codex R1).
+    body = "".join("<tr>" + "".join(f'<td style="{td}{";white-space:nowrap" if i == 0 else ""}">{v}</td>'
+                                    for i, v in enumerate(row)) + "</tr>" for row in _table_rows(d))
+    caption = dashboard_caption(d)
     notes = "".join(f'<p><b>{html.escape(title)}</b> — {html.escape(meaning)}<br>'
                     f'<span style="color:{_MUTED}">{html.escape(formula)}</span></p>'
                     for title, meaning, formula in mch.reading_notes(d))
@@ -171,7 +184,8 @@ def render_tistory_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, b
             f'<p>{summary}</p>'
             f'<p><img src="{base_url}/images/{image.name}" width="{image.width}" height="{image.height}" '
             f'alt="{html.escape(dashboard_alt(d))}"></p>'
-            f'<p><b>최근 6개월 값</b> <span style="color:{_MUTED}">· 그래프와 같은 원자료</span></p>'
+            + (f'<p data-dashboard-caption style="color:{_MUTED}">{html.escape(caption)}</p>' if caption else "")
+            + f'<p><b>최근 6개월 값</b> <span style="color:{_MUTED}">· 그래프와 같은 원자료</span></p>'
             '<table data-dashboard-table style="width:100%;table-layout:fixed;border-collapse:collapse">'
             f'<tr>{head}</tr>{body}</table>'
             '<p><b>읽는 법</b></p>' + notes
@@ -242,9 +256,10 @@ def _tip(tip_id: str, text: str) -> str:
             f'aria-label="산식 보기">ⓘ</button><span role="tooltip" id="{tip_id}" class="tip-body">{html.escape(text)}</span></span>')
 
 
-def render_site_top(visual: VisualFirst, counts: dict, asof: str, ds: dict) -> str:
+def render_site_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, briefing=()) -> str:
     d = visual.dashboard
-    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds))
+    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds)) + _briefing_html(briefing)
+    caption = dashboard_caption(d)
     image = visual.image
     notes = mch.reading_notes(d)
     formula = {title: f for title, _, f in notes}
@@ -262,7 +277,9 @@ def render_site_top(visual: VisualFirst, counts: dict, asof: str, ds: dict) -> s
     return (f'<section class="vf" data-visual-first><style>{SITE_CSS}</style>'
             f'<p class="vf-summary">{summary}</p>'
             f'<figure class="vf-dash"><img src="../images/{image.name}" width="{image.width}" height="{image.height}" '
-            f'alt="{html.escape(dashboard_alt(d))}" decoding="async"></figure>'
+            f'alt="{html.escape(dashboard_alt(d))}" decoding="async">'
+            + (f'<figcaption class="vf-note" data-dashboard-caption>{html.escape(caption)}</figcaption>' if caption else "")
+            + '</figure>'
             '<h2>최근 6개월 값</h2><div class=tblwrap><table class="vf-table" data-dashboard-table>'
             f'<caption class="vf-note">그래프와 같은 원자료 · ⓘ에 산식</caption><tr>{head}</tr>{rows}</table></div>'
             f'<div class="vf-notes"><h2>읽는 법</h2>{note_html}</div>'

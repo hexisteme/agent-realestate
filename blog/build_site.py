@@ -68,6 +68,31 @@ FEED_MAX=50
 GA4_MEASUREMENT_ID=os.environ.get("GA4_MEASUREMENT_ID","G-J40FMJG903")
 
 
+# 집계 기준 변경 이력(외부 리뷰 C16) — 날짜는 실제 적용일(작업트리를 실행하는 07:05 자동 실행분).
+METHOD_CHANGES = (
+    ("2026-10-14 07:05 자동 실행분부터", "일간 글의 상승·하락 단지 수를 제목·요약·대표 이미지·구 요약에서 한 기준(아파트·전용 40㎡ 이상·"
+                   "12개월 매매 10건 이상, 두 비교 기간 각 2건 이상)으로 통일했다. 그 이전 글의 수치는 소급 수정하지 않았다."),
+    ("2026-10-14 07:05 자동 실행분부터", "단지 관리비(공용 7항목) 표기를 중단했다 — 부과월·포함 월수를 저장하지 않아 '최근 3개월' 평균을 입증할 수 없다."),
+    ("2026-09-05", "단지명 매칭을 canonical 완전일치로 바꿨다(부분일치·접두 매칭 폐지)."),
+)
+
+
+def render_band_chips(band_summary: list[dict]) -> str:
+    """첫 화면 가격대 칩 — 관측 단지 수와 중위 집계(게이트 통과) 단지 수를 나눠 적는다(외부 리뷰 X1, R2 Codex)."""
+    chips = "".join(f'<span class=chip>{b["band"]} 관측 {b["n"]}단지 · 중위 {_fmt_eok(b["median"])}'
+                    f'(집계 {b["n_gated"]}단지)</span>' for b in band_summary if b["n"])
+    return f"<div class=chips>{chips}</div>" if chips else ""
+
+
+def render_method_changes() -> str:
+    """방법론 페이지의 검수 범위·집계 기준 변경 이력."""
+    items = "".join(f"<li>{day} — {html.escape(text)}</li>" for day, text in METHOD_CHANGES)
+    return ("<h2>검수 범위와 집계 기준 변경 이력</h2>"
+            "<p>일간 글은 자동 수집·결정론 계산·자동 검사(문구·분량 규칙)만 거쳐 발행되며 사람 검수는 하지 않는다. "
+            "각 글 하단에 생성일을 적는다.</p>"
+            f"<ul>{items}</ul>")
+
+
 def ga4_snippet() -> str:
     """GA4 gtag.js 로더(2026-09-05 P1) — GA4_MEASUREMENT_ID 빈 문자열이면 빈 스니펫(계측 비활성)."""
     if not GA4_MEASUREMENT_ID:
@@ -276,7 +301,7 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
     gu_summary = dd._gu_summary_rows(ds_all) if ds_all is not None else []
     band_summary = dd._band_summary_rows(ds_all) if ds_all is not None else []   # 가격대 4밴드 칩(2026-09-07)
     chips = ('<span class=chip>기준 ' + asof_idx + '</span>'
-             '<span class=chip>국토부 실거래 · 신고 지연 최대 30일</span>'
+             '<span class=chip>국토부 실거래 · 최근 계약분 잠정(신고기한 30일·정정·해제)</span>'
              '<span class=chip>매일 07:05 자동 갱신</span>')
     gu_tiles = "".join(
         f'<a class=gutile href="gu/{quote(g["gu"])}.html"><b>{g["gu"]}</b>'
@@ -339,7 +364,7 @@ h2{{font-size:18px;margin:28px 0 12px}}
 <p class=lead>작성·편집: {AUTHOR_LABEL}</p>
 <p class=lead>서울 자치구 아파트 단지의 <b>국토부 공공 실거래 중위·분포·추세</b>(단지 실명 게재). 자체 평가·점수·순위 없는 사실 스냅샷.</p>
 <div class=chips>{chips}</div>
-{('<div class=chips>' + ''.join(f'<span class=chip>{b["band"]} {b["n"]}단지 · 중위 {_fmt_eok(b["median"])}</span>' for b in band_summary if b['n']) + '</div>') if band_summary else ''}
+{render_band_chips(band_summary)}
 {lead_html}
 {f'<img src="{card_relative}" alt="서울 주거 실거래 관측 범위와 대표면적 표본, 국토교통부 출처 및 기준일" width="1200" height="630" style="display:block;width:100%;height:auto;border-radius:10px" fetchpriority="high">' if card_relative else ''}
 {entry_cards}
@@ -413,6 +438,8 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
 <p>표본이 적은 단지는 중위·분포가 불안정해 분포·52주 위치를 표시하지 않을 수 있다(표본 부족 구간은 — 처리).
 추세는 <b>과거 중위 비교(사실)일 뿐 미래 전망이 아니다</b>. 발견 커버리지는 전수가 아니며, 데이터는 기준일 시점이다.
 본 사이트는 개인 연구·정보 공유로 <b>투자자문·매수권유가 아니다</b>.</p>
+{be.render_outlier_cut_note(ds_all.get("outlier_cut_sensitivity") if ds_all else None)}
+{render_method_changes()}
 <h2>5. 시스템</h2>
 <p class=d>생성: <a href="https://github.com/hexisteme/agent-realestate">agent-realestate</a> (결정론 파이프라인, MIT) ·
 콘텐츠 라이선스 CC-BY-NC-4.0 · AI 인덱스 <a href="llms.txt">/llms.txt</a></p>

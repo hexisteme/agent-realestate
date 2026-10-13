@@ -25,8 +25,8 @@ def build_weekly_summary(ds: dict, today: str, prev_ds: dict | None = None) -> s
     lead_lines = render_lead_lines(build_fact_leads(ds, "seoul", prev_ds=prev_ds, limit=3))
     n_total = ds.get("count", len(cx))
     n_sample = sum(r.get("molit_n") or 0 for r in cx)
-    up = sum(1 for r in cx if r.get("molit_trend_dir") == "▲")
-    down = sum(1 for r in cx if r.get("molit_trend_dir") == "▼")
+    gated = be.count_gated_trends(cx)  # 표본기준추세수 — 제목·본문과 같은 기준(C1)
+    up, down, n_judged = gated["up"], gated["down"], gated["n_judged"]
     base = [r for r in cx if be.passes_rank_gate(r)]
     hi = sorted([r for r in base if (r.get("molit_pos_52w") or 0) >= 99],
                 key=lambda r: (-(r["molit_pos_52w"]), -(r.get("molit_trend_pct") or 0)))[:_TOP_N]
@@ -41,7 +41,7 @@ def build_weekly_summary(ds: dict, today: str, prev_ds: dict | None = None) -> s
     lines = [
         "<b>서울 아파트 주간 요약</b>",
         f'기준일 {ds.get("data_asof", today)} · 발행 {n_total}단지 · 표본 {n_sample}건',
-        f'▲{up} · ▼{down}',
+        f'추세 판정 {n_judged}단지(아파트·전용 40㎡+·매매 10건+) 중 ▲{up} · ▼{down}',
         "",
         *lead_lines,
         "",

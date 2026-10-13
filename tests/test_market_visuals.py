@@ -80,7 +80,8 @@ def test_district_views_preserve_original_summary_and_use_shared_price_gate():
     assert 'data-market-visuals="districts"' in result["site_html"]
     text = "".join(_HTML(result["tistory_html"]).text)
     assert "서울 25개 구 요약" in text and "가격 히트맵" in text
-    assert "15억" in text and "3곳" in text and "▲2▼1" in text
+    # ▲·▼는 표본기준추세수(외부 리뷰 2026-10-13 C1) — 도생 ▲는 게이트 밖이라 세지 않는다.
+    assert "15억" in text and "3곳" in text and "▲1▼1" in text
     assert sum(1 for _, a in _HTML(result["tistory_html"]).elements if a.get("data-district")) == 25
 
 
@@ -148,7 +149,7 @@ def test_tistory_is_safe_compact_and_keeps_twenty_five_districts():
     assert parsed.elements[1][0] in {"b", "span", "table"}
     tables = [attrs for tag, attrs in parsed.elements if tag == "table"]
     assert tables[0]["data-market-visuals"] == "districts"
-    assert len(html.encode()) <= 4500
+    assert len(html.encode()) <= 4600  # R3 F7: 구 칸 추세 분모 '(n)' ≈100B 추가. 본문 전체 예산은 daily_digest 축약 루프가 집행
     assert "가격대 분포" in html
     assert len([a for _, a in parsed.elements if "data-district" in a]) == 25
 
@@ -244,7 +245,7 @@ def test_actual_public_dataset_tistory_budget_and_all_summaries():
         pytest.skip("operational public dataset is not available in this checkout")
     ds = json.loads(dataset_path.read_text())
     result = _api().build_market_visuals(ds, ds["generated"])
-    assert len(result["tistory_html"].encode()) <= 4500
+    assert len(result["tistory_html"].encode()) <= 4600  # R3 F7 분모 병기(위 주석)
     assert len([a for _, a in _HTML(result["tistory_html"]).elements if "data-district" in a]) == 25
 
 
@@ -345,10 +346,10 @@ def test_svg_axis_fonts_keep_native_size_inside_scroll_and_tablet_grid():
 def test_tistory_price_and_total_complex_count_have_separate_lines():
     source = _api().build_market_visuals(_dataset([_row()]), TODAY)["tistory_html"]
     body = re.search(r'<td data-district="강남"[^>]*>(.*?)</td>', source, re.S).group(1)
-    assert "10억<br>1곳<br>" in body
+    assert "10억<br>1곳(1)<br>" in body
     assert "▲1<br>▼0" in body
     missing = re.search(r'<td data-district="서초"[^>]*>(.*?)</td>', source, re.S).group(1)
-    assert "—<br>0곳<br>" in missing
+    assert "—<br>0곳(0)<br>" in missing
 
 
 def test_tistory_heatmap_survives_skin_cell_and_paragraph_font_overrides():

@@ -299,6 +299,13 @@ def main():
         print(f"[run_daily] STALE (asof {a.asof}, D-{(date.fromisoformat(today)-date.fromisoformat(a.asof)).days}) + --block-stale → 발행 스킵")
         return
 
+    # 이상치 컷 민감도(외부 리뷰 C11) — 방법론 페이지가 읽는다. 보조 지표라 실패해도 발행은 계속.
+    try:
+        import json
+        with open(a.molit, encoding="utf-8") as fh:
+            ds["outlier_cut_sensitivity"] = be.compute_outlier_cut_sensitivity(ds, json.load(fh))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[run_daily] 이상치 컷 민감도 건너뜀: {type(e).__name__}: {str(e)[:120]}")
     be.assert_no_duplicate_signatures(ds)   # 동일시그니처(매칭결함) 게이트 — 회귀 시 발행 대신 예외(2026-09-05)
     be.write_out(ds, a.out)                 # dataset.json + explorer.html
     summaries = be.write_posts(ds, a.out)   # 자치구별 실명 포스트 + claims + llms.txt
@@ -334,8 +341,25 @@ def main():
             except Exception as e:                               # noqa: BLE001
                 print(f"시각 우선 대시보드 건너뜀: {type(e).__name__}")
         print(f"시각 우선 글: {'켜짐 · ' + visual.image.name if visual else '꺼짐'}")
+        # 오늘 새로 확인(DailyFreshness, 외부 리뷰 2026-10-13 C14) — 직전 MOLIT 아카이브·거시 스냅샷 대비. 실패해도 발행은 계속.
+        freshness = None
+        try:
+            import json
+            from datetime import timedelta
+            from blog.daily_freshness import build_daily_freshness, latest_molit_archive_before
+            from blog.snapshots import load_macro_snapshot_latest
+            molit_cur = None
+            if a.molit and os.path.exists(a.molit):
+                with open(a.molit, encoding="utf-8") as fh:
+                    molit_cur = json.load(fh)
+            yesterday = date.fromisoformat(today) - timedelta(days=1)
+            freshness = build_daily_freshness(
+                today, molit_cur, latest_molit_archive_before(today, f"{a.out}/snapshots/molit"), macro_snap,
+                load_macro_snapshot_latest(dir=f"{a.out}/snapshots/macro", on_or_before=yesterday))
+        except Exception as e:                                   # noqa: BLE001
+            print(f"오늘 새로 확인 건너뜀: {type(e).__name__}")
         digest = dd.build_daily_digest(ds, today, a.asof, prev_ds=prev_ds, macro=macro_ctx,
-                                       housing_support=support_snapshot, visual_first=visual)
+                                       housing_support=support_snapshot, visual_first=visual, freshness=freshness)
         outputs = write_digest_outputs(digest, today, a.out, ds=ds)
         print(f"티스토리 원고: {outputs['draft']}  (열어 복사 → 티스토리 HTML 모드 붙여넣기 → 발행)")
         print(f"일간 다이제스트: {outputs['dated']} · {outputs['latest']}")

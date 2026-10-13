@@ -73,7 +73,7 @@ def test_visual_first_tistory_reads_summary_dashboard_notes_table_map_then_budge
     image = re.search(rf'<img src="{re.escape(BASE_URL)}/images/(dashboard-{TODAY}-[0-9a-f]{{16}}\.png)"', body)
     assert image
     order = [body.find(f"{ASOF} 관측"), image.start(), body.find("data-dashboard-table"), body.find("읽는 법"),
-             body.find("▲ 높아진 단지 수"), body.find('data-geo-tiles="districts"'), body.find("가격대별 요약")]
+             body.find("▲ 높아진 단지 수"), body.find("data-district-list"), body.find("가격대별 요약 <span")]   # U2 — 티스토리는 구 목록 표
     assert -1 not in order and order == sorted(order), order
     for kept in (be.DISCLAIMER, "AI로 정리", "작성:", "방법론 전문"):
         assert kept in body
@@ -203,7 +203,7 @@ def test_summary_and_tiles_count_trends_with_the_fact_lead_gate(tmp_path):
     assert raw_up != up   # 표본 게이트를 거치지 않은 단지가 섞여 있어야 이 테스트가 의미가 있다
     digest = build_daily_digest(ds, TODAY, ASOF, visual_first=_visual(tmp_path))
     for surface in ("tistory_html", "site_html"):
-        assert f"표본 기준을 채운 {n:,}단지" in digest[surface] and f"높은 곳 {up:,} · 낮은 곳 {down:,}" in digest[surface]
+        assert f"3·9개월 비교가 가능한 {n:,}단지" in digest[surface] and f"높은 곳 {up:,} · 낮은 곳 {down:,}" in digest[surface]
     tiles = vf.render_geo_tile_heatmap(ds, ASOF, surface="tistory")
     assert sum(map(int, re.findall(r"▲(\d+)", tiles))) == up and sum(map(int, re.findall(r"▼(\d+)", tiles))) == down
     lead = re.search(r"추세 판정 가능한 (\d+)단지 중 (\d+)곳", digest["tistory_html"])

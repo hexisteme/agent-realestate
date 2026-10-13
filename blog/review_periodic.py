@@ -148,7 +148,8 @@ def review_periodic(*, today: str, dataset: str, snapshots: str, out: str,
     previous = molit_archive_path_on(base[0], 1, str(snap_dir / "molit"))
     current = molit_archive_path_on(generated, 0, str(snap_dir / "molit"))
     if previous and current:
-        filings = pd.diff_filings(_read(Path(previous), inputs), _read(Path(current), inputs))
+        filings = pd.diff_filings(_read(Path(previous), inputs), _read(Path(current), inputs),
+                                  window_start=pd.molit_window_start(actual))
     else:
         warnings.append("기준/이번 실측일 MOLIT 아카이브가 모두 있지 않아 신고 델타 미검수.")
     weekly, weekly_rows, macro = None, None, None
