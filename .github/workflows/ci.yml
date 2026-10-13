@@ -8,7 +8,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e . pytest ruff
+      - run: pip install -e . pytest ruff "Pillow>=10.4,<13" "beautifulsoup4>=4.12" "playwright>=1.60,<2"
+      # 브라우저 테스트는 브라우저가 없으면 건너뛰지 않고 setup 오류로 실패한다(tests/browser_setup.py).
+      - run: python -m playwright install --with-deps chromium
       # F821(undefined-name) 게이트 — 2026-07-11 사고(cmd_daily import os 누락, 런타임 전용이라
       # pytest/E2E 미검출)의 재발방지. ruff 는 .gitignore 존중이라 로컬 실행과 결과 동일.
       - run: python -m ruff check --select F821 .
