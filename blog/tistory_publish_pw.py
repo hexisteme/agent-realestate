@@ -817,8 +817,14 @@ def result_exit_code(result: str, mode: str) -> int:
     return 0 if re.search(r"(?:^|\s|\|)" + success + r"(?:\(|\s|$)", result) else 1
 
 
+# --pending 한 번에 새로 발행하는 상한. 실패한 날은 세지 않는다.
+PENDING_PUBLISH_LIMIT = 2
+# 원고와 무관한 실패 — 다음 날짜도 같은 이유로 실패하거나 마커가 어긋나므로 건너뛰지 않고 멈춘다.
+RUN_WIDE_FAILURES = ("ERR:not_logged_in", "ERR:login_timeout", "ERR:exception", "MARKER_FAIL", "STATE_SAVE_FAIL")
+
+
 def pending_dates(outroot: str, today: str) -> list[str]:
-    """마지막 성공 다음부터 준비된 원고를 최대 두 건씩 복구한다."""
+    """마지막 성공 다음부터 오늘까지 준비된 원고 날짜를 오래된 순서로 돌려준다(상한은 main 이 성공 건수로 센다)."""
     marker = _read_marker(marker_paths(outroot)[0])
     try:
         lower = datetime.date.fromisoformat(marker).isoformat()
@@ -828,7 +834,7 @@ def pending_dates(outroot: str, today: str) -> list[str]:
     days = sorted({os.path.basename(p)[:10] for p in drafts
                    if _DAILY_DRAFT_RE.fullmatch(os.path.basename(p))
                    and lower <= os.path.basename(p)[:10] <= today})
-    return [d for d in days if d > lower or d == today][:2]
+    return [d for d in days if d > lower or d == today]
 
 
 def main():
@@ -840,7 +846,8 @@ def main():
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
     ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
     ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) — kind 별 원고·마커")
-    ap.add_argument("--pending", action="store_true", help="일간 누락 원고를 오래된 순서로 최대 2건 복구")
+    ap.add_argument("--pending", action="store_true",
+                    help="일간 누락 원고를 오래된 순서로 최대 2건 발행 — 원고 탓 실패한 날은 알리고 건너뜀")
     ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
     ap.add_argument("--probe-relogin", action="store_true", help="auth 전용: 별도 메모리 컨텍스트에서 티스토리 세션 만료 후 SSO 검증")
     ap.add_argument("--design-review", help="publish 전용: design_review.json 경로 "
@@ -857,6 +864,7 @@ def main():
     dates = pending_dates(a.outroot, datetime.date.today().isoformat()) if a.pending else [a.date]
     if not dates:
         dates = [None]  # 원고 부재/stale를 성공으로 숨기지 않는다.
+    published, rc = 0, 0
     for stamp in dates:
         try:
             result = publish(a.outroot, a.mode, stamp, headless=a.headless, login_wait_s=a.login_wait,
@@ -871,9 +879,17 @@ def main():
             _notify_failure(result, a.outroot, kind=a.kind)
         if rc in (DESIGN_BLOCK_EXIT, DESIGN_AWAIT_EXIT) and not a.no_notify:
             _notify_design_review(result, a.outroot, kind=a.kind)
-        if rc:
+        if rc == 0:
+            published += 1
+            if a.pending and published >= PENDING_PUBLISH_LIMIT:
+                break
+            continue
+        # 10-11~10-13: 가장 오래된 원고 1편의 실패가 뒤 날짜를 사흘 막았다 — 원고 탓 실패만 건너뛴다.
+        # 뒤 날짜가 발행되면 성공 마커가 넘어가 건너뛴 날은 다시 시도하지 않는다(사용자 결정 2026-10-13).
+        if not (a.pending and rc == 1 and not any(m in result for m in RUN_WIDE_FAILURES)):
             return rc
-    return 0
+        print(f"[pending] {stamp} 건너뜀 — 다음 원고로", flush=True)
+    return rc
 
 
 if __name__ == "__main__":

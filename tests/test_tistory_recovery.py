@@ -80,11 +80,63 @@ def test_pending_recovery_oldest_first_bounded_and_no_future(isolated):
         draft(isolated, f'2026-09-{d:02d}')
     marker = isolated / pub.PUBLISH_MARKER
     marker.write_text('2026-09-08')
-    assert pub.pending_dates(str(isolated), '2026-09-11') == ['2026-09-09', '2026-09-10']
+    assert pub.pending_dates(str(isolated), '2026-09-11') == ['2026-09-09', '2026-09-10', '2026-09-11']
     marker.write_text('2026-09-10')
     assert pub.pending_dates(str(isolated), '2026-09-11') == ['2026-09-11']
     marker.unlink()
     assert pub.pending_dates(str(isolated), '2026-09-11') == ['2026-09-11']
+
+
+def _pending_run(isolated, monkeypatch, days, results, *flags):
+    for day in days:
+        draft(isolated, day)
+    (isolated / pub.PUBLISH_MARKER).write_text('2026-09-08')
+    monkeypatch.setattr(sys, 'argv', ['publish', '--mode', 'publish', '--pending', *flags,
+                                     '--outroot', str(isolated)])
+    call = Mock(side_effect=results)
+    monkeypatch.setattr(pub, 'publish', call)
+    return call
+
+
+def test_pending_skips_failed_days_and_publishes_later_day(isolated, monkeypatch):
+    # 10-11~10-13: 가장 오래된 원고 1편의 실패가 뒤 날짜를 사흘 막았다 — 실패한 날은 알리고 건너뛴다.
+    call = _pending_run(isolated, monkeypatch, ('2026-09-09', '2026-09-10', '2026-09-11'),
+                        ['[a] ERR:paste_basic_empty(30)', '[b] ERR:body_image_source_unready(fetch)',
+                         '[c] PUBLISHED(remote-verified)'])
+    assert pub.main() == 0
+    assert [c.args[2] for c in call.call_args_list] == ['2026-09-09', '2026-09-10', '2026-09-11']
+    assert pub._notify_failure.call_count == 2
+
+
+def test_pending_publishes_at_most_two_per_run(isolated, monkeypatch):
+    call = _pending_run(isolated, monkeypatch, ('2026-09-09', '2026-09-10', '2026-09-11'),
+                        ['[a] PUBLISHED(remote-verified)'] * 3)
+    assert pub.main() == 0
+    assert [c.args[2] for c in call.call_args_list] == ['2026-09-09', '2026-09-10']
+
+
+def test_pending_failure_on_last_day_still_fails_the_run(isolated, monkeypatch):
+    call = _pending_run(isolated, monkeypatch, ('2026-09-10', '2026-09-11'),
+                        ['[a] PUBLISHED(remote-verified)', '[b] ERR:paste_content_mismatch'], '--no-notify')
+    assert pub.main() == 1
+    assert call.call_count == 2
+
+
+@pytest.mark.parametrize('stop', [
+    'ERR:login_timeout — 티스토리 재로그인 필요',
+    'ERR:not_logged_in (headless)',
+    'ERR:exception:RuntimeError',
+    '[a] PUBLISHED(remote-verified) STATE_SAVE_FAIL:OSError',
+    'SKIP:verified_published_remote | MARKER_FAIL',
+    'SKIP:profile_locked — 같은 프로필의 다른 발행 프로세스 실행 중',
+    'DESIGN_BLOCK:a — open P1',
+    'DESIGN_AWAIT_HUMAN:a — stale',
+])
+def test_pending_stops_on_outcomes_not_specific_to_the_draft(isolated, monkeypatch, stop):
+    call = _pending_run(isolated, monkeypatch, ('2026-09-10', '2026-09-11'),
+                        [stop, '[b] PUBLISHED(remote-verified)'], '--no-notify')
+    assert pub.main() == pub.result_exit_code(stop, 'publish') != 0
+    assert call.call_count == 1
 
 
 def test_old_day_receipt_prevents_duplicate_and_does_not_regress_marker(isolated):
