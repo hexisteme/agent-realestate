@@ -82,6 +82,7 @@ def test_c13_review_packet_passes_the_collection_window(monkeypatch, tmp_path):
     monkeypatch.setattr(rp.pd, "diff_filings", spy)
     monkeypatch.setattr(rp, "_today", lambda: date(2026, 9, 13))
     report = rp.PROJECT_ROOT / "report"
+    report.mkdir(exist_ok=True)   # CI 러너엔 report/ 가 없다(gitignore) — 검토 패킷은 report/ 아래 경로만 받는다
     import tempfile
     with tempfile.TemporaryDirectory(prefix="test-period-review-", dir=report) as folder:
         root = Path(folder)
