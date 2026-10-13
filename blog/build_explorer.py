@@ -161,6 +161,21 @@ def _match_records(c, lawd, molit) -> list[dict]:
     return [r for r in recs if r.get("price") and abs(r["area"] - ar) <= 3.5 and r["apt"] in matched]
 
 
+SPLIT_RATIO = 1.4        # 같은 면적대 안 정확 면적 군집 중위의 최고/최저 비 — 이 이상이면 동명 단지 병합 의심(보류, SPEC-D2)
+SPLIT_MIN_GROUP = 3
+
+
+def detect_area_price_split(trades: list[dict], ratio: float = SPLIT_RATIO, min_group: int = SPLIT_MIN_GROUP) -> bool:
+    """같은 면적대 거래를 정확 면적(소수 2자리)별로 묶어, min_group 건 이상 군집이 둘 이상이고 군집 중위의 최고/최저 ≥ ratio 면 참.
+    MOLIT 행에 법정동·지번이 없던 시기(2026-10-13 이전 수집분) 같은 구의 동명 단지가 한 이름으로 섞이는 경우(동작 대림·성동 벽산)를
+    가격 군집으로 잡는다. 연재(insight_series)와 사이트 발행(build_dataset·build_dataset_public)이 같은 규칙을 쓴다(2026-10-14 승인)."""
+    groups: dict[float, list[int]] = {}
+    for x in trades:
+        groups.setdefault(round(float(x["area"]), 2), []).append(x["price"])
+    meds = [st.median(v) for v in groups.values() if len(v) >= min_group]
+    return len(meds) >= 2 and max(meds) / min(meds) >= ratio
+
+
 OUTLIER_CUT = 0.6   # 이상치 컷 — 12개월 전체 중위의 60% 미만(−40% 이하) 거래 제외
 
 
@@ -279,8 +294,8 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
     raw_uni = json.load(open(universe, encoding="utf-8"))
     complex_no_map = {(d.get("district") or "", re.sub(r"\[.*?\]", "", d.get("complex_name", "")).strip()):
                       str(d["complex_no"]) for d in raw_uni if d.get("complex_no")}
-    rows = []
-    excluded = {"under_min_units": 0, "corridor": 0}
+    rows, held = [], []
+    excluded = {"under_min_units": 0, "corridor": 0, "price_split": 0}
     for gu, lawd in GU_LAWD.items():
         for c in (x for x in uni if gu in x.district):
             disp = re.sub(r"\[.*?\]", "", c.listing.complex_name).strip()
@@ -289,6 +304,10 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
             if gu == "구로" and disp in CORRIDOR_EXCLUDE:  # ② corridor hard 제외
                 excluded["corridor"] += 1; continue
             matched = _match_records(c, lawd, molit)
+            if detect_area_price_split(matched):          # ③ 동명 단지 가격 군집 — 이름 아래 다른 단지 거래가 섞임(2026-10-14)
+                excluded["price_split"] += 1
+                held.append({"gu": gu, "name": disp, "complex_no": complex_no_map.get((c.district, disp), "")})
+                continue
             md, n = _median_of(matched)
             tier = derive_tier_now(matched, asof)            # 동일표본 파생 무점수 사실 3종(분포·추세·52주위치)
             pyeong = round(c.listing.area_exclusive_m2 / 3.305785, 1)
@@ -353,6 +372,7 @@ def build_dataset(universe: str, molit_path: str, asof: str, today: str) -> dict
         "schema_version": "explorer-facts/1", "generated": today, "data_asof": asof,
         "license": "CC-BY-NC-4.0", "disclaimer": DISCLAIMER, "takedown": _takedown(), "sources": SOURCES,
         "count": len(rows), "complexes": rows, "excluded": excluded,
+        "held_price_split": sorted(held, key=lambda h: (h["gu"], h["name"], h["complex_no"])),
     }
 
 
@@ -517,7 +537,8 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
     # ── (A) 연속성 파트 — 기존 경로 그대로 ──
     base_rows: list[dict] = []
     excluded = {"under_min_units": 0, "corridor": 0, "no_molit_match": 0, "base_overlap": 0,
-                "outside_scope": 0}
+                "outside_scope": 0, "price_split": 0}
+    held: list[dict] = []                        # 가격 군집 보류 단지(A·B) — 공개 dataset 에 이름과 함께 남긴다
     suppress: dict[str, list[str]] = {}          # gu → [기존 발행명(원본)] — (B) 중복 방어(명칭)
     base_cnos: set[str] = set()                  # (B) 중복 방어(cno) — universe 숫자 cno 는 frame 과 겹침
     if anchor_universe:
@@ -525,7 +546,9 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         base_rows = base["complexes"]
         for k, v in base["excluded"].items():
             excluded[k] = excluded.get(k, 0) + v
-        for b in base_rows:
+        held.extend(base.get("held_price_split", []))
+        # A 에서 보류한 단지도 억제한다 — 빠뜨리면 (B)가 프레임으로 같은 단지를 다시 만들어 가드를 우회한다.
+        for b in base_rows + base.get("held_price_split", []):
             suppress.setdefault(b["gu"], []).append(b["name"])
             if b.get("complex_no"):
                 base_cnos.add(str(b["complex_no"]))
@@ -594,6 +617,10 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
             continue
 
         gu, c, disp, recs = best["gu"], best["c"], best["disp"], best["recs"]
+        if detect_area_price_split(recs):                  # 동명 단지 가격 군집(A 경로와 같은 규칙, 2026-10-14)
+            excluded["price_split"] += 1
+            held.append({"gu": gu, "name": disp, "complex_no": cno})
+            continue
         md, n = best["md"], best["n"]
         tier = derive_tier_now(recs, asof)                 # 동일표본 파생 무점수 사실 3종(분포·추세·52주위치)
         area_m2 = round(best["anchor"], 1)                 # 최다 거래 평형(실거래 사실 기반)
@@ -652,6 +679,7 @@ def build_dataset_public(frame_path: str, molit_path: str, asof: str, today: str
         "schema_version": "explorer-facts/1", "generated": today, "data_asof": asof,
         "license": "CC-BY-NC-4.0", "disclaimer": DISCLAIMER, "takedown": _takedown(), "sources": SOURCES,
         "count": len(rows), "complexes": rows, "excluded": excluded,
+        "held_price_split": sorted(held, key=lambda h: (h["gu"], h["name"], h["complex_no"])),
     }
 
 

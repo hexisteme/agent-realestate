@@ -27,6 +27,7 @@ from html import escape
 from pathlib import Path
 
 import blog.build_explorer as be
+from blog.build_explorer import SPLIT_RATIO, detect_area_price_split
 from blog.build_site import BASE_URL
 from blog.period_delta import _tbl
 from blog.tistory_contract import DraftPayload, write_helper
@@ -59,8 +60,6 @@ WATCH_MIN_DAYS = 2
 WATCH_REPEAT_DAYS = 2
 WATCH_PRIOR_CUT = 0.6
 WATCH_CLASSES = ("2+", "1", "0")
-SPLIT_RATIO = 1.4        # SPEC-D2: 같은 면적대 안 정확 면적 군집 중위의 최고/최저 비 — 이 이상이면 동명 단지 병합 의심(보류)
-SPLIT_MIN_GROUP = 3
 
 CAUTION_WATCH = ("※ 이 표는 국토교통부에 신고된 체결 거래만 셉니다. 최근 기간에 10억원 이하 거래가 없었다는 것은 지금 그 단지를 "
                  "10억원 이하로 살 수 없다는 뜻이 아니며, 10억원 이하 거래가 있었다는 것도 지금 그 가격에 살 수 있다는 뜻이 아닙니다. "
@@ -146,16 +145,6 @@ def _won(eok: float | None) -> Decimal:
 def half_up(v: float | int, nd: int = 0) -> Decimal:
     """표시용 십진 HALF_UP 반올림 — float 의 최단 십진 표기(str)에서 출발해 이진 오차·은행가 반올림을 피한다(G2)."""
     return Decimal(str(v)).quantize(Decimal(1).scaleb(-nd), rounding=ROUND_HALF_UP)
-
-
-def detect_area_price_split(trades: list[dict], ratio: float = SPLIT_RATIO, min_group: int = SPLIT_MIN_GROUP) -> bool:
-    """같은 면적대 거래를 정확 면적(소수 2자리)별로 묶어, min_group 건 이상 군집이 둘 이상이고 군집 중위의 최고/최저 ≥ ratio 면 참.
-    MOLIT 행에 법정동·지번이 없어 같은 구의 동명 단지가 한 이름으로 섞이는 경우(동작 대림·성동 벽산)를 가격 군집으로 잡는다."""
-    groups: dict[float, list[int]] = defaultdict(list)
-    for x in trades:
-        groups[round(float(x["area"]), 2)].append(x["price"])
-    meds = [st.median(v) for v in groups.values() if len(v) >= min_group]
-    return len(meds) >= 2 and max(meds) / min(meds) >= ratio
 
 
 def summarize_data_clock(molit: dict) -> dict:
