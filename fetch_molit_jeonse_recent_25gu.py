@@ -5,10 +5,10 @@ fetch_molit_recent_25gu.py 의 전월세(RTMSDataSvcAptRent) 변형: 25구 defau
 순전세만 사용(monthlyRent==0 — 반전세/월세 제외, fetch_molit_jeonse.py 필터 그대로). RE_DISTRICTS env override 가능."""
 from __future__ import annotations  # cron python(/usr/bin/python3=3.9.6)에서 PEP604 `str | None` 런타임 평가 회피
 import os, json, time, socket, urllib.parse, urllib.request
-import xml.etree.ElementTree as ET
 from datetime import date
 from agent_realestate import config; config.load_env_file()
 from agent_realestate.collectors.lawd import lawd_for_district
+from blog.molit_transactions import parse_molit_rent_rows
 
 # ★DNS 자가회복(recent_25gu 버전과 동일): 시스템 getaddrinfo 고장 시에도 수집 지속. 정상 시 오버헤드 0.
 _real_gai = socket.getaddrinfo
@@ -68,29 +68,16 @@ def _rolling_months(n=12):
 MONTHS = _rolling_months()
 OUT = "examples/molit_jeonse_recent_25gu_20260710.json"
 
-def _t(it, tag):
-    e = it.find(tag); return (e.text or "").strip() if e is not None else ""
-
 def fetch(lawd, ym):
-    """전월세 응답 → 순전세(월세=0)만 매매 스키마로. price 자리에 전세보증금(원)."""
+    """전월세 응답 → 순전세(월세=0)만 매매 스키마로. price 자리에 전세보증금(원) — 파싱은 blog.molit_transactions."""
     qs = urllib.parse.urlencode({"serviceKey": K, "LAWD_CD": lawd, "DEAL_YMD": ym, "numOfRows": 4000, "pageNo": 1})
     for _ in range(2):   # 최초 + 1회 재시도
         try:
             with urllib.request.urlopen(f"{EP}?{qs}", timeout=40) as r:
-                root = ET.fromstring(r.read().decode("utf-8")); break
+                return parse_molit_rent_rows(r.read(), ym)
         except Exception:
             time.sleep(1.5)
-    else:
-        return None
-    out = []
-    for it in root.iter("item"):
-        dep = _t(it, "deposit").replace(",", "")
-        if not dep: continue
-        mon = _t(it, "monthlyRent").replace(",", "") or "0"
-        if int(mon) != 0: continue   # 순전세만 — 반전세/월세(월세>0) 제외 (fetch_molit_jeonse.py 필터 그대로)
-        out.append({"apt": _t(it, "aptNm"), "area": float(_t(it, "excluUseAr") or 0),
-                    "price": int(dep)*10_000, "ym": ym})   # price=전세보증금(원) — 매매 스키마 하위호환
-    return out
+    return None
 
 def main():
     cache = json.load(open(OUT)) if os.path.exists(OUT) else {}

@@ -8,6 +8,10 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 
+# 보존 필드(2026-10-14) — 이전 캐시 행엔 없을 수 있다(있으면 타입만 검사).
+_KEPT_TEXT_FIELDS = ("umd", "jibun", "dealing", "apt_seq")
+
+
 class MolitTradeResponseError(ValueError):
     """Safe reason code only: never echo an API message, key, URL, or row."""
 
@@ -17,6 +21,22 @@ def _read_molit_text(element: ET.Element, tag: str) -> str:
     if len(matches) != 1 or len(matches[0]):
         raise MolitTradeResponseError("MOLIT_FIELD_STRUCTURE_INVALID")
     return (matches[0].text or "").strip()
+
+
+def _read_molit_optional(element: ET.Element, tag: str) -> str | None:
+    """보존 필드(2026-10-14) — 태그 부재·빈값은 None, 중복·하위요소는 기존 구조 오류."""
+    matches = element.findall(tag)
+    if not matches:
+        return None
+    return _read_molit_text(element, tag) or None
+
+
+def _read_molit_floor(element: ET.Element) -> int | None:
+    value = _read_molit_optional(element, "floor")
+    if value is None:
+        return None
+    # 보조 필드 — 정수가 아니면(B1·'3층' 등) None. 한 칸 오기로 한 달 배치를 버리지 않는다(G6 agy).
+    return int(value) if re.fullmatch(r"-?[0-9]+", value) else None
 
 
 def _read_molit_count(element: ET.Element, tag: str, minimum: int = 0) -> int:
@@ -63,7 +83,8 @@ def _read_molit_cancel_date(value: str) -> date | None:
 def parse_molit_trade_response(xml: bytes | str, lawd_cd: str, request_ym: str) -> dict:
     """Validate one complete month response, exclude cancellations, return rows/receipt.
 
-    Legacy apt/area/price/ym fields remain unchanged. The requested month is
+    Legacy apt/area/price/ym fields remain unchanged. 보존 필드 umd(법정동)·jibun·floor·dealing(중개/직거래)·
+    apt_seq(단지 일련번호)는 태그가 없으면 None — 동명 단지 분리·층/직거래 편향 점검용(2026-10-14). The requested month is
     independently checked against every item's actual contract date. A successful
     zero is possible only with a normal API header and explicit totalCount=0.
     Missing cancellation fields are not retroactively declared checked.
@@ -141,6 +162,9 @@ def parse_molit_trade_response(xml: bytes | str, lawd_cd: str, request_ym: str) 
             continue
         rows.append({"apt": name, "area": area, "price": price, "ym": request_ym,
                      "deal_date": deal_date.isoformat(), "cancellation_checked": True,
+                     "umd": _read_molit_optional(item, "umdNm"), "jibun": _read_molit_optional(item, "jibun"),
+                     "floor": _read_molit_floor(item), "dealing": _read_molit_optional(item, "dealingGbn"),
+                     "apt_seq": _read_molit_optional(item, "aptSeq"),
                      "provenance": {"schema": "MolitTradeRow/v1", "source": "MOLIT_RTMS_APT_TRADE_DEV",
                                     "lawd_cd": lawd_cd, "request_ym": request_ym,
                                     "response_sha256": source_sha256,
@@ -199,6 +223,11 @@ def validate_molit_trade_cache(cache: dict) -> None:
                     raise ValueError
                 if not isinstance(area, (int, float)) or isinstance(area, bool) or not math.isfinite(area) or area <= 0:
                     raise ValueError
+                if any(row.get(k) is not None and not isinstance(row.get(k), str) for k in _KEPT_TEXT_FIELDS):
+                    raise ValueError
+                floor = row.get("floor")
+                if floor is not None and (not isinstance(floor, int) or isinstance(floor, bool)):
+                    raise ValueError
                 verified_pairs.add(f"{lawd_cd}|{ym}")
         if any(not isinstance(marker, str) or marker not in verified_pairs for marker in cache.get("_done", [])):
             raise ValueError
@@ -206,3 +235,35 @@ def validate_molit_trade_cache(cache: dict) -> None:
             raise ValueError
     except (ValueError, TypeError, OverflowError):
         raise MolitTradeResponseError("MOLIT_CACHE_UNVERIFIED") from None
+
+
+def parse_molit_rent_rows(xml: bytes | str, ym: str) -> list[dict]:
+    """전월세 응답 → 순전세(월세 0) 행. price 자리에 전세보증금(원) — 매매 스키마 하위호환.
+
+    보증금 빈 행·월세 > 0 행은 버린다(종전 수집 스크립트와 같은 필터). 보존 필드 contract_type(신규/갱신)·
+    umd·jibun·floor·apt_seq 는 값이 없거나 형식이 다르면 None — 전세 수집은 매매처럼 엄격 경계가 아니다."""
+    root = ET.fromstring(xml.encode("utf-8") if isinstance(xml, str) else xml)
+    code = root.find("header/resultCode") if root.tag == "response" else None
+    if code is None or (code.text or "").strip() not in ("000", "00"):
+        # 오류 응답(resultCode≠000·OpenAPI_ServiceResponse envelope)의 빈 items 를 정상 0건으로 완료 표시하지 않는다(G6·R3 Codex)
+        raise ValueError("MOLIT_API_ERROR")
+
+    def _t(item: ET.Element, tag: str) -> str:
+        e = item.find(tag)
+        return (e.text or "").strip() if e is not None else ""
+
+    out = []
+    for item in root.iter("item"):
+        deposit = _t(item, "deposit").replace(",", "")
+        if not deposit:
+            continue
+        if int(_t(item, "monthlyRent").replace(",", "") or "0") != 0:
+            continue
+        floor = _t(item, "floor")
+        out.append({"apt": _t(item, "aptNm"), "area": float(_t(item, "excluUseAr") or 0),
+                    "price": int(deposit) * 10_000, "ym": ym,
+                    "contract_type": _t(item, "contractType") or None, "umd": _t(item, "umdNm") or None,
+                    "jibun": _t(item, "jibun") or None,
+                    "floor": int(floor) if re.fullmatch(r"-?[0-9]+", floor) else None,
+                    "apt_seq": _t(item, "aptSeq") or None})
+    return out
