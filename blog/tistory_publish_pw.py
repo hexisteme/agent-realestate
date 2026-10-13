@@ -41,8 +41,8 @@ from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
 from blog.tistory_media import MediaContractError, read_media_manifest  # noqa: E402
-from blog.body_media import (BodyMediaError, embed_body_images, read_body_media, read_editor_images,  # noqa: E402
-                             verify_body_images)
+from blog.body_media import (BodyMediaError, read_body_media, read_editor_images,  # noqa: E402
+                             verify_body_images, wait_for_source_images)
 from blog.tistory_design_review import grade_design_review, resolve_design_review_path  # noqa: E402
 
 NEWPOST_URL = os.environ.get("TISTORY_NEWPOST_URL", "https://floker.tistory.com/manage/newpost/")
@@ -502,6 +502,11 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
         held = _gate_design_review(draft_path, design_review, name)
         if held:
             return held
+    # 본문 이미지: 편집기가 원고 URL 을 받아 카카오 CDN 에 올린다 — 사이트가 같은 그림을 서빙할 때만 브라우저를 연다.
+    if body_images:
+        source = wait_for_source_images(body_images)
+        if source != "ok":
+            return f"[{name}] ERR:body_image_source_unready({source}) | {' '.join(log)}"
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
@@ -615,8 +620,9 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                         'text/html': new Blob([html], {type: 'text/html'}),
                         'text/plain': new Blob([html], {type: 'text/plain'})
                     })]);
-                }""", embed_body_images(body, body_images) if body_images else body)
-            # 본문 이미지(2026-10-10)는 원고 URL 대신 sha 검증 바이트의 data URI 로 붙여 Pages 배포 지연과 무관하게 한다.
+                }""", body)
+            # 본문 이미지는 원고 URL 그대로 붙인다 — data URI(약 390KB)는 attach.json 413 으로 붙여넣기 전체가
+            # 버려졌다(10-11~10-13 PASTE_BASIC:30, 2026-10-13 실측). 사이트 서빙은 브라우저를 열기 전에 확인했다.
             page.keyboard.press("Meta+V")
             page.wait_for_timeout(2500)
             if saved_clip is not None:

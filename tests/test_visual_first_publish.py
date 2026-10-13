@@ -39,7 +39,8 @@ def test_body_images_are_verified_before_tags_inject_return_and_attempt_marker()
     verify = source.index("verify_body_images(page, body_images)")
     assert source.index('log.append("PASTE_VERIFIED")') < verify < source.index("# 5) 태그")
     assert verify < source.index('if mode == "inject":') < source.index('state="ATTEMPTED"')
-    assert "embed_body_images(body, body_images) if body_images else body" in source
+    assert "embed_body_images" not in source and "data:image" not in source
+    assert source.index("wait_for_source_images(body_images)") < source.index("sync_playwright")
 
 
 def _image_draft(root):
@@ -52,14 +53,20 @@ def _image_draft(root):
     return draft
 
 
+class _Calls(list):
+    clipboard: list
+
+
 def _fake_browser(monkeypatch, editor_images):
     """편집기 DOM 만 흉내 낸다. evaluate 는 스크립트 종류별로 답하고 모든 호출을 기록한다."""
-    calls = []
+    calls, clipboard = _Calls(), []
     page = MagicMock()
     page.url = "https://floker.tistory.com/manage/newpost"
 
     def evaluate(script, *args):
         calls.append(script)
+        if "clipboard.write" in script:
+            clipboard.extend(args)
         if "querySelectorAll('img')" in script:
             return editor_images(len(calls))
         if "innerHTML.length" in script:
@@ -81,9 +88,11 @@ def _fake_browser(monkeypatch, editor_images):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
     for name, value in (("_load_state", Mock()), ("_save_state", Mock()), ("_refresh_kakao_session", Mock()),
                         ("save_session_state", Mock(return_value=True)), ("pasted_anchors_present", Mock(return_value=True)),
-                        ("_verify_published_on_blog", Mock(return_value=False)), ("_gate_design_review", Mock(return_value=None))):
+                        ("_verify_published_on_blog", Mock(return_value=False)), ("_gate_design_review", Mock(return_value=None)),
+                        ("wait_for_source_images", Mock(return_value="ok"))):
         monkeypatch.setattr(pub, name, value)
     monkeypatch.setattr("subprocess.run", Mock())
+    calls.clipboard = clipboard
     return calls
 
 
@@ -134,3 +143,26 @@ def test_rehosted_image_content_is_bound_after_paste(isolated, monkeypatch, fres
         from blog.tistory_delivery import read_delivery
         assert read_delivery(str(isolated), "2026-10-10", "daily") is None
         assert not (isolated / pub.marker_paths(str(isolated), "daily")[1]).exists()
+
+
+def test_body_is_pasted_with_site_urls_not_data_uris(isolated, monkeypatch):
+    """data URI 본문은 attach.json 413 으로 붙여넣기 전체가 버려졌다(10-11~10-13 PASTE_BASIC:30) — 원고 그대로 붙인다."""
+    from blog.tistory_contract import parse_helper
+    draft = _image_draft(isolated)
+    calls = _fake_browser(monkeypatch, lambda n: [])
+    pub.publish(str(isolated), "inject", "2026-10-10")
+    assert calls.clipboard == [parse_helper(draft)["body"]]
+    assert "data:image" not in calls.clipboard[0]
+
+
+@pytest.mark.parametrize("state", ["fetch", "content"])
+def test_site_not_serving_bound_image_stops_before_browser(isolated, monkeypatch, state):
+    _image_draft(isolated)
+    _fake_browser(monkeypatch, lambda n: [])
+    monkeypatch.setattr(pub, "wait_for_source_images", Mock(return_value=state))
+    launch = sys.modules["playwright.sync_api"].sync_playwright
+    result = pub.publish(str(isolated), "publish", "2026-10-10")
+    assert f"ERR:body_image_source_unready({state})" in result
+    launch.assert_not_called()
+    from blog.tistory_delivery import read_delivery
+    assert read_delivery(str(isolated), "2026-10-10", "daily") is None

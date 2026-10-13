@@ -1,5 +1,4 @@
-"""본문이미지계약(BodyMedia, 2026-10-10) — 원고 본문 이미지의 sidecar·data URI 치환·편집기 재호스팅 대조."""
-import base64
+"""본문이미지계약(BodyMedia, 2026-10-10) — 원고 본문 이미지의 sidecar·사이트 서빙 확인·편집기 재호스팅 대조."""
 import hashlib
 import json
 import struct
@@ -81,17 +80,6 @@ def test_any_mismatch_fails_closed(tmp_path, tamper):
         open(sidecar, "w", encoding="utf-8").write(text.replace('{"draft"', '{"draft": "x", "draft"', 1))
     with pytest.raises(bm.BodyMediaError):
         bm.read_body_media(draft, data)
-
-
-def test_embed_swaps_each_url_for_its_verified_bytes_once(tmp_path):
-    draft, entry, payload = _setup(tmp_path)
-    bm.bind_body_media(draft, [entry])
-    data = parse_helper(draft)
-    images = bm.read_body_media(draft, data)
-    pasted = bm.embed_body_images(data["body"], images)
-    uri = "data:image/png;base64," + base64.b64encode(payload).decode()
-    assert pasted.count(uri) == 1 and entry["url"] not in pasted
-    assert pasted.replace(uri, entry["url"]) == data["body"]
 
 
 def _image(width=1080, height=1470, payload=None):
@@ -241,3 +229,71 @@ def test_fetch_refuses_redirects_and_final_urls_outside_kakao_cdn(monkeypatch):
         bm.fetch_rehosted_image(CDN)
     monkeypatch.setattr(bm, "_OPENER", Opener(CDN))
     assert bm.fetch_rehosted_image(CDN) == _png()
+
+
+SOURCE = f"{BASE_URL}/images/{NAME}"
+
+
+def _source_image(payload=None):
+    payload = payload if payload is not None else _png()
+    return bm.BodyImage(url=SOURCE, name=NAME, sha256=hashlib.sha256(payload).hexdigest(), width=1080, height=1470,
+                        image_bytes=payload)
+
+
+def test_source_wait_polls_until_site_serves_the_bound_picture(monkeypatch):
+    """편집기는 원고 URL 을 받아 재호스팅한다(data URI 는 attach.json 413, 2026-10-13 실측) — 붙이기 전 사이트 서빙 확인."""
+    served = iter([OSError("404"), OTHER, _png()])
+    seen, slept = [], []
+
+    def fetch(url):
+        seen.append(url)
+        item = next(served)
+        if isinstance(item, Exception):
+            raise item
+        return item
+    monkeypatch.setattr(bm, "fetch_source_image", fetch)
+    assert bm.wait_for_source_images([_source_image()], timeout_s=60, poll_s=10, sleep=slept.append) == "ok"
+    assert seen == [SOURCE] * 3 and slept == [10, 10]
+
+
+@pytest.mark.parametrize("served, state", [(None, "fetch"), (OTHER, "content")], ids=["missing", "other-picture"])
+def test_source_wait_times_out_closed(monkeypatch, served, state):
+    def fetch(url):
+        if served is None:
+            raise OSError("404")
+        return served
+    monkeypatch.setattr(bm, "fetch_source_image", fetch)
+    slept = []
+    assert bm.wait_for_source_images([_source_image()], timeout_s=30, poll_s=10, sleep=slept.append) == state
+    assert slept == [10, 10, 10]
+
+
+def test_source_fetch_refuses_urls_and_redirects_outside_site_images(monkeypatch):
+    for url in ("https://evil.example/images/" + NAME, f"{BASE_URL}/{NAME}", f"{BASE_URL}/images/../x.png"):
+        with pytest.raises(bm.BodyMediaError):
+            bm.fetch_source_image(url)
+    import urllib.request
+    handler = bm._SourceOnlyRedirect()
+    with pytest.raises(bm.BodyMediaError):
+        handler.redirect_request(urllib.request.Request(SOURCE), None, 302, "Found", {}, "https://evil.example/x.png")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def geturl(self):
+            return "https://evil.example/x.png"
+
+        def read(self, limit):
+            return _png()
+
+    class Opener:
+        def open(self, request, timeout):
+            return Response()
+
+    monkeypatch.setattr(bm, "_SOURCE_OPENER", Opener())
+    with pytest.raises(bm.BodyMediaError):
+        bm.fetch_source_image(SOURCE)

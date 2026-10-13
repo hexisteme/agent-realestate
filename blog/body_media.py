@@ -1,13 +1,13 @@
 """본문이미지계약(BodyMedia, 2026-10-10) — 원고 본문 <img> 를 로컬 sha 검증 바이트에 묶는다.
 
 <원고>.body-media.json = 원고 본문 해시 + 이미지마다 (원고 URL, ../images/이름, sha256, 원본 폭·높이).
-발행기는 붙여넣기 직전 URL 을 검증된 바이트의 data URI 로 바꿔 Pages 배포 지연과 무관하게 붙여넣고,
-발행 클릭 전에 편집기 안 이미지가 카카오 CDN 으로 재호스팅됐는지(수·순서·원본 크기) 대조하고,
+발행기는 사이트(Pages)가 원고 URL 에서 같은 그림을 서빙하는지 확인한 뒤 원고 본문을 그대로 붙여넣고
+(편집기가 그 URL 을 받아 카카오 CDN 에 올린다 — data URI 본문은 attach.json 413 으로 붙여넣기 전체가 버려진다,
+2026-10-13 실측), 발행 클릭 전에 편집기 안 이미지가 카카오 CDN 으로 재호스팅됐는지(수·순서·원본 크기) 대조하고,
 재호스팅된 파일을 내려받아 기대 PNG 와 같은 그림인지(sha256, 다르면 디코드 픽셀) 순서대로 결박한다.
 티스토리는 404 이미지를 조용히 지우고 재호스팅은 비동기라, 붙여넣기 글자 대조만으로는 이미지 소실을 못 잡는다."""
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 import hashlib
 from html.parser import HTMLParser
@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
+import time
 import urllib.request
 
 from blog.tistory_delivery import payload_digest
@@ -173,17 +174,6 @@ def read_body_media(helper: str | Path, data: dict) -> list[BodyImage] | None:
         raise BodyMediaError() from None
 
 
-def embed_body_images(body: str, images: list[BodyImage]) -> str:
-    """붙여넣기용 본문 — 각 원고 URL(정확히 1회)을 검증된 바이트의 data URI 로 바꾼다. 원고 파일은 그대로."""
-    for image in images:
-        attribute = f'src="{image.url}"'
-        if body.count(attribute) != 1:
-            raise BodyMediaError()
-        uri = "data:image/png;base64," + base64.b64encode(image.image_bytes).decode("ascii")
-        body = body.replace(attribute, f'src="{uri}"')
-    return body
-
-
 def read_editor_images(page) -> list[dict]:
     return page.evaluate(_EDITOR_IMAGES)
 
@@ -206,30 +196,53 @@ def editor_image_state(dom: list[dict], images: list[BodyImage]) -> str:
     return "ok"
 
 
+def _source_allowed(url: str) -> bool:
+    """원고 이미지 URL 은 사이트 images/ 바로 아래 계약 파일명만 허용한다."""
+    from blog.build_site import BASE_URL
+    prefix = f"{BASE_URL}/images/"
+    return url.startswith(prefix) and bool(_NAME.fullmatch(url[len(prefix):]))
+
+
 class _CdnOnlyRedirect(urllib.request.HTTPRedirectHandler):
     """리다이렉트도 카카오 CDN 안에서만 따라간다(밖으로 나가는 Location 은 요청 전에 거부)."""
+    allowed = staticmethod(lambda url: bool(_KAKAO_CDN.match(url)))
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not _KAKAO_CDN.match(newurl):
+        if not self.allowed(newurl):
             raise BodyMediaError()
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _SourceOnlyRedirect(_CdnOnlyRedirect):
+    """원고 이미지 확인도 사이트 images/ 밖으로는 따라가지 않는다."""
+    allowed = staticmethod(_source_allowed)
+
+
 _OPENER = urllib.request.build_opener(_CdnOnlyRedirect)
+_SOURCE_OPENER = urllib.request.build_opener(_SourceOnlyRedirect)
 
 
-def fetch_rehosted_image(src: str, timeout: float = 15) -> bytes:
-    """카카오 CDN 에 재호스팅된 이미지 바이트. CDN 밖 주소·최종 URL·과대 응답은 거부한다(주소는 오류에 싣지 않는다)."""
-    if not _KAKAO_CDN.match(src):
+def _fetch_pinned(src: str, allowed, opener, timeout: float) -> bytes:
+    if not allowed(src):
         raise BodyMediaError()
     request = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
-    with _OPENER.open(request, timeout=timeout) as response:
-        if not _KAKAO_CDN.match(response.geturl()):
+    with opener.open(request, timeout=timeout) as response:
+        if not allowed(response.geturl()):
             raise BodyMediaError()
         payload = response.read(_MAX_IMAGE + 1)
     if len(payload) > _MAX_IMAGE:
         raise BodyMediaError()
     return payload
+
+
+def fetch_rehosted_image(src: str, timeout: float = 15) -> bytes:
+    """카카오 CDN 에 재호스팅된 이미지 바이트. CDN 밖 주소·최종 URL·과대 응답은 거부한다(주소는 오류에 싣지 않는다)."""
+    return _fetch_pinned(src, _CdnOnlyRedirect.allowed, _OPENER, timeout)
+
+
+def fetch_source_image(url: str, timeout: float = 15) -> bytes:
+    """사이트가 원고 이미지 URL 에서 지금 서빙하는 바이트. images/ 밖 주소·최종 URL·과대 응답은 거부한다."""
+    return _fetch_pinned(url, _SourceOnlyRedirect.allowed, _SOURCE_OPENER, timeout)
 
 
 def _same_picture(payload: bytes, image: BodyImage) -> bool:
@@ -271,3 +284,27 @@ def verify_body_images(page, images: list[BodyImage], timeout_ms: int = 30000, p
             return state
         page.wait_for_timeout(poll_ms)
         waited += poll_ms
+
+
+def _source_state(images: list[BodyImage]) -> str:
+    for image in images:
+        try:
+            payload = fetch_source_image(image.url)
+        except Exception:
+            return "fetch"
+        if not _same_picture(payload, image):
+            return "content"
+    return "ok"
+
+
+def wait_for_source_images(images: list[BodyImage], timeout_s: float = 180, poll_s: float = 10,
+                           sleep=time.sleep) -> str:
+    """붙여넣기 전 — 편집기는 원고 URL 을 받아 재호스팅하므로 사이트가 sidecar 의 그림을 서빙해야 한다.
+    Pages 배포 지연을 기다린 뒤 ok | fetch(제한 시간 안에 못 받음) | content(다른 그림) 를 돌려준다."""
+    waited = 0.0
+    while True:
+        state = _source_state(images)
+        if state == "ok" or waited >= timeout_s:
+            return state
+        sleep(poll_s)
+        waited += poll_s
