@@ -264,8 +264,18 @@ def compute_gu_deltas(cur_ds: dict, base_ds: dict) -> list[dict]:
 
 # ── 신고 델타(FilingDelta 최소형) ─────────────────────────────────────────────
 
-def _filing_key(rec: dict) -> tuple:
-    return (rec.get("apt"), round(float(rec.get("area") or 0), 2), int(rec.get("price") or 0), rec.get("ym"))
+_KEY_LEGACY, _KEY_DAY = "apt,area,price,ym", "apt,area,price,ym,deal_date"
+
+
+def _filing_key(rec: dict, with_day: bool = False) -> tuple:
+    key = (rec.get("apt"), round(float(rec.get("area") or 0), 2), int(rec.get("price") or 0), rec.get("ym"))
+    return key + (rec.get("deal_date"),) if with_day else key
+
+
+def _all_carry_contract_day(*record_lists: list) -> bool:
+    """비교하는 한 구의 두 시점 행이 모두 계약일을 가져야 계약일 키를 쓴다 — 한쪽만 있으면 전 행이 새/사라짐으로 갈린다.
+    구별로 정한다(G6 Codex: 한 구의 구캐시가 다른 구의 계약일 비교까지 끄던 반례)."""
+    return all(isinstance(r, dict) and r.get("deal_date") for recs in record_lists for r in recs)
 
 
 def molit_window_start(day: str) -> str:
@@ -276,8 +286,9 @@ def molit_window_start(day: str) -> str:
 
 def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict:
     """MOLIT 원본 두 시점의 multiset 차. cur 에만 있는 레코드 = 그 사이 새로 확인된 신고(체결일이 아니라 API 반영
-    시점), prev 에만 있던 레코드 = 사라진 건(창 이탈·해제·정정 등, 사유 미확인). 레코드 신원 = (apt, area, price, ym) — 현재 수집기가
-    거래일·층을 버려 동일 튜플의 중복은 개수 차로 처리한다(P1 FilingDelta 가 필드 보존 뒤 정밀화).
+    시점), prev 에만 있던 레코드 = 사라진 건(창 이탈·해제·정정 등, 사유 미확인). 레코드 신원 = (apt, area, price, ym, deal_date) —
+    두 시점 모든 행에 계약일이 있을 때만 계약일까지, 아니면 (apt, area, price, ym)(2026-10-14 승인, key_fields 에 표기).
+    계약일만 정정된 거래는 새 기록 1 + 사라진 기록 1 로 잡힌다. 같은 키의 중복은 개수 차로 처리한다.
     record_highs = 같은 단지·같은 전용(반올림)의 prev 12개월 표본(≥3건) 최고가를 넘는 신규 레코드.
     window_start = 현재 수집 창 시작월(molit_window_start). 사라진 기록 중 그보다 이른 계약월 = 창 이탈. 모르면 None
     (관측된 최저 계약월을 창 경계로 쓰면 창 안 삭제가 창 이탈로 잡힌다 — R2 Codex). 직전에 있던 구가 오늘 통째로
@@ -290,17 +301,30 @@ def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict
     ref_ym = max(cur_yms) if cur_yms else None
     skipped = {lawd for lawd, recs in prev.items() if lawd != "_done" and isinstance(recs, list) and recs
                and not (isinstance(cur.get(lawd), list) and cur.get(lawd))}
+    key_by_lawd: dict[str, str] = {}
+    day_only = 0
     for lawd, recs in cur.items():
         if lawd == "_done" or not isinstance(recs, list) or lawd in skipped:   # 고지한 누락 구는 집계에서도 뺀다(R3)
             continue
         prev_recs = [r for r in (prev.get(lawd) or []) if isinstance(r, dict)]
-        pc, cc = Counter(_filing_key(r) for r in prev_recs), Counter(_filing_key(r) for r in recs)
+        with_day = _all_carry_contract_day(prev_recs, recs)
+        key_by_lawd[lawd] = _KEY_DAY if with_day else _KEY_LEGACY
+        pc = Counter(_filing_key(r, with_day) for r in prev_recs)
+        cc = Counter(_filing_key(r, with_day) for r in recs)
+        if with_day:   # 계약일만 다른 새/사라짐 짝 — 정정일 수 있으나 같은 거래라고 단정하지 않는다
+            added = Counter(k[:4] for k in (cc - pc).elements())
+            lost_legacy = Counter(k[:4] for k in (pc - cc).elements())
+            day_only += sum((added & lost_legacy).values())
         prev_by_apt: dict[tuple, list[int]] = defaultdict(list)
         for r in prev_recs:
             prev_by_apt[(r.get("apt"), round(float(r.get("area") or 0)))].append(int(r.get("price") or 0))
         gu = lawd_gu.get(lawd, lawd)
-        for (apt, area, price, ym), n in (cc - pc).items():
-            new.extend([{"gu": gu, "lawd": lawd, "apt": apt, "area": area, "price": price, "ym": ym}] * n)
+        for key, n in (cc - pc).items():
+            apt, area, price, ym = key[:4]
+            rec = {"gu": gu, "lawd": lawd, "apt": apt, "area": area, "price": price, "ym": ym}
+            if with_day:
+                rec["deal_date"] = key[4]
+            new.extend([rec] * n)
             hist = prev_by_apt.get((apt, round(area)), [])
             if len(hist) >= 3 and price > max(hist):
                 highs.append({"gu": gu, "apt": apt, "area": area, "price": price, "prev_max": max(hist), "n_prev": len(hist)})
@@ -308,6 +332,9 @@ def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict
         gone += sum(lost.values())
         gone_window += sum(n for key, n in lost.items() if window_start and str(key[3]) < window_start)
     return {"new": new, "n_new": len(new), "n_gone": gone,
+            "key_fields": (next(iter(set(key_by_lawd.values()))) if len(set(key_by_lawd.values())) == 1
+                           else "mixed" if key_by_lawd else _KEY_LEGACY),
+            "key_fields_by_lawd": key_by_lawd, "n_day_only_pairs": day_only,
             "ref_ym": ref_ym, "new_by_age": _contract_age_buckets(new, ref_ym),
             "n_gone_window": gone_window if window_start else None,
             "n_gone_other": gone - gone_window if window_start else None, "n_lawd_skipped": len(skipped),
@@ -343,6 +370,7 @@ def summarize_filings(f: dict) -> dict:
             "ref_ym": f.get("ref_ym"), "new_by_age": f.get("new_by_age"),
             "n_gone_window": f.get("n_gone_window"), "n_gone_other": f.get("n_gone_other"),
             "n_lawd_skipped": f.get("n_lawd_skipped"),
+            "key_fields": f.get("key_fields"), "n_day_only_pairs": f.get("n_day_only_pairs"),
             "bands": [{"band": b, "n": len(by_band[b]),
                        "median_eok": round(st.median(by_band[b]), 2) if by_band[b] else None} for b in BANDS],
             "record_highs": f.get("record_highs", [])}
@@ -490,10 +518,13 @@ def filing_age_txt(fil: dict) -> str:
 def filing_gone_txt(fil: dict) -> str:
     skipped = (f" · 오늘 수집 누락 {fil['n_lawd_skipped']}개 구는 비교에서 뺌"
                if fil.get("n_lawd_skipped") else "")
+    # 새 기록과 계약일만 다른 짝(정정 가능, 2026-10-14 계약일 키) — 제외 구 문구보다 앞에 둬 지시 대상이 '사라진 기록'이게(R3 Codex)
+    pairs = (f" · 사라진 기록 중 새 기록과 계약일만 다른 것 {fil['n_day_only_pairs']}건(정정일 수 있음)"
+             if fil.get("n_day_only_pairs") else "")
     if fil.get("n_gone_window") is None:
-        return f"(창 이탈·해제·정정 등, 사유 미확인{skipped})"
+        return f"(창 이탈·해제·정정 등, 사유 미확인{pairs}{skipped})"
     return (f'(12개월 창 이탈 {fil["n_gone_window"]}건 · 창 안에서 사라짐 {fil["n_gone_other"]}건 — '
-            f'해제·정정 등 사유 미확인{skipped})')
+            f'해제·정정 등 사유 미확인{pairs}{skipped})')
 
 
 def _sections(d: dict, inline: bool, level: int = 0) -> str:

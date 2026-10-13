@@ -247,3 +247,62 @@ def test_filing_disappearance_does_not_claim_cancellation():
     for text in (p["html"], p["tistory_html"]):
         assert "사라진 건 7건(창 이탈·해제·정정 등, 사유 미확인)" in text
         assert "사라진 건(해제·정정)" not in text
+
+
+def _dated(apt, price, day, area=84.9):
+    return {"apt": apt, "area": area, "price": price, "ym": day[:4] + day[5:7], "deal_date": day}
+
+
+def test_diff_filings_keys_on_contract_day_when_both_sides_carry_it():
+    """계약일 키(2026-10-14 승인) — 계약일만 정정된 거래는 새 기록 1 + 사라진 기록 1(용산더프라임 4/27→4/28 실측)."""
+    keep = _dated("K", 9e8, "2026-04-10")
+    prev = {"11170": [_dated("P", 30e8, "2026-04-27"), keep, keep]}
+    cur = {"11170": [_dated("P", 30e8, "2026-04-28"), keep, keep]}
+    d = pd.diff_filings(prev, cur)
+    assert (d["n_new"], d["n_gone"], d["key_fields"]) == (1, 1, "apt,area,price,ym,deal_date")
+    assert d["new"][0]["deal_date"] == "2026-04-28"
+
+
+def test_diff_filings_same_day_duplicates_count_by_multiset():
+    a, b = _dated("A", 10e8, "2026-08-01"), _dated("A", 10e8, "2026-08-02")
+    d = pd.diff_filings({"11680": [a, b]}, {"11680": [a, b, b]})
+    assert (d["n_new"], d["n_gone"]) == (1, 0) and d["new"][0]["deal_date"] == "2026-08-02"
+
+
+def test_diff_filings_falls_back_to_legacy_key_when_any_side_lacks_contract_day():
+    legacy = {"apt": "P", "area": 84.9, "price": 30e8, "ym": "202604"}
+    d = pd.diff_filings({"11170": [legacy]}, {"11170": [_dated("P", 30e8, "2026-04-28")]})
+    assert (d["n_new"], d["n_gone"], d["key_fields"]) == (0, 0, "apt,area,price,ym")
+
+
+def test_diff_filings_contract_day_key_keeps_window_exit_and_record_highs():
+    old = [_dated("B", p, "2025-06-1%d" % i) for i, p in enumerate((18e8, 19e8, 20e8))]
+    cur = [_dated("B", 21e8, "2026-09-03")]
+    d = pd.diff_filings({"11680": old}, {"11680": cur}, window_start="202510")
+    assert (d["n_gone_window"], d["n_gone_other"]) == (3, 0)
+    assert [(h["apt"], h["prev_max"]) for h in d["record_highs"]] == [("B", 20e8)]
+
+
+def test_diff_filings_decides_contract_day_key_per_district():
+    """G6 Codex: 한 구의 구캐시(계약일 없음)가 다른 구의 계약일 비교까지 끄던 전환 반례."""
+    legacy = {"apt": "S", "area": 59.9, "price": 12e8, "ym": "202608"}
+    prev = {"11170": [_dated("P", 30e8, "2026-04-27")], "11710": [legacy]}
+    cur = {"11170": [_dated("P", 30e8, "2026-04-28")], "11710": [dict(legacy)]}
+    d = pd.diff_filings(prev, cur)
+    assert (d["n_new"], d["n_gone"]) == (1, 1)
+    assert d["key_fields"] == "mixed" and d["key_fields_by_lawd"] == {"11170": "apt,area,price,ym,deal_date",
+                                                                     "11710": "apt,area,price,ym"}
+
+
+def test_diff_filings_counts_contract_day_only_pairs_and_summary_keeps_them():
+    """계약일만 다른 새/사라짐 짝은 '정정일 수 있는 짝'으로 따로 센다 — 같은 거래라고 단정하지 않는다."""
+    prev = {"11170": [_dated("P", 30e8, "2026-04-27"), _dated("Q", 9e8, "2026-08-02")]}
+    cur = {"11170": [_dated("P", 30e8, "2026-04-28"), _dated("R", 7e8, "2026-09-01")]}
+    d = pd.diff_filings(prev, cur)
+    assert (d["n_new"], d["n_gone"], d["n_day_only_pairs"]) == (2, 2, 1)
+    s = pd.summarize_filings(d)
+    assert s["n_day_only_pairs"] == 1 and s["key_fields"] == "apt,area,price,ym,deal_date"
+    txt = pd.filing_gone_txt({**s, "n_gone_window": 0, "n_gone_other": 2, "n_lawd_skipped": 1})
+    assert "사라진 기록 중 새 기록과 계약일만 다른 것 1건(정정일 수 있음)" in txt
+    assert txt.index("계약일만") < txt.index("수집 누락")   # R3 Codex: '그중'이 제외 구를 가리키지 않게
+    assert "계약일만" not in pd.filing_gone_txt({**s, "n_day_only_pairs": 0, "n_gone_window": 0, "n_gone_other": 2})
