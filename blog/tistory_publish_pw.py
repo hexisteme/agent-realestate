@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blog.tistory_publish import _parse_helper  # noqa: E402
 from blog.tistory_contract import DraftContractError  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
-from blog.tistory_delivery import payload_digest, read_delivery, write_delivery  # noqa: E402
+from blog.tistory_delivery import PUBLICATION_KINDS, payload_digest, read_delivery, write_delivery  # noqa: E402
 from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
@@ -59,6 +59,9 @@ def resolve_editor_url(post_id: str | None = None) -> str:
 CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY", "오늘의 변화")
 # 외부 리뷰 U13(2026-10-13) — 주간·월간 결산은 일간과 다른 카테고리. 과거 글은 옮기지 않는다(소급 금지).
 PERIODIC_CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY_PERIODIC", "주간·월간 결산")
+# 연재 원고(2026-10-14 승인) — 사람이 날짜를 지정해 1편씩 발행한다(cron·--pending 미연결). 카테고리는 기존 '부동산 > 서울(아파트)'.
+SERIES_KINDS = ("upsize", "deposit", "watch")
+SERIES_CATEGORY_MATCH = os.environ.get("TISTORY_CATEGORY_SERIES", "서울(아파트)")
 
 
 # 카테고리 후보를 앞부터: ① 보이는 메뉴 항목(.mce-menu-item)의 정확한 이름 ② 없으면 종전 부분일치(짧은 요소 첫 항목).
@@ -84,6 +87,8 @@ def category_candidates(kind: str = "daily") -> tuple[str, ...]:
     일간 카테고리로 물러선다."""
     if kind == "periodic":
         return (PERIODIC_CATEGORY_MATCH, CATEGORY_MATCH)
+    if kind in SERIES_KINDS:   # 연재가 일간 '오늘의 변화'로 새지 않게 상위 '부동산'으로만 물러선다
+        return (SERIES_CATEGORY_MATCH, "부동산")
     return (CATEGORY_MATCH,)
 # 영속 프로필: EXT_SSD (APFS 가드 — 내장 디스크 금지). Tistory 로그인 쿠키 보관.
 PROFILE_DIR = os.environ.get(
@@ -108,6 +113,16 @@ def _read_marker(path: str) -> str:
         return open(path, encoding="utf-8").read().strip()
     except OSError:
         return ""
+
+
+def category_outcome(kind: str, picked: str | None, shown: str | None = None) -> tuple[str, bool]:
+    """카테고리 선택 결과 → (로그 토큰, 발행 중단 여부). 연재는 후보를 못 고르거나(G6 Codex) 에디터 카테고리 버튼에
+    보이는 값이 고른 후보가 아니면(숨은 항목 클릭 — R3 Codex) '분류 없음'으로 공개되지 않게 멈춘다. 일간·결산은 종전대로 기록만."""
+    if not picked:
+        return "CAT_NOTFOUND", kind in SERIES_KINDS
+    if kind in SERIES_KINDS and picked not in " ".join((shown or "").split()):
+        return f"CAT_MISMATCH:{' '.join((shown or '').split())}", True
+    return ("CAT" if picked == category_candidates(kind)[0] else f"CAT_FALLBACK:{picked}"), False
 
 
 def marker_paths(outroot: str, kind: str = "daily") -> tuple[str, str, str]:
@@ -385,8 +400,10 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             post_id: str | None = None, kind: str = "daily", probe_relogin: bool = False,
             design_review: str | None = None) -> str:
     today = datetime.date.today().isoformat()
-    if kind not in {"daily", "periodic"} or mode not in {"auth", "inject", "draft", "publish"}:
+    if kind not in PUBLICATION_KINDS or mode not in {"auth", "inject", "draft", "publish"}:
         return "ERR:invalid publication mode/kind"
+    if kind in SERIES_KINDS and mode != "auth" and not date:
+        return "ERR:series_requires_date"   # 연재는 '최신 원고' 자동 선택 없이 날짜로 1편만
     if probe_relogin and mode != "auth":
         return "ERR:relogin_probe_requires_auth_mode"
     if date and (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date)
@@ -610,12 +627,17 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 page.evaluate("document.getElementById('category-btn').click()")
                 page.wait_for_timeout(900)
                 picked = page.evaluate(CATEGORY_PICK_JS, list(category_candidates(kind)))
-                if not picked:
-                    log.append("CAT_NOTFOUND")
-                else:
-                    log.append("CAT" if picked == category_candidates(kind)[0] else f"CAT_FALLBACK:{picked}")
+                shown = None
+                if kind in SERIES_KINDS:   # 연재만 실제 표시값 대조 — 일간·결산 흐름은 그대로
+                    page.wait_for_timeout(400)
+                    shown = page.evaluate("(document.getElementById('category-btn') || {}).textContent || ''")
             except Exception as e:
+                picked, shown = None, None
                 log.append(f"CAT_FAIL:{type(e).__name__}")
+            token, stop = category_outcome(kind, picked, shown)
+            log.append(token)
+            if stop:
+                return f"[{name}] ERR:category_not_selected | {' '.join(log)}"
 
             # 3) 본문 주입 — 기본(kakao) 에디터에 실제 클립보드 붙여넣기(Meta+V).
             #    발행은 기본 kakao 모델에서 직렬화한다. HTML모드 setValue/스위치백은 전환 시 내용이
@@ -868,7 +890,8 @@ def main():
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
     ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
-    ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) — kind 별 원고·마커")
+    ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) | "
+                    "upsize·deposit·watch(연재, --date 필수, 2026-10-14) — kind 별 원고·마커")
     ap.add_argument("--pending", action="store_true",
                     help="일간 누락 원고를 오래된 순서로 최대 2건 발행 — 원고 탓 실패한 날은 알리고 건너뜀")
     ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
@@ -876,8 +899,8 @@ def main():
     ap.add_argument("--design-review", help="publish 전용: design_review.json 경로 "
                     "(기본: 원고 옆 <원고>.design_review.json, 없으면 게이트 미실행·비차단)")
     a = ap.parse_args()
-    if a.kind not in {"daily", "periodic"}:
-        ap.error("--kind 는 daily 또는 periodic")
+    if a.kind not in PUBLICATION_KINDS:
+        ap.error("--kind 는 " + ", ".join(PUBLICATION_KINDS) + " 중 하나")
     if a.pending and (a.mode != "publish" or a.kind != "daily" or a.date or a.post_id):
         ap.error("--pending 은 날짜/글번호 없는 daily publish 전용")
     if a.probe_relogin and a.mode != "auth":
