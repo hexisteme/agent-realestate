@@ -41,6 +41,27 @@ def test_series_publish_requires_explicit_date(tmp_path):
     assert pw.publish(str(tmp_path), "publish", None, kind="upsize") == "ERR:series_requires_date"
 
 
+def test_series_publish_refuses_held_edition(tmp_path):
+    d = tmp_path / "report/blog/tistory"; d.mkdir(parents=True)
+    (d / "2026-11-10-upsize-tistory-draft.html").write_text("x", encoding="utf-8")
+    h = tmp_path / "report/blog/series/upsize"; h.mkdir(parents=True)
+    (h / "2026-11-10.hold.json").write_text("{}", encoding="utf-8")
+    assert pw.publish(str(tmp_path), "publish", "2026-11-10", kind="upsize") == "ERR:series_held"
+
+
+def test_series_publish_requires_judged_edition(tmp_path):
+    d = tmp_path / "report/blog/tistory"; d.mkdir(parents=True)
+    (d / "2026-11-10-upsize-tistory-draft.html").write_text("x", encoding="utf-8")
+    assert pw.publish(str(tmp_path), "publish", "2026-11-10", kind="upsize") == "ERR:series_unjudged"
+
+
+def test_series_design_review_is_required(tmp_path):
+    draft = tmp_path / "2026-11-10-upsize-tistory-draft.html"
+    draft.write_text("x", encoding="utf-8")
+    assert pw._gate_design_review(str(draft), None, draft.name, required=True).startswith("DESIGN_AWAIT_HUMAN:")
+    assert pw._gate_design_review(str(draft), None, draft.name) is None
+
+
 def test_unknown_kind_still_rejected(tmp_path):
     assert pw.publish(str(tmp_path), "publish", "2026-10-13", kind="insight") == "ERR:invalid publication mode/kind"
     with pytest.raises(td.DeliveryError):

@@ -404,6 +404,11 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         return "ERR:invalid publication mode/kind"
     if kind in SERIES_KINDS and mode != "auth" and not date:
         return "ERR:series_requires_date"   # 연재는 '최신 원고' 자동 선택 없이 날짜로 1편만
+    if kind in SERIES_KINDS and mode == "publish":
+        from blog.series_edition import publishable
+        why = publishable(outroot, kind, date)   # held·unjudged·draft_mismatch — 손으로 돌려도 판정과 맞는 원고만 연다
+        if why:
+            return f"ERR:series_{why}"
     if probe_relogin and mode != "auth":
         return "ERR:relogin_probe_requires_auth_mode"
     if date and (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date)
@@ -517,7 +522,7 @@ def attach_representative_card(page, media) -> None:
         raise MediaContractError() from None
 
 
-def _gate_design_review(draft_path: str, explicit: str | None, name: str) -> str | None:
+def _gate_design_review(draft_path: str, explicit: str | None, name: str, required: bool = False) -> str | None:
     """발행 직전·브라우저 실행 전 디자인 리뷰 게이트(blog/tistory_design_review.py).
 
     보류(BLOCK/AWAIT_HUMAN)면 결과 문자열을, 진행이면 None 을 돌려준다. 진행 시 로그는 한 줄만
@@ -527,6 +532,8 @@ def _gate_design_review(draft_path: str, explicit: str | None, name: str) -> str
         return f"DESIGN_BLOCK:{name} — {grade.detail}"
     if grade.result == "AWAIT_HUMAN":
         return f"DESIGN_AWAIT_HUMAN:{name} — {grade.detail}"
+    if required and grade.result == "NOT_RUN":   # 연재 무인 발행(2026-10-14): 리뷰가 없으면 사람 판단 전 발행 안 함
+        return f"DESIGN_AWAIT_HUMAN:{name} — 연재는 디자인 리뷰가 있어야 발행합니다 — {grade.detail}"
     print(f"[design-review] {grade.detail}", flush=True)
     return None
 
@@ -544,7 +551,7 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             return stopped
     # 이미 발행·시도된 날은 위에서 끝난다. 여기부터가 실제로 원고를 공개하려는 유일한 지점이다.
     if mode == "publish" and draft_path:
-        held = _gate_design_review(draft_path, design_review, name)
+        held = _gate_design_review(draft_path, design_review, name, required=kind in SERIES_KINDS)
         if held:
             return held
     # 본문 이미지: 편집기가 원고 URL 을 받아 카카오 CDN 에 올린다 — 사이트가 같은 그림을 서빙할 때만 브라우저를 연다.

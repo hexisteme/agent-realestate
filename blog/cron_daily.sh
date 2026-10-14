@@ -13,15 +13,18 @@ cd "$ROOT"
 #    실패(인터프리터·디스크·미처리 rc≠0)도 텔레그램 표면화. 시크릿은 .env 에서만 읽음(하드코딩
 #    금지). 트랩 내부는 전부 비치명(|| true) — 알림 실패가 트랩 재귀/추가 종료를 못 만들게.
 #    한계(정직): EXT_SSD 미마운트면 .env 접근 불가 = 이 경로로도 알림 불가(조용히 return).
-_tg_last_resort() {
-  local rc="${1:-?}" token="" chat=""
+_tg_send() {
+  local text="$1" token="" chat=""
   token=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)
   chat=$(grep -m1 '^TELEGRAM_CHAT_ID=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- || true)
   { [ -n "$token" ] && [ -n "$chat" ]; } || return 0
   curl -fsS -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
     --data-urlencode "chat_id=${chat}" \
-    --data-urlencode "text=❌ re-blog cron_daily.sh 비정상 종료 rc=${rc} $(date '+%F %T') — ~/Library/Logs/re-blog.log 확인" \
+    --data-urlencode "text=${text}" \
     >/dev/null 2>&1 || true
+}
+_tg_last_resort() {
+  _tg_send "❌ re-blog cron_daily.sh 비정상 종료 rc=${1:-?} $(date '+%F %T') — ~/Library/Logs/re-blog.log 확인"
 }
 trap '_tg_last_resort "$?"' ERR
 # ② 전역잠금(fcntl.flock): 실행이 3h 슬롯 간격을 넘기면 다음 슬롯과 동시실행 가능(성공마커는
@@ -51,7 +54,18 @@ PERSTAMP="$ROOT/.last-tistory-published-periodic"
 PERDRAFT="$ROOT/report/blog/tistory/${TODAY}-periodic-tistory-draft.html"
 # 누락 마커는 미발행 상태다. 읽기 실패가 ERR 트랩의 장애 알림을 부르지 않게 한다.
 periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null || true)" != "$TODAY" ]; }
-if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending; then
+# 연재(2026-10-14 사용자 결정 — 둘째·셋째·넷째 화요일 upsize·deposit·watch, 판정 통과 시 무인 발행).
+# due = 오늘 할 일이 남은 연재 회차 "kind T"(회차 화요일 T~금요일 유예·보류 기록·발행 마커·RE_SERIES_AUTOPUBLISH 반영,
+# blog/series_edition.py). 확인 실패는 연재만 건너뛰고 알린다 — 일간 흐름을 막지 않는다.
+SERIES_OPEN=""
+if ! SERIES_OPEN="$(python3 -m blog.series_edition due --day "$TODAY" --outroot "$ROOT")"; then
+  SERIES_OPEN=""
+  echo "[$(date)] 연재 일정 확인 실패 — 오늘 연재는 건너뜀"
+  _tg_send "❌ re-blog 연재 일정 확인 실패 $(date '+%F %T') — ~/Library/Logs/re-blog.log 확인"
+fi
+SERIES_KIND="${SERIES_OPEN%% *}"
+SERIES_DAY="${SERIES_OPEN#* }"
+if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending && [ -z "$SERIES_KIND" ]; then
   echo "[$(date)] 오늘($TODAY) 사이트+티스토리 모두 발행 완료 — skip (멱등 가드)"
   exit 0
 fi
@@ -122,6 +136,26 @@ publish_kind daily --pending
 if periodic_pending; then
   author_review --kind periodic
   publish_kind periodic --kind periodic
+fi
+# 3편째: 연재(회차 T 의 원고·기록·발행 날짜는 T, 계산은 오늘 스냅샷). build rc — 0 발행 대상 원고(판정과 sha256 으로 묶임),
+# 3 보류(회차 닫힘, 알림은 series_edition), 4 입력 대기(낡은 수집본·수집 미완료·스냅샷 없음 — 유예 기간 안에서 다시),
+# 5 자동 발행 꺼짐(원고·판정만), 그 밖 = 판 만들기 실패(알림은 series_edition, 다음 슬롯 재시도).
+# 발행기는 연재에 판정 기록·원고 sha256·디자인 리뷰를 요구한다(리뷰 없으면 rc 6 사람 판단).
+if [ -n "$SERIES_KIND" ]; then
+  series_rc=0
+  python3 -m blog.series_edition build --day "$SERIES_DAY" --today "$TODAY" --kind "$SERIES_KIND" --outroot "$ROOT" || series_rc=$?
+  case "$series_rc" in
+    0)
+      author_review --draft "$ROOT/report/blog/tistory/${SERIES_DAY}-${SERIES_KIND}-tistory-draft.html"
+      publish_kind "$SERIES_KIND" --kind "$SERIES_KIND" --date "$SERIES_DAY"
+      ;;
+    3|5) echo "[$(date)] 연재 $SERIES_KIND $SERIES_DAY: 발행하지 않음 (rc=$series_rc, 3=보류·5=자동 발행 꺼짐)" ;;
+    4) echo "[$(date)] 연재 $SERIES_KIND $SERIES_DAY: 입력 대기 (rc=4, 다음 슬롯·다음 날 재시도)" ;;
+    *)
+      echo "[$(date)] 연재 $SERIES_KIND $SERIES_DAY: 판 만들기 실패 (rc=$series_rc, 다음 슬롯 재시도)"
+      publish_rc=1
+      ;;
+  esac
 fi
 echo "[$(date)] done (publish rc=$publish_rc)"
 # 위에서 분류한 퍼블리셔 결과는 Python 알림 경로가 처리한다. 상류 daily 실패의
