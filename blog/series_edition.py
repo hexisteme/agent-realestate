@@ -28,7 +28,7 @@ from blog import insight_series as ins  # noqa: E402
 from blog.tistory_contract import write_helper  # noqa: E402
 from blog.tistory_delivery import DeliveryError, read_delivery  # noqa: E402
 
-SERIES_START = dt.date(2026, 11, 10)   # 10-14 발행본 직후의 10-20·10-27 은 쉰다
+SERIES_START = dt.date(2026, 10, 20)   # 2026-10-19 사용자 결정 — 10-20 부터 발행(그 전 10-13 판이 비교 기준)
 KIND_BY_TUESDAY = {2: "upsize", 3: "deposit", 4: "watch"}
 NTH_BY_KIND = {k: n for n, k in KIND_BY_TUESDAY.items()}
 KIND_LABEL = {"upsize": "넓혀가기 가격차", "deposit": "보증금 변동 금액", "watch": "예산 이하 체결"}

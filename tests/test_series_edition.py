@@ -35,9 +35,11 @@ def _row(name, cno, flag="", area=84.0, **kw):
 
 @pytest.mark.parametrize("day,kind", [
     (D(2026, 11, 10), "upsize"), (D(2026, 11, 17), "deposit"), (D(2026, 11, 24), "watch"),
+    (D(2026, 10, 20), "deposit"), (D(2026, 10, 27), "watch"),   # 10-19 결정 — 10-20 부터 발행
     (D(2026, 11, 3), None),                              # 첫째 화요일
     (D(2026, 12, 29), None),                             # 다섯째 화요일
-    (D(2026, 10, 20), None), (D(2026, 10, 27), None),    # 시작일 전 — 10-14 발행본 직후 중복 금지
+    (D(2026, 10, 13), None),                             # 시작일 전 — 10-14 발행본(10-13 판)과 중복 금지
+    (D(2026, 10, 6), None),                              # 시작일 전
     (D(2026, 11, 11), None),                             # 수요일
     (D(2027, 1, 12), "upsize"), (D(2027, 1, 19), "deposit"), (D(2027, 1, 26), "watch")])
 def test_due_kind_follows_nth_tuesday_and_start_date(day, kind):
