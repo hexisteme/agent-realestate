@@ -57,6 +57,17 @@ periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null || t
 # 연재(2026-10-14 사용자 결정 — 둘째·셋째·넷째 화요일 upsize·deposit·watch, 판정 통과 시 무인 발행).
 # due = 오늘 할 일이 남은 연재 회차 "kind T"(회차 화요일 T~금요일 유예·보류 기록·발행 마커·RE_SERIES_AUTOPUBLISH 반영,
 # blog/series_edition.py). 확인 실패는 연재만 건너뛰고 알린다 — 일간 흐름을 막지 않는다.
+# 구 단위 분할(2026-10-20 사용자 결정 — 자동 공개): run_daily 가 평일 5개 구 원고(RE_GU_TISTORY_POSTS=1)를 쓴다.
+# 오늘 원고 중 kind 별 마커(.last-tistory-published-gu-<구>)가 오늘이 아닌 구만 "gu-<구>" 로 낸다 — 실패한 구만 다음 슬롯 재시도.
+gu_pending_kinds() {
+  local draft gu
+  for draft in "$ROOT/report/blog/tistory/${TODAY}-gu-"*-tistory-draft.html; do
+    [ -f "$draft" ] || continue
+    gu="${draft##*/${TODAY}-gu-}"
+    gu="${gu%-tistory-draft.html}"
+    [ "$(cat "$ROOT/.last-tistory-published-gu-$gu" 2>/dev/null || true)" = "$TODAY" ] || echo "gu-$gu"
+  done
+}
 SERIES_OPEN=""
 if ! SERIES_OPEN="$(python3 -m blog.series_edition due --day "$TODAY" --outroot "$ROOT")"; then
   SERIES_OPEN=""
@@ -65,7 +76,7 @@ if ! SERIES_OPEN="$(python3 -m blog.series_edition due --day "$TODAY" --outroot 
 fi
 SERIES_KIND="${SERIES_OPEN%% *}"
 SERIES_DAY="${SERIES_OPEN#* }"
-if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending && [ -z "$SERIES_KIND" ]; then
+if [ "$(cat "$STAMP" 2>/dev/null || true)" = "$TODAY" ] && [ "$(cat "$TISTAMP" 2>/dev/null || true)" = "$TODAY" ] && ! periodic_pending && [ -z "$SERIES_KIND" ] && [ -z "$(gu_pending_kinds)" ]; then
   echo "[$(date)] 오늘($TODAY) 사이트+티스토리 모두 발행 완료 — skip (멱등 가드)"
   exit 0
 fi
@@ -157,6 +168,10 @@ if [ -n "$SERIES_KIND" ]; then
       ;;
   esac
 fi
+# 4편째부터: 구 단위 분할. 디자인 리뷰는 쓰지 않는다(하루 5회 Codex 호출 방지 — 게이트 NOT_RUN 비차단, 2026-10-20 390px 실측 통과).
+for gu_kind in $(gu_pending_kinds); do
+  publish_kind "$gu_kind" --kind "$gu_kind" --date "$TODAY"
+done
 echo "[$(date)] done (publish rc=$publish_rc)"
 # 위에서 분류한 퍼블리셔 결과는 Python 알림 경로가 처리한다. 상류 daily 실패의
 # ERR 최후 알림은 유지하되, 이 명시 종료에서는 같은 장애를 다시 알리지 않는다.

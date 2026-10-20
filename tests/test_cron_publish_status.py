@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _run_cron(tmp_path, daily_rc=0, periodic_rc=0, *, periodic=True,
               build_rc=0, already_published=False, review_rc=0,
-              series_due="", series_due_rc=0, series_rc=0, series_publish_rc=0):
+              series_due="", series_due_rc=0, series_rc=0, series_publish_rc=0,
+              gu=(), gu_published=(), gu_publish_rc=0, gu_other_day=()):
     root = tmp_path / "root"
     root.mkdir()
     bins = tmp_path / "bin"
@@ -22,10 +23,16 @@ def _run_cron(tmp_path, daily_rc=0, periodic_rc=0, *, periodic=True,
         (root / ".last-published").write_text(today + "\n")
     if already_published:
         (root / ".last-tistory-published").write_text(today + "\n")
+    drafts = root / "report/blog/tistory"
+    drafts.mkdir(parents=True)
     if periodic:
-        drafts = root / "report/blog/tistory"
-        drafts.mkdir(parents=True)
         (drafts / f"{today}-periodic-tistory-draft.html").write_text("fixture")
+    for g in gu:
+        (drafts / f"{today}-gu-{g}-tistory-draft.html").write_text("fixture")
+    for g in gu_other_day:
+        (drafts / f"2026-09-10-gu-{g}-tistory-draft.html").write_text("fixture")
+    for g in gu_published:
+        (root / f".last-tistory-published-gu-{g}").write_text(today + "\n")
     stubs = {
         "date": 'printf "%s\\n" "2026-09-11"\n',
         "cat": '''if [ ! -f "$1" ]; then exit 1; fi
@@ -68,6 +75,7 @@ printf '%s\\n' "publish $*" >> "$STUB_CALLS"
 case " $* " in
   *' --kind periodic '*) exit "$STUB_PERIODIC_RC" ;;
   *' --kind upsize '*|*' --kind deposit '*|*' --kind watch '*) exit "$STUB_SERIES_PUBLISH_RC" ;;
+  *' --kind gu-'*) exit "$STUB_GU_PUBLISH_RC" ;;
   *) exit "$STUB_DAILY_RC" ;;
 esac
 ''',
@@ -91,6 +99,7 @@ esac
         "STUB_SERIES_DUE_RC": str(series_due_rc),
         "STUB_SERIES_RC": str(series_rc),
         "STUB_SERIES_PUBLISH_RC": str(series_publish_rc),
+        "STUB_GU_PUBLISH_RC": str(gu_publish_rc),
         "AGENT_REALESTATE_ROOT": str(root),
         "LC_ALL": "C",
     }
@@ -210,3 +219,43 @@ def test_series_due_failure_alerts_and_keeps_daily_flow(tmp_path):
     assert result.returncode == 0
     assert "연재 일정 확인 실패" in result.stdout and "멱등 가드" in result.stdout
     assert calls == ["last_resort_notification"]
+
+
+# ── 구 단위 분할(2026-10-20 사용자 결정 — 자동 공개): 오늘 원고 중 미발행 구만, 디자인 리뷰 없이 ─────
+
+def _gu_calls(calls):
+    return [line for line in calls if line.startswith("publish ") and "--kind gu-" in line]
+
+
+def test_today_gu_drafts_publish_after_daily_without_design_review(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, gu=("금천", "노원"), gu_other_day=("도봉",))
+    assert result.returncode == 0, result.stderr
+    gu_calls = _gu_calls(calls)
+    assert sorted(gu_calls) == sorted(f"publish blog/tistory_publish_pw.py --mode publish --login-wait 120 "
+                                      f"--kind gu-{g} --date 2026-09-11" for g in ("금천", "노원"))
+    published = [line for line in calls if line.startswith("publish ")]
+    assert " --pending" in published[0]
+    assert not [line for line in calls if line.startswith("review ") and "gu-" in line]
+    assert "tistory gu-금천: 완료 또는 기발행" in result.stdout
+
+
+def test_pending_gu_bypasses_success_guard_and_published_gu_is_skipped(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True,
+                              gu=("금천", "노원"), gu_published=("금천",))
+    assert result.returncode == 0, result.stderr
+    assert "멱등 가드" not in result.stdout
+    assert [line.split("--kind ")[1] for line in _gu_calls(calls)] == ["gu-노원 --date 2026-09-11"]
+
+
+def test_all_gu_published_keeps_success_guard(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True,
+                              gu=("금천", "노원"), gu_published=("금천", "노원"))
+    assert result.returncode == 0
+    assert calls == [] and "멱등 가드" in result.stdout
+
+
+def test_gu_publish_failure_joins_exit_code(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, gu=("금천",), gu_publish_rc=1)
+    assert result.returncode == 1
+    assert "tistory gu-금천: 발행 실패" in result.stdout
+    assert "last_resort_notification" not in calls
