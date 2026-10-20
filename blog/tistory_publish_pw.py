@@ -36,7 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blog.tistory_publish import _parse_helper  # noqa: E402
 from blog.tistory_contract import DraftContractError  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
-from blog.tistory_delivery import PUBLICATION_KINDS, payload_digest, read_delivery, write_delivery  # noqa: E402
+from blog.tistory_delivery import (PUBLICATION_KINDS, is_publication_kind, payload_digest,  # noqa: E402
+                                   read_delivery, write_delivery)
 from blog.tistory_keychain import read_kakao_credentials  # noqa: E402
 from blog.tistory_session import load_session_state, save_session_state  # noqa: E402
 from blog.tistory_sso import select_kakao_account, submit_kakao_credentials  # noqa: E402
@@ -400,7 +401,7 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
             post_id: str | None = None, kind: str = "daily", probe_relogin: bool = False,
             design_review: str | None = None) -> str:
     today = datetime.date.today().isoformat()
-    if kind not in PUBLICATION_KINDS or mode not in {"auth", "inject", "draft", "publish"}:
+    if not is_publication_kind(kind) or mode not in {"auth", "inject", "draft", "publish"}:
         return "ERR:invalid publication mode/kind"
     if kind in SERIES_KINDS and mode != "auth" and not date:
         return "ERR:series_requires_date"   # 연재는 '최신 원고' 자동 선택 없이 날짜로 1편만
@@ -898,7 +899,8 @@ def main():
     ap.add_argument("--login-wait", type=int, default=300, help="미로그인 시 로그인 대기 초")
     ap.add_argument("--post-id", help="기존 글 번호(예: 79) — 새 글 대신 그 글을 고친다(URL 유지)")
     ap.add_argument("--kind", default="daily", help="원고 종류: daily(기본) | periodic(주간결산/월간결산, 2026-09-07) | "
-                    "upsize·deposit·watch(연재, --date 필수, 2026-10-14) — kind 별 원고·마커")
+                    "upsize·deposit·watch(연재, --date 필수, 2026-10-14) | gu-<구명>(구 단위 분할, "
+                    "2026-10-20) — kind 별 원고·마커")
     ap.add_argument("--pending", action="store_true",
                     help="일간 누락 원고를 오래된 순서로 최대 2건 발행 — 원고 탓 실패한 날은 알리고 건너뜀")
     ap.add_argument("--no-notify", action="store_true", help="수동 복구/검증 시 실패 알림 전송 생략")
@@ -906,8 +908,8 @@ def main():
     ap.add_argument("--design-review", help="publish 전용: design_review.json 경로 "
                     "(기본: 원고 옆 <원고>.design_review.json, 없으면 게이트 미실행·비차단)")
     a = ap.parse_args()
-    if a.kind not in PUBLICATION_KINDS:
-        ap.error("--kind 는 " + ", ".join(PUBLICATION_KINDS) + " 중 하나")
+    if not is_publication_kind(a.kind):
+        ap.error("--kind 는 " + ", ".join(PUBLICATION_KINDS) + " 또는 gu-<구명> 중 하나")
     if a.pending and (a.mode != "publish" or a.kind != "daily" or a.date or a.post_id):
         ap.error("--pending 은 날짜/글번호 없는 daily publish 전용")
     if a.probe_relogin and a.mode != "auth":

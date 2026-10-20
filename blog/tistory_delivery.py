@@ -20,6 +20,14 @@ class DeliveryError(Exception):
 _FIELDS = {"date", "kind", "state", "title", "digest", "url", "updated_at"}
 # 원고 종류 — 일간·결산 + 연재 3종(넓혀가기 가격차·보증금 변동 금액·예산 이하 체결, 2026-10-14). 발행기와 같은 목록.
 PUBLICATION_KINDS = ("daily", "periodic", "upsize", "deposit", "watch")
+# 구 단위 티스토리 포스트(2026-10-20 분할 실험) — kind 가 구마다 달라서 고정 목록에 담지 못한다.
+# 한글·영숫자만 허용해 경로 삽입(`gu-../x`)과 빈 구명을 막는다. blog/gu_tistory_post.py 참조.
+GU_KIND_RE = re.compile(r"^gu-[0-9A-Za-z\uac00-\ud7a3]+$")
+
+
+def is_publication_kind(kind) -> bool:
+    """발행 종류로 인정되는지 — 고정 목록 또는 `gu-<구명>`."""
+    return isinstance(kind, str) and (kind in PUBLICATION_KINDS or bool(GU_KIND_RE.match(kind)))
 
 
 def delivery_path(outroot: str, date: str, kind: str) -> Path:
@@ -27,7 +35,7 @@ def delivery_path(outroot: str, date: str, kind: str) -> Path:
     try:
         if not isinstance(date, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
             raise DeliveryError()
-        if datetime.date.fromisoformat(date).isoformat() != date or kind not in PUBLICATION_KINDS:
+        if datetime.date.fromisoformat(date).isoformat() != date or not is_publication_kind(kind):
             raise DeliveryError()
         return Path(outroot) / "report/blog/publications" / f"{date}-{kind}.json"
     except (TypeError, ValueError):
