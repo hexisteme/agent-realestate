@@ -16,7 +16,7 @@ import blog.build_explorer as be
 from blog.build_site import BASE_URL
 from blog.tistory_contract import DraftPayload, write_helper
 
-TISTORY_TAGS = "서울아파트,실거래가,부동산데이터,아파트시세,국토부실거래"
+TISTORY_TAGS = "서울아파트,실거래가,국토부실거래"
 _TBL = "width:100%;border-collapse:collapse;font-size:13px;margin:10px 0"
 _TH = "border:1px solid #ddd;padding:6px 8px;background:#f6f8fa;text-align:left"
 _TD = "border:1px solid #ddd;padding:6px 8px;text-align:left"

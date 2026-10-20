@@ -24,13 +24,13 @@ def test_title_names_no_complex_and_no_gap_and_states_the_judged_base():
     sel = {"hi": [{"name": "관악동부센트레빌", "gu": "관악"}], "lo": [],
            "jr": [{"name": "영등포자이르네", "gu": "영등포", "gap_eok": 1.28}], "tv": []}
     title = dd._build_digest_title("2026-10-13", _COUNTS, sel)
-    assert title == "서울 아파트 실거래가 — 추세 비교 486단지 중 상승 464·하락 21·보합 1 (2026-10-13)"   # R2 agy F9: 합이 분모와 맞게
+    assert title == "서울 아파트 실거래가 — 비교 486단지, 최근 3개월 vs 직전 9개월 (2026-10-13)"   # 비교 분모·기간 유지, 방향별 수치는 본문
     assert "관악동부센트레빌" not in title and "갭" not in title
 
 
 def test_title_without_judged_complexes_falls_back_to_observation_count():
     title = dd._build_digest_title("2026-10-13", {"n_total": 7, "n_judged": 0, "up": 0, "down": 0}, {})
-    assert title == "서울 아파트 실거래가 — 2026-10-13 관측 7단지"
+    assert title == "서울 주거용 부동산 실거래가 — 관측 7단지, 기간 비교 미산출 (2026-10-13)"
 
 
 def test_observation_summary_states_share_robust_subset_funnel_and_mix_caveat():

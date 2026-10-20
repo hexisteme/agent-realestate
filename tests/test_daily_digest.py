@@ -101,6 +101,8 @@ def _answer_first_ds():
 
 
 def _visible_digest_text(body):
+    # Navigation repeats section names; ordering assertions must inspect section content.
+    body = re.sub(r'<p\b[^>]*\bdata-reading-toc="1"[^>]*>.*?</p>', '', body, flags=re.S)
     class VisibleText(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -292,7 +294,7 @@ def test_gu_summary_rows_one_per_distinct_gu_sorted():
 def test_build_daily_digest_return_shape_and_title():
     d = build_daily_digest(_sample_ds(), "2026-09-05", "2026-09-04")
     assert set(d.keys()) == {"title", "tags", "tistory_html", "site_html", "summary"}
-    assert d["title"] == "서울 아파트 실거래가 — 추세 비교 2단지 중 상승 1·하락 1 (2026-09-05)"
+    assert d["title"] == "서울 아파트 실거래가 — 비교 2단지, 최근 3개월 vs 직전 9개월 (2026-09-05)"
     assert all(t in d["tags"] for t in TISTORY_TAGS.split(","))
     assert "강남구아파트" in d["tags"]
     assert "서초구아파트" in d["tags"]
@@ -453,7 +455,7 @@ def test_tistory_information_hierarchy_order():
     ds = _sample_ds()
     ds["listing_inventory"] = _inventory()
     d = build_daily_digest(ds, "2026-09-05", "2026-09-04")
-    html = d["tistory_html"]
+    html = re.sub(r'<p\b[^>]*\bdata-reading-toc="1"[^>]*>.*?</p>', '', d["tistory_html"], flags=re.S)
 
     idx_briefing = html.find("30초 브리핑")
     idx_today_num = html.find("오늘의 숫자")
@@ -482,7 +484,7 @@ def test_build_digest_title_downside_market():
     counts = {"n_total": 1000, "n_judged": 550, "up": 100, "down": 450, "flat": 0}
     sel = {"hi": [], "lo": [{"name": "하락단지", "gu": "노원"}]}
     title = _build_digest_title("2026-09-26", counts, sel)
-    assert title == "서울 아파트 실거래가 — 추세 비교 550단지 중 상승 100·하락 450 (2026-09-26)"
+    assert title == "서울 아파트 실거래가 — 비교 550단지, 최근 3개월 vs 직전 9개월 (2026-09-26)"
 
 
 def test_build_digest_title_names_no_complex():

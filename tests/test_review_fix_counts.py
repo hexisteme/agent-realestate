@@ -4,6 +4,8 @@
 본문 관측요약은 표본기준추세수(486단지 중 464)를 세어 같은 글에 다른 상승 수가 실렸다.
 모든 공개 표면이 build_explorer.count_gated_trends 하나를 쓰는지 고정한다.
 """
+import re
+
 from blog import build_explorer as be
 
 
@@ -113,6 +115,8 @@ def test_band_rows_state_the_median_population_next_to_the_complex_count():
     assert (band["n"], band["n_gated"]) == (7, 4)
     d = dd.build_daily_digest(ds, "2026-10-13", "2026-10-12")
     for body in (d["tistory_html"], d["site_html"]):
-        seg = body[body.index("가격대별 요약"):]
+        heading = re.search(r'<h[23]\b[^>]*>가격대별 요약', body)
+        assert heading
+        seg = body[heading.start():]
         seg = seg[:seg.index("</table>")]
         assert "중위 집계" in seg and ">7(4)<" in seg

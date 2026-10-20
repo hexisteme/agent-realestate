@@ -19,7 +19,9 @@ def test_band_table_does_not_reuse_trend_symbols_for_52w_proximity():
           "count": 2, "data_asof": "2026-10-12", "generated": "2026-10-13"}
     d = dd.build_daily_digest(ds, "2026-10-13", "2026-10-12")
     for body in (d["tistory_html"], d["site_html"]):
-        seg = body[body.index("가격대별 요약"):]
+        heading = re.search(r'<h[23]\b[^>]*>가격대별 요약', body)
+        assert heading
+        seg = body[heading.start():]
         seg = seg[:seg.index("</table>")]
         assert not re.search("[▲▼]", seg)
         assert "고점 근접" in seg and "저점 근접" in seg

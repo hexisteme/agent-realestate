@@ -150,7 +150,8 @@ def test_digest_wiring_inserts_strip_only_with_context():
     without = build_daily_digest(ds, "2026-09-07", "2026-09-06", macro=None)
     assert "거시 지표" in with_["tistory_html"] and "거시 지표" in with_["site_html"] and 'href="../macro.html"' in with_["site_html"]
     assert "거시 지표" in without["tistory_html"] and "자료 미수집" in without["tistory_html"]
-    assert with_["tistory_html"].index("거시 지표") < with_["tistory_html"].index("오늘의 숫자")
+    body = re.sub(r'<p\b[^>]*\bdata-reading-toc="1"[^>]*>.*?</p>', '', with_["tistory_html"], flags=re.S)
+    assert body.index("거시 지표") < body.index("오늘의 숫자")
 
 
 def test_since_window_start_suppresses_since_text():

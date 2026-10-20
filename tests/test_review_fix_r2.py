@@ -138,7 +138,7 @@ def test_c3_summary_lists_exclusion_counts_and_f9_flat():
     assert "보합 1" in text
     assert "가격 미산출 1" in text and "비아파트 1" in text and "한 기간이라도 2건 미만 0" in text
     title = dd._build_digest_title(ASOF, {"n_judged": 2, "up": 1, "down": 0, "n_total": 4}, {})
-    assert title.endswith(f"상승 1·하락 0·보합 1 ({ASOF})")
+    assert title == f"서울 아파트 실거래가 — 비교 2단지, 최근 3개월 vs 직전 9개월 ({ASOF})"   # 방향별 수는 본문(관측 요약)
 
 
 # ── C15 ──────────────────────────────────────────────────────────────────────

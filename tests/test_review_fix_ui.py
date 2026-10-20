@@ -5,7 +5,7 @@ U2: 6열 지리타일이 390px에서 57px 칸·4줄 → 티스토리는 구·중
 U3: 티스토리가 이미지 alt 를 지운다 → 이미지 아래 보이는 설명(기간·시작→최근 값).
 U4: 값 표 월 칸 줄바꿈 방지(월 칸만 — 다른 칸 nowrap 은 좁은 화면 넘침 위험, Codex).
 U8: 결산 제목이 모바일 첫 화면을 덮는다 → 짧게.
-U10: 티스토리 본문 구성 한 줄(앵커 없음 — id 보존 미검증).
+U10: 티스토리 본문 구성 한 줄(앵커 없음 — 2026-10-20 실측: 에디터가 href="#…" 를 /manage/newpost/#… 로 바꿈).
 """
 import re
 from datetime import date
@@ -72,9 +72,10 @@ def test_u4_only_month_cells_are_nowrap(tmp_path):
 
 def test_u10_tistory_has_an_anchorless_outline_line(tmp_path):
     body = _digest(tmp_path)["tistory_html"]
-    m = re.search(r"<p data-outline[^>]*>(.*?)</p>", body, flags=re.S)
-    assert m and "→" in m.group(1) and "href=" not in m.group(1)
-    assert body.find("data-outline") < body.find("오늘의 관측 요약")
+    m = re.search(r'<p\b[^>]*data-reading-toc="1"[^>]*>(.*?)</p>', body, flags=re.S)
+    assert m and "<span>" in m.group(1) and "href=" not in m.group(1)
+    assert "data-outline" not in body and "re-section-" not in body
+    assert body.find("오늘의 관측 요약") < body.find("data-reading-toc")
 
 
 def _r(name, area, price=10.0, gu="송파", n=12):

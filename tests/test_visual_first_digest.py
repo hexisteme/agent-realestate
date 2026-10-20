@@ -70,6 +70,7 @@ def test_geo_tile_cells_state_text_color_with_readable_contrast():
 
 def test_visual_first_tistory_reads_summary_dashboard_notes_table_map_then_budget(tmp_path):
     body = _digest(tmp_path)["tistory_html"]
+    body = re.sub(r'<p\b[^>]*\bdata-reading-toc="1"[^>]*>.*?</p>', '', body, flags=re.S)
     image = re.search(rf'<img src="{re.escape(BASE_URL)}/images/(dashboard-{TODAY}-[0-9a-f]{{16}}\.png)"', body)
     assert image
     order = [body.find(f"{ASOF} 관측"), image.start(), body.find("data-dashboard-table"), body.find("읽는 법"),

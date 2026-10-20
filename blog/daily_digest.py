@@ -263,25 +263,24 @@ def _render_inventory_site(inventory: dict | None) -> str:
 """
 
 
-# 일간 제목(2026-10-13 외부 리뷰 C2·U7) — 서울 전체 표본기준추세수만 싣는다. 단지명·매매·전세 중위 차이는
+# 일간 제목(2026-10-13 외부 리뷰 C2·U7) — 서울 전체 표본기준 비교 단지 수만 싣는다. 단지명·매매·전세 중위 차이는
 # 제목에 올리지 않는다(최근 3개월 2건짜리 단지가 대표처럼 읽히고, 차이가 필요 자기자본처럼 읽혔다).
 def _build_digest_title(today: str, counts: dict, sel: dict) -> str:
-    """'서울 아파트 실거래가 — 추세 비교 N단지 중 상승 U·하락 D (날짜)'. 비교 단지가 없으면 관측 단지 수만."""
+    """기간·비교 분모를 명시한다. 방향별 수는 본문에 두고 관측 전체와 비교 가능 단지를 구분한다."""
     n_judged = counts.get("n_judged") or 0
     if n_judged:
-        up, down = counts.get("up", 0), counts.get("down", 0)
-        flat = f"·보합 {n_judged - up - down:,}" if n_judged - up - down else ""   # 분모와 합이 맞게(R2 agy F9)
-        return f"서울 아파트 실거래가 — 추세 비교 {n_judged:,}단지 중 상승 {up:,}·하락 {down:,}{flat} ({today})"
-    return f"서울 아파트 실거래가 — {today} 관측 {counts.get('n_total', 0):,}단지"
+        return f"서울 아파트 실거래가 — 비교 {n_judged:,}단지, 최근 3개월 vs 직전 9개월 ({today})"
+    return f"서울 주거용 부동산 실거래가 — 관측 {counts.get('n_total', 0):,}단지, 기간 비교 미산출 ({today})"
 
 
-def _build_digest_tags(sel: dict) -> str:
+def _build_digest_tags(sel: dict, *, inventory: dict | None = None) -> str:
+    """실제 표시할 주제·지역으로 구성하고 생성 상한 10개를 지킨다."""
     active_gus: list[str] = []
-    for group in (sel.get("hi", []), sel.get("jr", []), sel.get("tv", [])):
+    for group in (sel.get("hi", []), sel.get("lo", []), sel.get("jr", []), sel.get("tv", [])):
         for r in group:
             g = r.get("gu")
             if g:
-                tag = f"{g}구아파트"
+                tag = f"{g if g.endswith('구') else g + '구'}아파트"
                 if tag not in active_gus:
                     active_gus.append(tag)
             if len(active_gus) >= 4:
@@ -289,9 +288,15 @@ def _build_digest_tags(sel: dict) -> str:
         if len(active_gus) >= 4:
             break
     base_tags = [t for t in TISTORY_TAGS.split(",") if t]
-    extra_tags = ["오늘의변화", "아파트매물", "전세가율"] + active_gus
-    combined = base_tags + [t for t in extra_tags if t not in base_tags]
-    return ",".join(combined)
+    extra_tags = []
+    if sel.get("jr"):
+        extra_tags.append("전세가율")
+    if sel.get("tv"):
+        extra_tags.append("아파트회전율")
+    if inventory and inventory.get("fresh") and inventory.get("complete") and inventory.get("districts"):
+        extra_tags.append("아파트매물")
+    combined = list(dict.fromkeys(base_tags + extra_tags + active_gus))
+    return ",".join(combined[:10])
 
 
 def _briefing_texts(leads: list[dict], n: int = 3) -> list[str]:
@@ -517,7 +522,7 @@ def _render_ranked_summary(sel: dict, compact: bool = False, level: int = 2) -> 
 def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchIntent,
                     band_rows=None, macro_html="", support_html="", inventory=None, area_rows=None,
                     detail_limit=None, inventory_limit=8, area_limit=4, compact_cells=False,
-                    visual_html="", overview_html="", visual_first=False) -> str:
+                    visual_html="", overview_html="", visual_first=False, reading_budget=None) -> str:
     # 본문 예산에서 선택 상세 행만 줄인다. 핵심 요약·25개 구·출처와 고지는 보존한다.
     # visual_first=True: overview_html 자리에 관측요약·대시보드·지리타일맵이 오고, 빈 절·중복 블록을 생략한다.
     ranked_summary = _render_ranked_summary(sel, compact=visual_first, level=3)
@@ -629,7 +634,8 @@ def _render_tistory(today, asof, counts, sel, gu_rows, leads, intent: SearchInte
         f'<p><a href="{BASE_URL}/">전체 탐색기·인덱스</a> · <a href="{BASE_URL}/methodology.html">방법론 전문</a></p>',
         cta_card,
     ]
-    return "".join(parts)
+    from blog.tistory_reading import enhance_tistory_reading
+    return enhance_tistory_reading("".join(parts), byte_budget=reading_budget)
 
 
 def _render_site(today, asof, counts, sel, gu_rows, intent: SearchIntent, leads,
@@ -768,7 +774,7 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     leads = build_fact_leads(ds, "seoul", prev_ds=prev_ds)
 
     title = _build_digest_title(today, counts, sel)
-    tags = _build_digest_tags(sel)
+    tags = _build_digest_tags(sel, inventory=ds.get("listing_inventory"))
     summary = (f"{today} 기준 {counts['n_total']}단지 · 표본 {counts['n_sample']}건 · "
                f"상승 {counts['up']}·하락 {counts['down']}·보합 {counts['flat']} · "
                f"12개월 범위 상단 근접 {n_hi}곳·하단 근접 {n_lo}곳")
@@ -810,7 +816,7 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
     tistory_html = _render_tistory(today, asof, counts, sel, gu_rows, leads, intent, band_rows=band_rows,
                                   macro_html=macro_tistory, support_html=support_html, inventory=inventory,
                                   area_rows=area_rows, visual_html=visual["tistory_html"], overview_html=overview["tistory_html"],
-                                  visual_first=media is not None)
+                                  visual_first=media is not None, reading_budget=budget)
     site_html = _render_site(today, asof, counts, sel, gu_rows, intent, leads, band_rows=band_rows,
                             macro_html=(macro or {}).get("site_html", ""), support_html=support_site_html, inventory=inventory,
                             area_rows=area_rows, visual_html=visual["site_html"], overview_html=overview["site_html"])
@@ -832,6 +838,7 @@ def build_daily_digest(ds: dict, today: str, asof: str, prev_ds: dict | None = N
             visual_html=visual["tistory_html"],
             overview_html=overview["tistory_html"],
             visual_first=media is not None,
+            reading_budget=budget,
         )
         tb = len(tistory_html.encode("utf-8"))
     if tb > budget:
