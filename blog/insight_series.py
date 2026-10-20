@@ -990,9 +990,26 @@ def render_watch_post(res: dict, grid: list[dict], clock: dict, asof: str, today
     sh_txt = (f"건수가 아니라 비율로 보면, 같은 {w['n_pass_both']}곳의 84㎡대 거래를 모두 합친 {budget} 이하 비중은 {wa} {_pct_txt(sh['A'], False)}, "
               f"{wb} {_pct_txt(sh['B'], False)}였습니다(거래가 많은 단지의 영향이 큽니다)."
               if sh["A"] is not None else "")
+    confirmed = [c for c in w["cells"]["2+|2+"] if c.get("identity") == "확인"]
+    subset_count = f"신원 확인 {len(confirmed)}곳 / 두 기간 모두 반복 전체 {keep}곳"
+    # 글자만 — 티스토리 에디터가 href="#…" 를 /manage/newpost/#… 로 바꾼다(2026-10-20 실측).
+    result_jump = _p(f"{subset_count} — 아래 「두 기간 모두 반복된 신원 확인 단지」 표" if confirmed else subset_count)
+    result_list = _h3("[관측] 두 기간 모두 반복된 신원 확인 단지")
+    result_list += _p(f"원래 ‘두 기간 모두 반복’ 결과의 신원 확인 부분집합입니다. {wa}·{wb}, 전용 {p['area_m2'][0]:g}~{p['area_m2'][1]:g}㎡, "
+                      f"각 기간 전체 거래 {p['min_n']}건 이상·서로 다른 계약일 {p['min_days']}일 이상, "
+                      f"{budget} 이하 서로 다른 계약일 {rep}일 이상입니다. 과거 체결 거래이며 현재 매물이나 지금 살 수 있다는 뜻이 아닙니다.", True)
+    if confirmed:
+        result_rows = [[f'{escape(c["name"])} ({escape(c["gu"])})',
+                        *[f'{c["n"][k]}건 중 {budget} 이하 {c["n_le"][k]}건({c["days_le"][k]}계약일)' for k in ("A", "B")]]
+                       for c in confirmed]
+        result_list += _tbl(["단지(구)", wa, wb], result_rows, True)
+    else:
+        result_list += _p("신원이 확인된 단지가 없어 결과목록을 표시하지 않습니다.", True)
     body = (
         _question(q, a)
+        + result_jump
         + _box(CAUTION_WATCH)
+        + result_list
         + _h3(f"[관측] {wa}과 {wb}의 {budget} 이하 거래 반복")
         + _p(f"대상: 사이트 공개 단지 중 아파트(같은 구 동명 단지 의심 제외) {w['n_panel']:,}곳의 전용 {p['area_m2'][0]:g}~{p['area_m2'][1]:g}㎡ 매매. "
              f"두 기간(각 4개월)에 모두 {p['min_n']}건 이상 거래된 {w['n_pass_both']}곳만 분류했습니다. 같은 날 여러 건은 한 계약일로 셉니다. "
