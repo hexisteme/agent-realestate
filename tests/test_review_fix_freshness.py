@@ -73,3 +73,13 @@ def test_daily_digest_puts_freshness_before_ranked_and_summary_blocks():
     for body in (d["tistory_html"], d["site_html"]):
         i = body.find("오늘 새로 확인")
         assert i != -1 and i < body.find("30초 브리핑") if "30초 브리핑" in body else i != -1
+
+
+def test_freshness_on_the_first_of_a_month_sets_aside_the_month_new_to_the_window():
+    """월 첫날 수집기는 직전 달을 처음 담는다 — 직전 아카이브(전달 말일) 수집 창 뒤의 월은 새로 나타난 기록이 아니다."""
+    prev = {"11710": [_rec("가", "202509"), _rec("나", "202608")]}
+    cur = {"11710": [_rec("나", "202608"), _rec("다", "202608"), _rec("라", "202609"), _rec("마", "202609")]}
+    fr = dfr.build_daily_freshness("2026-10-01", cur, ("2026-09-30", prev), _CUR_MACRO, _PREV_MACRO)
+    assert (fr["filings"]["n_new"], fr["filings"]["n_new_window"]) == (1, 2)
+    html = dfr.render_freshness_html(fr)
+    assert "새로 나타난 기록 1건" in html and "수집 창에 새로 든 2026-09 계약 2건은 비교에서 뺌" in html

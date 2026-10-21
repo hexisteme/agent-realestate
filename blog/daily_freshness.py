@@ -55,12 +55,14 @@ def build_daily_freshness(today: str, molit_cur: dict | None, molit_prev: tuple[
                           macro_cur: dict | None, macro_prev: dict | None) -> dict | None:
     """DailyFreshness — {"today","filings","molit_base","molit_available","macro"}. 오늘 자료가 하나도 없으면 None.
     직전 기준이 없으면 비교 불가로 남기고(R2 Codex — 수집 실패·비교 불가 고지가 사라지지 않게) 지어내지 않는다.
-    사라진 기록의 창 이탈은 오늘 수집 창 시작월로 가른다."""
+    사라진 기록의 창 이탈은 오늘 수집 창 시작월로 가르고, 직전 아카이브 수집 창 뒤의 월(월 첫날 새로 든 직전 달)은
+    새로 나타난 기록에서 뺀다."""
     if molit_cur is None and macro_cur is None:
         return None
     filings = None
     if molit_cur is not None and molit_prev:
-        filings = pdl.diff_filings(molit_prev[1], molit_cur, window_start=pdl.molit_window_start(today))
+        filings = pdl.diff_filings(molit_prev[1], molit_cur, window_start=pdl.molit_window_start(today),
+                                   base_window_end=pdl.molit_window_end(molit_prev[0]))
     return {"today": today, "filings": filings, "molit_base": molit_prev[0] if molit_prev else None,
             "molit_available": molit_cur is not None, "macro": compare_macro(macro_prev, macro_cur)}
 
@@ -78,7 +80,7 @@ def render_freshness_html(fr: dict | None) -> str:
     f = fr.get("filings")
     if f is not None:
         lines.append(f"국토부 실거래 목록({fr['molit_base']} 자료 대비): 새로 나타난 기록 {f['n_new']:,}건"
-                     f"{pdl.filing_age_txt(f)} · 사라진 기록 {f['n_gone']:,}건{pdl.filing_gone_txt(f)}.")
+                     f"{pdl.filing_age_txt(f)}{pdl.filing_window_txt(f)} · 사라진 기록 {f['n_gone']:,}건{pdl.filing_gone_txt(f)}.")
     elif fr.get("molit_available"):
         lines.append("국토부 실거래 목록: 직전 아카이브 없음(비교 불가).")
     m = fr.get("macro")

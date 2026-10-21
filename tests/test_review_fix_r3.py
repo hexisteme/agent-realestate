@@ -72,11 +72,11 @@ def test_c13_review_packet_passes_the_collection_window(monkeypatch, tmp_path):
     seen = {}
     real = rp.pd.diff_filings
 
-    def spy(prev, cur, window_start=None):
-        seen["window_start"] = window_start
-        return real(prev, cur, window_start=window_start)
+    def spy(prev, cur, window_start=None, base_window_end=None):
+        seen["window_start"], seen["base_window_end"] = window_start, base_window_end
+        return real(prev, cur, window_start=window_start, base_window_end=base_window_end)
 
-    archive = tmp_path / "molit.json.gz"
+    archive = tmp_path / "molit-2026-08-31.json.gz"   # 기준 아카이브 자기 날짜의 창 끝(2026-07)을 써야 한다 — 기준일·오늘(2026-08)과 갈리게
     archive.write_bytes(gzip.compress(json.dumps({"11680": [_rec("가", "202609")]}).encode()))
     monkeypatch.setattr(rp, "molit_archive_path_on", lambda *a, **k: str(archive))
     monkeypatch.setattr(rp.pd, "diff_filings", spy)
@@ -96,6 +96,7 @@ def test_c13_review_packet_passes_the_collection_window(monkeypatch, tmp_path):
         ds.write_text(json.dumps(mk("2026-09-13")))
         rp.review_periodic(today="2026-09-13", dataset=str(ds), snapshots=str(snaps), out=str(root / "review"))
     assert seen["window_start"] == pd.molit_window_start("2026-09-13")
+    assert seen["base_window_end"] == pd.molit_window_end("2026-08-31") == "202607"
 
 
 # ── F7-비시각 ────────────────────────────────────────────────────────────────

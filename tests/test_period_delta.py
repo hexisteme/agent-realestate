@@ -1,6 +1,7 @@
 """주간결산/월간결산(blog.period_delta, 2026-09-07) 단위테스트 — 달력 판정·base 해소(전월 마지막 일요일→대체)·밴드 재계산과
 이동·구별 Δ와 표본 억제·신고 델타 multiset·렌더 메타(_post_meta 규약)·claims·periodic 원고·구 포스트 오인 방지."""
 from __future__ import annotations
+import gzip
 import json
 from datetime import date
 
@@ -306,3 +307,65 @@ def test_diff_filings_counts_contract_day_only_pairs_and_summary_keeps_them():
     assert "사라진 기록 중 새 기록과 계약일만 다른 것 1건(정정일 수 있음)" in txt
     assert txt.index("계약일만") < txt.index("수집 누락")   # R3 Codex: '그중'이 제외 구를 가리키지 않게
     assert "계약일만" not in pd.filing_gone_txt({**s, "n_day_only_pairs": 0, "n_gone_window": 0, "n_gone_other": 2})
+
+
+def _frec(apt, ym, price=1_000_000_000, area=84.97):
+    return {"apt": apt, "area": area, "price": price, "ym": ym}
+
+
+def test_diff_filings_sets_aside_months_after_the_base_archive_window():
+    """월이 바뀌면 수집기가 직전 달을 처음 담는다(2026-10-04 주간결산 '새로 확인된 신고 2335건' 중 2239건이 2026-09) —
+    기준 아카이브 수집 창 뒤의 월은 그 아카이브에 있을 수 없던 기록이라 새 기록이 아니고 따로 센다."""
+    assert (pd.molit_window_end("2026-09-27"), pd.molit_window_end("2026-10-04")) == ("202608", "202609")
+    prev = {"11710": [_frec("가", "202509"), _frec("가", "202608")]}
+    cur = {"11710": [_frec("가", "202608"), _frec("나", "202608"), _frec("다", "202609"), _frec("라", "202609")]}
+    f = pd.diff_filings(prev, cur, window_start=pd.molit_window_start("2026-10-04"),
+                        base_window_end=pd.molit_window_end("2026-09-27"))
+    assert [r["apt"] for r in f["new"]] == ["나"] and f["ref_ym"] == "202608"
+    assert (f["n_new_window"], f["new_window_by_gu"], f["new_window_yms"]) == (2, {"송파": 2}, ["202609"])
+    assert (f["n_gone_window"], f["n_gone_other"]) == (1, 0)
+    s = pd.summarize_filings(f)
+    assert (s["n_new"], s["n_new_window"], s["new_window_yms"]) == (1, 2, ["202609"])
+    plain = pd.diff_filings(prev, cur)
+    assert plain["n_new"] == 3 and plain["n_new_window"] is None and pd.filing_window_txt(plain) == ""
+
+
+def test_weekly_post_on_a_month_boundary_counts_only_records_the_base_archive_could_hold(tmp_path, monkeypatch):
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "weekly")
+    snap = tmp_path / "snapshots"
+    (snap / "molit").mkdir(parents=True)
+    (snap / "dataset-2026-09-27.json").write_text(json.dumps(_ds([_row("송파", "A", 10.0)], gen="2026-09-27"),
+                                                             ensure_ascii=False), encoding="utf-8")
+    with gzip.open(snap / "molit" / "molit-2026-09-27.json.gz", "wt", encoding="utf-8") as fh:
+        json.dump({"11710": [_frec("가", "202608")]}, fh)
+    raw = tmp_path / "molit_raw.json"
+    raw.write_text(json.dumps({"11710": [_frec("가", "202608"), _frec("나", "202608"),
+                                         _frec("다", "202609"), _frec("라", "202609")]}), encoding="utf-8")
+    pd.write_period_post(_ds([_row("송파", "A", 10.0)], gen="2026-10-04"), "2026-10-04", str(tmp_path), molit_path=str(raw))
+    html_txt = (tmp_path / "posts" / "2026-10-04-주간결산.html").read_text(encoding="utf-8")
+    assert "새로 나타난 실거래 기록 1건" in html_txt
+    assert "수집 창에 새로 든 2026-09 계약 2건은 비교에서 뺌" in html_txt
+
+
+def test_record_highs_skip_months_after_the_base_archive_window():
+    prev = {"11710": [_frec("가", ym, 900_000_000) for ym in ("202606", "202607", "202608")]}
+    cur = {"11710": prev["11710"] + [_frec("가", "202608", 950_000_000), _frec("가", "202609", 1_200_000_000)]}
+    f = pd.diff_filings(prev, cur, window_start=pd.molit_window_start("2026-10-04"), base_window_end="202608")
+    assert [h["price"] for h in f["record_highs"]] == [950_000_000]
+
+
+def test_weekly_post_takes_the_window_end_from_the_archive_date_not_the_base_snapshot(tmp_path, monkeypatch):
+    """기준 스냅샷 05-31 에 아카이브가 없고 ±1일 대체 아카이브가 06-01 이면 그 아카이브엔 이미 2026-05 가 있다 —
+    스냅샷 날짜(창 끝 2026-04)로 자르면 2026-05 기록 전부가 '창에 새로 든' 것으로 잘못 빠진다."""
+    monkeypatch.setenv("RE_PERIODIC_POSTS", "weekly")
+    snap = tmp_path / "snapshots"
+    (snap / "molit").mkdir(parents=True)
+    (snap / "dataset-2026-05-31.json").write_text(json.dumps(_ds([_row("송파", "A", 10.0)], gen="2026-05-31"),
+                                                             ensure_ascii=False), encoding="utf-8")
+    with gzip.open(snap / "molit" / "molit-2026-06-01.json.gz", "wt", encoding="utf-8") as fh:
+        json.dump({"11710": [_frec("가", "202605")]}, fh)
+    raw = tmp_path / "molit_raw.json"
+    raw.write_text(json.dumps({"11710": [_frec("가", "202605"), _frec("나", "202605")]}), encoding="utf-8")
+    pd.write_period_post(_ds([_row("송파", "A", 10.0)], gen="2026-06-07"), "2026-06-07", str(tmp_path), molit_path=str(raw))
+    html_txt = (tmp_path / "posts" / "2026-06-07-주간결산.html").read_text(encoding="utf-8")
+    assert "새로 나타난 실거래 기록 1건" in html_txt and "수집 창에 새로 든" not in html_txt

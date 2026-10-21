@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from blog import period_delta as pd
 from blog.macro_cycles import build_macro_regime_section
-from blog.snapshots import list_snapshot_dates, molit_archive_path_on
+from blog.snapshots import _MOLIT_RE, _date_of, list_snapshot_dates, molit_archive_path_on
 from blog.wording_guard import assert_wording_ok
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -149,7 +149,8 @@ def review_periodic(*, today: str, dataset: str, snapshots: str, out: str,
     current = molit_archive_path_on(generated, 0, str(snap_dir / "molit"))
     if previous and current:
         filings = pd.diff_filings(_read(Path(previous), inputs), _read(Path(current), inputs),
-                                  window_start=pd.molit_window_start(actual))
+                                  window_start=pd.molit_window_start(actual),
+                                  base_window_end=pd.molit_window_end(_date_of(previous, _MOLIT_RE).isoformat()))
     else:
         warnings.append("기준/이번 실측일 MOLIT 아카이브가 모두 있지 않아 신고 델타 미검수.")
     weekly, weekly_rows, macro = None, None, None

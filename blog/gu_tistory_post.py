@@ -40,7 +40,7 @@ import blog.build_explorer as be
 from blog.build_site import BASE_URL
 from blog.fact_lead import build_fact_leads, render_lead_lines
 from blog.period_delta import (MIN_PAIRS, _all_carry_contract_day, _contract_age_buckets, _filing_key, compute_gu_deltas,
-                               diff_filings, filing_age_txt, molit_window_start)
+                               diff_filings, filing_age_txt, molit_window_end, molit_window_start)
 from blog.snapshots import _MOLIT_RE, _date_of, molit_archive_path_on
 from blog.tistory_contract import DraftPayload, write_helper
 from blog.tistory_draft import TISTORY_TAGS, _MUT, build_tistory_section
@@ -102,12 +102,6 @@ def _build_tags(gu: str, rows: list[dict]) -> str:
     return ",".join(list(dict.fromkeys(tags))[:_TAG_LIMIT])
 
 
-def _window(day: date) -> tuple[str, str]:
-    """그날 수집기가 담는 계약월 범위('YYYYMM' 처음, 끝) — 당월 제외 직전 12개 완결월(be._month_windows)."""
-    recent, prior = be._month_windows(day.isoformat())
-    return min(recent | prior), max(recent | prior)
-
-
 def _seen_archive(base: date, archive_dir: str) -> dict:
     """기준일까지 1주(base−6 … base) MOLIT 아카이브의 구별 multiset 합집합 — 같은 기록은 일자별 개수의 최대만큼.
     국토부 API 가 하루 이틀 일부 행을 빠뜨렸다 되돌린 경우(2026-10-15·16 송파 2026-09: 292→127→132→305건)
@@ -115,7 +109,7 @@ def _seen_archive(base: date, archive_dir: str) -> dict:
     다시 들어온 기록도 새 기록에서 빠진다(건수를 덜 세는 쪽 오차).
     기준일 수집 창 밖의 월(전달 아카이브에만 있는 13개월 전 월)은 뺀다 — '기준일 12개월 표본'과 맞춘다. 묶음 키는
     diff_filings 와 같은 규칙: 그 구의 모든 행에 계약일이 있을 때만 계약일까지(Codex R1 2건)."""
-    start, end = _window(base)
+    start, end = molit_window_start(base.isoformat()), molit_window_end(base.isoformat())
     arcs = []
     for i in range(_WEEK_DAYS):
         p = molit_archive_path_on(base - timedelta(days=i), 0, archive_dir)
@@ -142,8 +136,7 @@ def _seen_archive(base: date, archive_dir: str) -> dict:
 def load_week_filings(today: str, molit_path: str | None, snap_dir: str) -> dict | None:
     """7일 전(±1일) MOLIT 원본 아카이브 대비 오늘 원본에 새로 나타난 기록 — 주간결산과 같은 diff_filings.
     기준은 그 아카이브 하루치가 아니라 기준일까지 1주 아카이브의 합집합(_seen_archive)이다. 오늘 원본 중 기준일 수집 창
-    뒤의 월(월이 바뀌어 수집기가 처음 담은 직전 달)은 기준일 자료에 없던 달이라 비교에서 빼고 구별 건수만 남긴다
-    (2026-10-04 주간결산 '새로 확인된 신고 2335건' 중 2239건이 이 경우).
+    뒤의 월(월이 바뀌어 수집기가 처음 담은 직전 달)은 diff_filings(base_window_end)가 비교에서 빼고 구별 건수만 남긴다.
     반환 {"base_date", "filings", "apt_names"(구 → 오늘 원본 단지명 목록)}. 아카이브·원본이 없거나 읽지 못하면 None
     (구 원고는 그 줄만 빼고 만든다 — 일간 발행 흐름을 막지 않는다)."""
     if not molit_path or not os.path.exists(molit_path):
@@ -157,24 +150,15 @@ def load_week_filings(today: str, molit_path: str | None, snap_dir: str) -> dict
         prev = _seen_archive(base, f"{snap_dir}/molit")
         with open(molit_path, encoding="utf-8") as fh:
             cur = json.load(fh)
-        end = _window(base)[1]
+        filings = diff_filings(prev, cur, window_start=molit_window_start(today),
+                               base_window_end=molit_window_end(base.isoformat()))
         lawd_gu = {v: k for k, v in be.GU_LAWD.items()}
-        inside, entered, entered_yms = {}, Counter(), set()
-        for lawd, recs in cur.items():
-            if lawd == "_done" or not isinstance(recs, list):
-                continue
-            inside[lawd] = [r for r in recs if isinstance(r, dict) and str(r.get("ym")) <= end]
-            late = [str(r.get("ym")) for r in recs if isinstance(r, dict) and str(r.get("ym")) > end]
-            entered[lawd_gu.get(lawd, lawd)] += len(late)
-            entered_yms.update(late)
-        filings = diff_filings(prev, inside, window_start=molit_window_start(today))
         names = {lawd_gu.get(lawd, lawd): sorted({r["apt"] for r in recs if isinstance(r, dict) and r.get("apt")})
                  for lawd, recs in cur.items() if lawd != "_done" and isinstance(recs, list)}
     except Exception as e:                                   # noqa: BLE001 — 잘린 gzip(EOFError)·형식 이상도 이 줄만 뺀다(agy P1)
         print(f"[gu_tistory_post] 최근 1주 새 기록 생략: {type(e).__name__}")
         return None
-    return {"base_date": base.isoformat(), "filings": filings, "apt_names": names,
-            "entered": {gu: n for gu, n in entered.items() if n}, "entered_yms": sorted(entered_yms)}
+    return {"base_date": base.isoformat(), "filings": filings, "apt_names": names}
 
 
 def _eok_won(won: int) -> str:
@@ -203,7 +187,7 @@ def _filing_lines(gu: str, rows: list[dict], week: dict) -> list[str]:
     mine = [r for r in fil["new"] if r.get("gu") == gu]
     total = fil["n_new"]
     skipped = f", 수집 누락 {fil['n_lawd_skipped']}개 구 제외" if fil.get("n_lawd_skipped") else ""
-    n_late, yms = (week.get("entered") or {}).get(gu, 0), week.get("entered_yms") or []
+    n_late, yms = (fil.get("new_window_by_gu") or {}).get(gu, 0), fil.get("new_window_yms") or []
     late = (f" {_ym_txt(yms[0])}{'~' + _ym_txt(yms[-1]) if len(yms) > 1 else ''} 계약 {n_late}건은 {base} 자료에 아직 없던 "
             f"달이라 셈에서 뺐습니다." if n_late else "")
     if not mine:

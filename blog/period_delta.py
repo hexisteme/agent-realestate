@@ -14,6 +14,7 @@ base 의 밴드는 항상 12개월 중위(molit_recent_eok)에서 **재계산** 
 build_site 의 posts/* glob 으로 sitemap-posts·feed·archive 자동, cron_daily.sh 가 일요일 2편째로 티스토리 발행(kind=periodic).
 """
 from __future__ import annotations
+import gzip
 import html
 import json
 import os
@@ -25,8 +26,8 @@ from urllib.parse import quote
 import blog.build_explorer as be
 from blog.build_site import BASE_URL, ga4_snippet
 from blog.daily_digest import _SITE_CSS
-from blog.snapshots import (is_last_sunday_of_month, list_snapshot_dates, load_molit_archive_on, load_snapshot_on,
-                            snapshot_date_of, snapshot_path_on)
+from blog.snapshots import (_MOLIT_RE, _date_of, is_last_sunday_of_month, list_snapshot_dates, load_snapshot_on,
+                            molit_archive_path_on, snapshot_date_of, snapshot_path_on)
 from blog.tistory_draft import _MUT, _TBL, _TD, _TH, TISTORY_TAGS
 from blog.wording_guard import assert_wording_ok
 
@@ -284,7 +285,18 @@ def molit_window_start(day: str) -> str:
     return min(recent | prior)
 
 
-def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict:
+def molit_window_end(day: str) -> str:
+    """수집 창 끝월 'YYYYMM' — 그날 수집기가 담는 마지막 완결월(당월 직전). 그보다 늦은 계약월은 그날 아카이브에 있을 수 없다."""
+    recent, prior = be._month_windows(day)
+    return max(recent | prior)
+
+
+def _after_window(rec, window_end: str) -> bool:
+    """계약월이 window_end 보다 늦은 행. dict 가 아닌 행·계약월 없는 행은 아니다 — 비교에 그대로 둬 형식 이상을 숨기지 않는다."""
+    return isinstance(rec, dict) and bool(rec.get("ym")) and str(rec.get("ym")) > window_end
+
+
+def diff_filings(prev: dict, cur: dict, window_start: str | None = None, base_window_end: str | None = None) -> dict:
     """MOLIT 원본 두 시점의 multiset 차. cur 에만 있는 레코드 = 그 사이 새로 확인된 신고(체결일이 아니라 API 반영
     시점), prev 에만 있던 레코드 = 사라진 건(창 이탈·해제·정정 등, 사유 미확인). 레코드 신원 = (apt, area, price, ym, deal_date) —
     두 시점 모든 행에 계약일이 있을 때만 계약일까지, 아니면 (apt, area, price, ym)(2026-10-14 승인, key_fields 에 표기).
@@ -292,15 +304,24 @@ def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict
     record_highs = 같은 단지·같은 전용(반올림)의 prev 12개월 표본(≥3건) 최고가를 넘는 신규 레코드.
     window_start = 현재 수집 창 시작월(molit_window_start). 사라진 기록 중 그보다 이른 계약월 = 창 이탈. 모르면 None
     (관측된 최저 계약월을 창 경계로 쓰면 창 안 삭제가 창 이탈로 잡힌다 — R2 Codex). 직전에 있던 구가 오늘 통째로
-    없으면(수집 누락) 그 구는 비교에서 빼고 n_lawd_skipped 로 센다(R2 agy)."""
+    없으면(수집 누락) 그 구는 비교에서 빼고 n_lawd_skipped 로 센다(R2 agy).
+    base_window_end = 기준 아카이브 날짜의 수집 창 끝월(molit_window_end). cur 중 그보다 늦은 계약월(월이 바뀌어 수집기가
+    처음 담은 달)은 기준 아카이브에 있을 수 없던 기록이라 비교에서 빼고 n_new_window·구별·월 목록으로만 센다(2026-10-04
+    주간결산 '새로 확인된 신고 2335건' 중 2239건이 창에 새로 든 2026-09). 모르면 None — 전부 비교한다."""
     lawd_gu = {v: k for k, v in be.GU_LAWD.items()}
     new, highs, gone = [], [], 0
     gone_window = 0
+    skipped = {lawd for lawd, recs in prev.items() if lawd != "_done" and isinstance(recs, list) and recs
+               and not (isinstance(cur.get(lawd), list) and cur.get(lawd))}
+    late: dict[str, list] = {}
+    if base_window_end:
+        late = {lawd: [r for r in recs if _after_window(r, base_window_end)] for lawd, recs in cur.items()
+                if lawd != "_done" and isinstance(recs, list)}
+        cur = {lawd: [r for r in recs if not _after_window(r, base_window_end)] if lawd in late else recs
+               for lawd, recs in cur.items()}
     cur_yms = [str(r.get("ym")) for k, recs in cur.items() if k != "_done" and isinstance(recs, list)
                for r in recs if isinstance(r, dict) and r.get("ym")]
     ref_ym = max(cur_yms) if cur_yms else None
-    skipped = {lawd for lawd, recs in prev.items() if lawd != "_done" and isinstance(recs, list) and recs
-               and not (isinstance(cur.get(lawd), list) and cur.get(lawd))}
     key_by_lawd: dict[str, str] = {}
     day_only = 0
     for lawd, recs in cur.items():
@@ -338,6 +359,9 @@ def diff_filings(prev: dict, cur: dict, window_start: str | None = None) -> dict
             "ref_ym": ref_ym, "new_by_age": _contract_age_buckets(new, ref_ym),
             "n_gone_window": gone_window if window_start else None,
             "n_gone_other": gone - gone_window if window_start else None, "n_lawd_skipped": len(skipped),
+            "n_new_window": sum(len(v) for v in late.values()) if base_window_end else None,
+            "new_window_by_gu": {lawd_gu.get(lawd, lawd): len(v) for lawd, v in sorted(late.items()) if v},
+            "new_window_yms": sorted({str(r["ym"]) for v in late.values() for r in v}),
             "record_highs": sorted(highs, key=lambda x: (x["gu"], x["apt"]))}
 
 
@@ -370,6 +394,7 @@ def summarize_filings(f: dict) -> dict:
             "ref_ym": f.get("ref_ym"), "new_by_age": f.get("new_by_age"),
             "n_gone_window": f.get("n_gone_window"), "n_gone_other": f.get("n_gone_other"),
             "n_lawd_skipped": f.get("n_lawd_skipped"),
+            "n_new_window": f.get("n_new_window"), "new_window_yms": f.get("new_window_yms"),
             "key_fields": f.get("key_fields"), "n_day_only_pairs": f.get("n_day_only_pairs"),
             "bands": [{"band": b, "n": len(by_band[b]),
                        "median_eok": round(st.median(by_band[b]), 2) if by_band[b] else None} for b in BANDS],
@@ -515,6 +540,15 @@ def filing_age_txt(fil: dict) -> str:
             f'{m(4)} 이전 {a["old"]}건 — 늦은 신고·정정이 섞였을 수 있으나 사유 미확인)')
 
 
+def filing_window_txt(fil: dict) -> str:
+    """수집 창에 새로 든 월(기준 아카이브 창 뒤)의 기록을 새 기록에서 뺐다는 고지. 뺀 기록이 없으면 빈 문자열."""
+    n, yms = fil.get("n_new_window"), fil.get("new_window_yms") or []
+    if not n:
+        return ""
+    span = _ym_txt(yms[0]) + (f"~{_ym_txt(yms[-1])}" if len(yms) > 1 else "")
+    return f" · 수집 창에 새로 든 {span} 계약 {n:,}건은 비교에서 뺌"
+
+
 def filing_gone_txt(fil: dict) -> str:
     skipped = (f" · 오늘 수집 누락 {fil['n_lawd_skipped']}개 구는 비교에서 뺌"
                if fil.get("n_lawd_skipped") else "")
@@ -588,7 +622,7 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
     parts.append(_tbl(heads, rows, inline))
     parts.append(_h("신고 델타", inline))
     if fil:
-        parts.append(_p(f'기준 아카이브 대비 새로 나타난 실거래 기록 {fil["n_new"]}건{filing_age_txt(fil)} · '
+        parts.append(_p(f'기준 아카이브 대비 새로 나타난 실거래 기록 {fil["n_new"]}건{filing_age_txt(fil)}{filing_window_txt(fil)} · '
                         f'현재 목록에서 사라진 건 {fil["n_gone"]}건{filing_gone_txt(fil)}. '
                         f'신고 확인 시점 기준이며 그 주 체결 건수가 아님(법정 신고기한은 계약 후 30일이며, 공개·정정·해제 반영으로 최근 계약 자료는 잠정).', inline))
         parts.append(_tbl(["가격대(신고가)", "건수", "중위(억)"],
@@ -741,10 +775,13 @@ def write_period_post(ds: dict, today: str, outdir: str = "report/blog", molit_p
         base_ds = json.load(fh)
     filings = None
     if molit_path and os.path.exists(molit_path):
-        prev = load_molit_archive_on(base_date, 1, f"{snap_dir}/molit")
-        if prev:
+        prev_path = molit_archive_path_on(base_date, 1, f"{snap_dir}/molit")
+        if prev_path:
+            with gzip.open(prev_path, "rt", encoding="utf-8") as fh:
+                prev = json.load(fh)
             with open(molit_path, encoding="utf-8") as fh:
-                filings = diff_filings(prev, json.load(fh), window_start=molit_window_start(today))
+                filings = diff_filings(prev, json.load(fh), window_start=molit_window_start(today),
+                                       base_window_end=molit_window_end(_date_of(prev_path, _MOLIT_RE).isoformat()))
     weekly, weekly_rows = None, None
     if kind == "monthly":
         wb = resolve_base("weekly", today, snap_dir)
