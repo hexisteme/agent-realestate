@@ -8,7 +8,14 @@
 중복 가드: 사이트측 구 포스트는 2026-09-06 P0 이후 주 1회만 쓴다
 (`build_explorer.should_write_weekly_posts` — 25편/일이 실질 중복이라는 진단). 이 모듈은 사이트가
 아니라 티스토리 표면만 늘리고, 평일(월~금) 하루 5구 × 5일 = 25구로 구마다 정확히 주 1회다. 주말은
-쉰다. 본문은 사이트의 구 허브를 canonical 로 가리킨다.
+쉰다. 사이트 구 페이지는 방법론·출처의 원문 링크로만 건다.
+
+고유 사실(2026-10-21 P1): 첫 5편(/135~/139)은 표 밖 산문이 편끼리 5-gram Jaccard 0.95(숫자 마스킹)였고
+"허브가 정본" 문장이 사이트 한 곳으로 유도했다 — Google 스팸 정책 doorway 예시와 같은 형태
+(report/2026-10-21-blogger-benchmark-followup.md §1.4·§1.5). 표 앞에 그 구에서만 나오는 사실을 싣는다:
+최근 1주 새로 나타난 매매 기록(주간결산과 같은 diff_filings)·서울 대비 비중·집계 대상 단지명·기준 최고가를
+넘긴 기록, 7일 전 스냅샷과 짝지은 구 중위(compute_gu_deltas), 사이트 구 허브와 같은 사실 리드(fact_lead).
+원본 아카이브나 직전 스냅샷이 없으면 그 줄만 빠진다.
 
 본문 예산: 티스토리 본문은 일간 다이제스트와 같은 28,000B(`daily_digest._TISTORY_TEXT_BUDGET`, 30KB 중
 대표이미지 메타 2KB 예약)를 넘지 않는다. 단지가 많은 구(실측 노원 110곳 134KB)는 표 행을 실거래 중위가
@@ -20,22 +27,32 @@
 """
 from __future__ import annotations
 
+import html
+import json
 import math
 import os
-from datetime import date
+from collections import Counter
+from datetime import date, timedelta
 from urllib.parse import quote
 
 import blog.build_explorer as be
 from blog.build_site import BASE_URL
+from blog.fact_lead import build_fact_leads, render_lead_lines
+from blog.period_delta import (MIN_PAIRS, _contract_age_buckets, compute_gu_deltas, diff_filings, filing_age_txt,
+                               molit_window_start)
+from blog.snapshots import _MOLIT_RE, _date_of, load_molit_archive_on, molit_archive_path_on
 from blog.tistory_contract import DraftPayload, write_helper
 from blog.tistory_draft import TISTORY_TAGS, _MUT, build_tistory_section
-from blog.wording_guard import assert_wording_ok
+from blog.wording_guard import assert_lead_wording_ok, assert_wording_ok
 
 GU_POSTS_PER_DAY = 5
 TISTORY_BUDGET = 28000   # daily_digest._TISTORY_TEXT_BUDGET 와 같은 값 — 30KB 중 대표이미지 메타 2KB 예약
 _WEEKDAYS = 5            # 월~금
 _FLAG = "RE_GU_TISTORY_POSTS"
 _TAG_LIMIT = 10
+_WEEK_DAYS = 7           # 구마다 주 1회 — 최근 기록은 7일 전 원본 아카이브(±1일)와 비교한다
+_RECORD_LIMIT = 8        # 새 기록 목록 상한(최근 계약월부터) — 나머지는 건수만
+_HIGHS_LIMIT = 3         # 기준 최고가를 넘긴 기록 상한
 
 
 def enabled() -> bool:
@@ -84,32 +101,148 @@ def _build_tags(gu: str, rows: list[dict]) -> str:
     return ",".join(list(dict.fromkeys(tags))[:_TAG_LIMIT])
 
 
-def _build_body(gu: str, rows: list[dict], today: str, asof: str, shown: int) -> str:
+def load_week_filings(today: str, molit_path: str | None, snap_dir: str) -> dict | None:
+    """7일 전(±1일) MOLIT 원본 아카이브 대비 오늘 원본에 새로 나타난 기록 — 주간결산과 같은 diff_filings.
+    반환 {"base_date", "filings", "apt_names"(구 → 오늘 원본 단지명 목록)}. 아카이브·원본이 없거나 읽지 못하면 None
+    (구 원고는 그 줄만 빼고 만든다 — 일간 발행 흐름을 막지 않는다)."""
+    if not molit_path or not os.path.exists(molit_path):
+        return None
+    target = date.fromisoformat(today) - timedelta(days=_WEEK_DAYS)
+    path = molit_archive_path_on(target, 1, f"{snap_dir}/molit")
+    if not path:
+        return None
+    try:
+        prev = load_molit_archive_on(target, 1, f"{snap_dir}/molit")
+        with open(molit_path, encoding="utf-8") as fh:
+            cur = json.load(fh)
+        filings = diff_filings(prev, cur, window_start=molit_window_start(today))
+        lawd_gu = {v: k for k, v in be.GU_LAWD.items()}
+        names = {lawd_gu.get(lawd, lawd): sorted({r["apt"] for r in recs if isinstance(r, dict) and r.get("apt")})
+                 for lawd, recs in cur.items() if lawd != "_done" and isinstance(recs, list)}
+    except Exception as e:                                   # noqa: BLE001 — 잘린 gzip(EOFError)·형식 이상도 이 줄만 뺀다(agy P1)
+        print(f"[gu_tistory_post] 최근 1주 새 기록 생략: {type(e).__name__}")
+        return None
+    return {"base_date": _date_of(path, _MOLIT_RE).isoformat(), "filings": filings, "apt_names": names}
+
+
+def _eok_won(won: int) -> str:
+    return f"{round(won / 1e8, 2):g}억"
+
+
+def _ym_txt(ym) -> str:
+    s = str(ym or "")
+    return f"{s[:4]}-{s[4:6]}" if len(s) >= 6 else "—"
+
+
+def _pool_names(rows: list[dict], apt_names: list[str]) -> dict[str, str]:
+    """MOLIT 원본 단지명 → 표 표시명. 표와 같은 매칭 규칙(be.match_molit_names)이라 집계 대상 밖 단지는 빠진다."""
+    idx = be.build_name_index(apt_names)
+    out: dict[str, str] = {}
+    for r in sorted(rows, key=lambda x: x["name"]):
+        for raw in sorted(be.match_molit_names(r["name"], apt_names, idx)):
+            out.setdefault(raw, r["name"])
+    return out
+
+
+def _filing_lines(gu: str, rows: list[dict], week: dict) -> list[str]:
+    """최근 1주 새로 나타난 매매 기록 — 구 건수·서울 대비 비중·계약월 분포, 집계 대상 단지의 새 기록(계약월·전용·금액),
+    기준 최고가를 넘긴 기록. 단지명은 표와 같은 집계 대상만 싣는다(세대수·안전제외 기준 유지)."""
+    fil, base, label = week["filings"], week["base_date"], _gu_label(gu)
+    mine = [r for r in fil["new"] if r.get("gu") == gu]
+    total = fil["n_new"]
+    skipped = f", 수집 누락 {fil['n_lawd_skipped']}개 구 제외" if fil.get("n_lawd_skipped") else ""
+    if not mine:
+        return [f"{base} 이후 국토부 실거래 목록에 새로 나타난 {label} 아파트 매매 기록은 없습니다(서울 전체 {total}건{skipped})."]
+    age = filing_age_txt({"new_by_age": _contract_age_buckets(mine, fil.get("ref_ym")), "ref_ym": fil.get("ref_ym")})
+    pct = round(100 * len(mine) / total)
+    lines = [f"{base} 이후 국토부 실거래 목록에 새로 나타난 {label} 아파트 매매 기록 {len(mine)}건{age} — "
+             f"서울 전체 {total}건의 {f'{pct}%' if pct else '1% 미만'}{skipped}. "
+             f"목록 반영 시점 기준이라 그 기간의 체결 건수가 아닙니다."]
+    pool = _pool_names(rows, week["apt_names"].get(gu, []))
+    recs = Counter((pool[r["apt"]], str(r.get("ym") or ""), r["area"], r["price"]) for r in mine if r.get("apt") in pool)
+    items = sorted(recs.items(), key=lambda kv: (-int(kv[0][1] or 0) if kv[0][1].isdigit() else 0, kv[0][0], kv[0][2], kv[0][3]))
+    if items:
+        rest = sum(k for _, k in items[_RECORD_LIMIT:])
+        lines.append("집계 대상 단지의 새 기록(계약월·전용·금액): "
+                     + " · ".join(f"{n} {_ym_txt(ym)} {area:g}㎡ {_eok_won(price)}" + (f" ×{k}" if k > 1 else "")
+                                  for (n, ym, area, price), k in items[:_RECORD_LIMIT])
+                     + (f" 외 {rest}건" if rest else "") + ".")
+    highs = sorted((h for h in fil.get("record_highs", []) if h.get("gu") == gu and h.get("apt") in pool),
+                   key=lambda h: (pool[h["apt"]], h["area"], h["price"]))
+    if highs:
+        more = f" 외 {len(highs) - _HIGHS_LIMIT}건" if len(highs) > _HIGHS_LIMIT else ""
+        lines.append(f"같은 단지·전용의 {base} 기준 12개월 표본 최고가를 넘긴 새 기록: "
+                     + " · ".join(f'{pool[h["apt"]]} {h["area"]:g}㎡ {_eok_won(h["price"])}'
+                                  f'(기준 최고 {_eok_won(h["prev_max"])}, n{h["n_prev"]})' for h in highs[:_HIGHS_LIMIT])
+                     + more + ".")
+    return lines
+
+
+def _delta_line(gu: str, ds: dict, prev_ds: dict) -> str | None:
+    """7일 전 스냅샷과 짝지은 단지(양쪽 집계 게이트 통과 — period_delta.valid_pairs)의 구 중위 변화. 짝이 MIN_PAIRS 미만이면 None."""
+    row = next((x for x in compute_gu_deltas(ds, prev_ds) if x["gu"] == gu), None)
+    if not row or row["n_valid"] < MIN_PAIRS or row["gu_median_delta_pct"] is None:
+        return None
+    base = prev_ds.get("generated") or prev_ds.get("data_asof") or "7일 전"
+    pct = row["gu_median_delta_pct"]
+    n_gu = sum(1 for r in ds["complexes"] if r.get("gu") == gu)
+    return (f"{base} 스냅샷과 같은 단지·전용으로 짝지은 {row['n_valid']}단지(이 구 발행 {n_gu}단지 중) 12개월 중위의 중위 "
+            f"{row['median_base']:g}억 → {row['median_cur']:g}억({'변화 없음' if pct == 0 else f'{pct:+.1f}%'}).")
+
+
+def build_gu_facts(gu: str, ds: dict, prev_ds: dict | None, week: dict | None) -> dict[str, list[str]]:
+    """구 1개의 고유 사실 — {"week": 최근 1주 줄, "leads": 사실 리드 줄}. 결정론(같은 입력 → 같은 줄).
+    week 줄 = 새로 나타난 매매 기록(load_week_filings) + 7일 전 스냅샷 대비 짝 단지 구 중위.
+    leads = 사이트 구 허브와 같은 fact_lead 사실 리드(서울 비교는 ds 전체가 필요해 구 행만으로는 못 만든다)."""
+    rows = [r for r in ds["complexes"] if r.get("gu") == gu]
+    week_lines = _filing_lines(gu, rows, week) if week else []
+    line = _delta_line(gu, ds, prev_ds) if prev_ds else None
+    if line:
+        week_lines.append(line)
+    for i, t in enumerate(week_lines):
+        assert_lead_wording_ok(t, f"gu_tistory_post:week:{gu}:{i}")
+    return {"week": week_lines, "leads": render_lead_lines(build_fact_leads(ds, "gu", gu, prev_ds=prev_ds))}
+
+
+def _facts_html(gu: str, facts: dict | None) -> str:
+    """표 앞 사실 블록 — 카카오 에디터 paste 에서 살아남는 p·b·br·span 만 쓴다(build_tistory_section 과 같은 제약)."""
+    if not facts:
+        return ""
+    label, out = _gu_label(gu), ""
+    if facts.get("week"):
+        out += (f"<p><b>{label} 최근 1주 기록</b><br>"
+                + "<br>".join(f"• {html.escape(t)}" for t in facts["week"]) + "</p>")
+    if facts.get("leads"):
+        out += (f'<p><b>{label} 단지 사실</b> <span style="{_MUT}">(국토부 12개월 실거래·공개 단지정보)</span><br>'
+                + "<br>".join(f"• {html.escape(t)}" for t in facts["leads"]) + "</p>")
+    return out
+
+
+def _build_body(gu: str, rows: list[dict], today: str, asof: str, shown: int, facts: dict | None = None) -> str:
     hub = f'{BASE_URL}/gu/{quote(gu)}.html'
-    scope = (f'이 글의 표는 {_gu_label(gu)} 전체 {len(rows)}곳 중 실거래 중위가 큰 순서로 {shown}곳만 담았습니다. '
-             if shown < len(rows) else '')
-    canonical = (f'<p style="background:#f0f7ff;border-left:4px solid #0969da;padding:10px 14px;margin:12px 0">'
-                 f'{scope}이 구의 전체 단지·필터는 <a href="{hub}" target="_blank">{_gu_label(gu)} 허브</a>가 정본입니다 '
-                 f'(<a href="{BASE_URL}/explorer.html" target="_blank">전체 탐색기</a>).</p>')
+    label = _gu_label(gu)
+    scope = (f'<p style="{_MUT}">표에는 {label} 전체 {len(rows)}곳 중 실거래 중위가 큰 {shown}곳을 담았습니다'
+             f'(나머지는 출처의 사이트 {label} 페이지).</p>' if shown < len(rows) else '')
     method = (f'<hr><p style="{_MUT}"><b>방법론·출처</b><br>'
               f'• 실거래 = 국토교통부 RTMS 공공데이터(12개월 동일평형 중위), 데이터 기준일 {asof}. '
               f'세대수·연식·전용면적·유형은 공개정보입니다.<br>'
               f'• ᶠ=국토부 실거래 사실 · n=표본수 · P25–75=동일평형 실거래 분위수 · 평단가=실거래÷평형.<br>'
               f'• 자체 평가·점수·서열을 매기지 않습니다. 사설 시세는 게재하지 않습니다.<br>'
-              f'• 원문·머신리더블 데이터: <a href="{BASE_URL}/">{BASE_URL}/</a> · '
+              f'• 원문·머신리더블 데이터: <a href="{hub}" target="_blank">사이트 {label} 페이지</a> · '
+              f'<a href="{BASE_URL}/explorer.html" target="_blank">전체 탐색기</a> · '
               f'<a href="{BASE_URL}/methodology.html">방법론 전문</a> · 라이선스 CC-BY-NC-4.0.</p>'
               f'<p style="{_MUT}">⚖ {be.DISCLAIMER} {be._takedown()}</p>')
     ordered = sorted(rows, key=lambda r: (r.get("molit_recent_eok") is None, -(r.get("molit_recent_eok") or 0)))
-    return canonical + build_tistory_section(gu, ordered[:shown]) + method
+    return _facts_html(gu, facts) + scope + build_tistory_section(gu, ordered[:shown]) + method
 
 
-def _fit_body(gu: str, rows: list[dict], today: str, asof: str) -> str:
+def _fit_body(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None) -> str:
     """예산 안에 드는 가장 많은 행 수를 찾는다(행 수에 대해 본문 크기는 단조 증가 → 이분 탐색)."""
     def size(k: int) -> int:
-        return len(_build_body(gu, rows, today, asof, k).encode("utf-8"))
+        return len(_build_body(gu, rows, today, asof, k, facts).encode("utf-8"))
 
     if size(len(rows)) <= TISTORY_BUDGET:
-        return _build_body(gu, rows, today, asof, len(rows))
+        return _build_body(gu, rows, today, asof, len(rows), facts)
     lo, hi = 0, len(rows)          # size(lo) 는 예산 안(또는 lo=0), size(hi) 는 예산 밖
     while hi - lo > 1:
         mid = (lo + hi) // 2
@@ -119,31 +252,35 @@ def _fit_body(gu: str, rows: list[dict], today: str, asof: str) -> str:
             hi = mid
     if lo == 0:
         raise ValueError(f"[gu_tistory_post] {gu}: 단지 1곳도 티스토리 본문 예산 {TISTORY_BUDGET}B 에 못 듭니다")
-    return _build_body(gu, rows, today, asof, lo)
+    return _build_body(gu, rows, today, asof, lo, facts)
 
 
-def build_gu_post(gu: str, rows: list[dict], today: str, asof: str) -> dict[str, str]:
-    """구 1개의 티스토리 원고 — {"title","tags","body"}. 단지가 없으면 발행하지 않고 실패한다."""
+def build_gu_post(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None) -> dict[str, str]:
+    """구 1개의 티스토리 원고 — {"title","tags","body"}. facts = build_gu_facts 결과(없으면 사실 블록 없이).
+    단지가 없으면 발행하지 않고 실패한다."""
     if not rows:
         raise ValueError(f"[gu_tistory_post] {gu}: 단지 0곳 — 발행할 내용이 없습니다")
     title = _build_title(gu, rows, today, asof)
-    body = _fit_body(gu, rows, today, asof)
+    body = _fit_body(gu, rows, today, asof, facts)
     assert_wording_ok(title, f"gu_tistory_post:title:{gu}")
     assert_wording_ok(body, f"gu_tistory_post:body:{gu}")
     return {"title": title, "tags": _build_tags(gu, rows), "body": body}
 
 
-def write_gu_posts(ds: dict, today: str, asof: str, outdir: str,
-                   n: int = GU_POSTS_PER_DAY) -> list[str]:
-    """회전에 걸린 구만 헬퍼로 쓴다. 플래그가 꺼져 있으면 아무것도 쓰지 않고 [] 를 돌려준다."""
+def write_gu_posts(ds: dict, today: str, asof: str, outdir: str, n: int = GU_POSTS_PER_DAY,
+                   prev_ds: dict | None = None, molit_path: str | None = None) -> list[str]:
+    """회전에 걸린 구만 헬퍼로 쓴다. 플래그가 꺼져 있으면 아무것도 쓰지 않고 [] 를 돌려준다.
+    prev_ds = 7일 전 dataset 스냅샷, molit_path = 오늘 MOLIT 원본(7일 전 아카이브는 {outdir}/snapshots/molit)."""
     if not enabled():
         return []
     by: dict[str, list[dict]] = {}
     for r in ds["complexes"]:
         by.setdefault(r["gu"], []).append(r)
+    gus = select_rotation_gus(list(by), today, n)
+    week = load_week_filings(today, molit_path, f"{outdir}/snapshots") if gus else None
     paths = []
-    for gu in select_rotation_gus(list(by), today, n):
-        post = build_gu_post(gu, by[gu], today, asof)
+    for gu in gus:
+        post = build_gu_post(gu, by[gu], today, asof, facts=build_gu_facts(gu, ds, prev_ds, week))
         path = f"{outdir}/tistory/{today}-gu-{gu}-tistory-draft.html"
         paths.append(write_helper(path, DraftPayload(post["title"], post["tags"], post["body"]), today))
     return paths

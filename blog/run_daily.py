@@ -368,8 +368,9 @@ def main():
         # 구 단위 티스토리 포스트(2026-10-20 분할 실험) — RE_GU_TISTORY_POSTS=1 일 때만.
         #   제목에 구명·대표단지명을 넣은 개별 URL 로 롱테일 쿼리를 점유하는지 재는 유한 실험.
         #   발행: python3 -m blog.tistory_publish_pw --mode publish --kind gu-<구명> --date {today}
+        #   표 앞 구별 고유 사실(10-21 P1): 7일 전 MOLIT 아카이브 대비 새 기록·짝 단지 구 중위·사실 리드.
         from blog.gu_tistory_post import write_gu_posts
-        for gp in write_gu_posts(ds, today, a.asof, a.out):
+        for gp in write_gu_posts(ds, today, a.asof, a.out, prev_ds=prev_ds, molit_path=a.molit):
             print(f"구 원고: {gp}")
         # 주간결산/월간결산(2026-09-07) — 일요일/월 마지막 일요일에만 posts/{today}-{주간|월간}결산.html + periodic 티스토리 원고.
         #   base 스냅샷이 없으면(첫 회차 등) skip 사유만 남긴다. 신고 델타는 snapshots/molit 아카이브가 base 날짜에 있을 때만.

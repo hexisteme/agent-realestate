@@ -4,14 +4,19 @@
 구 단위로 쪼갠 포스트를 하루 N개(기본 5)만 돌려 발행해 구·단지 롱테일 쿼리를 점유하는지 재는 실험.
 사이트측 구 포스트는 이미 주 1회(should_write_weekly_posts)라 중복을 늘리지 않는다 — 티스토리 표면만 늘린다.
 """
+import gzip
+import html
+import json
 from pathlib import Path
 
 import pytest
 
 from blog.gu_tistory_post import (
     GU_POSTS_PER_DAY,
+    build_gu_facts,
     build_gu_post,
     enabled,
+    load_week_filings,
     select_rotation_gus,
     write_gu_posts,
 )
@@ -121,7 +126,7 @@ def test_본문에_면책과_출처와_사이트링크가_있다():
     body = build_gu_post("마포", rows, "2026-10-20", "2026-10-19")["body"]
     assert "투자자문" in body, "면책"
     assert "국토교통부" in body or "국토부" in body, "출처"
-    assert "/gu/" in body, "사이트 구 허브로 canonical 유도"
+    assert "/gu/" in body, "사이트 구 페이지 링크(출처)"
     assert "2026-10-19" in body, "데이터 기준일"
 
 
@@ -236,3 +241,154 @@ def test_기준일과_발행일이_같으면_제목에_날짜를_한번만_쓴�
     rows = [_full_row("마포", i) for i in range(3)]
     title = build_gu_post("마포", rows, "2026-10-20", "2026-10-20")["title"]
     assert title.count("2026-10-20") == 1
+
+
+# ── 구별 고유 사실 블록(2026-10-21 P1) ─────────────────────────────────────────
+# /135~/139 는 표 밖 산문이 편끼리 5-gram Jaccard 0.95(숫자 마스킹)였고 "허브가 정본" 문장이 한 곳으로
+# 유도했다 — Google doorway 예시와 같은 형태(report/2026-10-21-blogger-benchmark-followup.md §1.4·§1.5).
+# 구마다 그 구에서만 나오는 사실(최근 1주 새 기록·서울 대비 비중·짝 단지 중위·사실 리드)을 표 앞에 싣는다.
+def _rec(gu, apt, price=1_000_000_000, ym="202610", area=84.97, day="2026-10-15"):
+    return {"gu": gu, "lawd": "", "apt": apt, "area": area, "price": price, "ym": ym, "deal_date": day}
+
+
+def _week(new=(), highs=(), names=None, skipped=0, base="2026-10-14", ref_ym="202610"):
+    new = list(new)
+    return {"base_date": base, "apt_names": names or {},
+            "filings": {"new": new, "n_new": len(new), "record_highs": list(highs),
+                        "ref_ym": ref_ym, "n_lawd_skipped": skipped}}
+
+
+def test_구_사실에_최근_새_기록_건수와_서울_비중이_들어간다():
+    new = [_rec("노원", "노원첫단지")] * 2 + [_rec("노원", "노원소규모빌")] + [_rec("강남", "강남첫단지")] * 7
+    week = _week(new, names={"노원": ["노원첫단지", "노원소규모빌"], "강남": ["강남첫단지"]})
+    text = " ".join(build_gu_facts("노원", _ds(), None, week)["week"])
+    assert "노원구 아파트 매매 기록 3건" in text and "서울 전체 10건의 30%" in text
+    assert "2026-10-14 이후" in text, "비교 기준 날짜를 밝힌다"
+    assert "체결 건수가 아닙니다" in text, "목록 반영 시점 기준이라는 한계(주간결산 C13 과 같은 고지)"
+    assert "노원첫단지 2026-10 84.97㎡ 10억 ×2" in text, "집계 대상 단지의 새 기록은 계약월·전용·금액으로 싣는다"
+    assert "노원소규모빌" not in text, "표(발행 풀) 밖 단지명은 싣지 않는다 — 세대수·안전제외 기준 유지"
+    assert "강남첫단지" not in text
+
+
+def test_구_사실의_최고가_넘긴_기록은_그_구_표_안_단지만():
+    highs = [{"gu": "노원", "apt": "노원첫단지", "area": 84.97, "price": 1_250_000_000,
+              "prev_max": 1_200_000_000, "n_prev": 6},
+             {"gu": "노원", "apt": "노원소규모빌", "area": 59.9, "price": 700_000_000,
+              "prev_max": 650_000_000, "n_prev": 4},
+             {"gu": "강남", "apt": "강남첫단지", "area": 84.9, "price": 3_000_000_000,
+              "prev_max": 2_900_000_000, "n_prev": 9}]
+    week = _week([_rec("노원", "노원첫단지")], highs,
+                 names={"노원": ["노원첫단지", "노원소규모빌"], "강남": ["강남첫단지"]})
+    text = " ".join(build_gu_facts("노원", _ds(), None, week)["week"])
+    assert "노원첫단지 84.97㎡ 12.5억(기준 최고 12억, n6)" in text
+    assert "노원소규모빌" not in text and "강남첫단지" not in text
+
+
+def test_새_기록이_없는_구는_없다고_적는다():
+    week = _week([_rec("강남", "강남첫단지")] * 4, names={"강남": ["강남첫단지"]})
+    text = " ".join(build_gu_facts("노원", _ds(), None, week)["week"])
+    assert "노원구 아파트 매매 기록은 없습니다" in text and "서울 전체 4건" in text
+
+
+def _ds_paired(n: int, bump: float = 0.0, generated: str = "2026-10-21") -> dict:
+    rows = [_row("노원", f"노원짝단지{i}", molit_recent_eok=10.0 + i + bump) for i in range(n)]
+    rows += [_row("강남", f"강남짝단지{i}", molit_recent_eok=20.0 + i) for i in range(n)]
+    return {"complexes": rows, "count": len(rows), "data_asof": generated, "generated": generated}
+
+
+def test_짝_단지가_5곳_이상이면_7일전_대비_구_중위를_싣는다():
+    prev = _ds_paired(6, generated="2026-10-14")
+    text = " ".join(build_gu_facts("노원", _ds_paired(6, bump=0.5), prev, None)["week"])
+    assert "2026-10-14 스냅샷" in text
+    assert "짝지은 6단지(이 구 발행 6단지 중) 12개월 중위의 중위 12.5억 → 13억(+4.0%)" in text, \
+        "짝 수와 구 전체 수를 함께 밝혀 구 전체 통계로 읽히지 않게 한다(agy P3)"
+
+
+def test_서울_비중이_반올림해_0이면_1퍼센트_미만으로_적는다():
+    new = [_rec("노원", "노원첫단지")] + [_rec("강남", "강남첫단지")] * 299
+    text = " ".join(build_gu_facts("노원", _ds(), None, _week(new, names={"노원": ["노원첫단지"]}))["week"])
+    assert "서울 전체 300건의 1% 미만" in text and "의 0%" not in text
+
+
+def test_짝_단지가_5곳_미만이면_구_중위_변화를_싣지_않는다():
+    prev = _ds_paired(4, generated="2026-10-14")
+    assert build_gu_facts("노원", _ds_paired(4, bump=0.5), prev, None)["week"] == []
+
+
+def test_본문에_정본_유도_문장이_없고_사이트_링크는_출처로_남는다():
+    rows = [r for r in _ds()["complexes"] if r["gu"] == "마포"]
+    body = build_gu_post("마포", rows, "2026-10-20", "2026-10-19")["body"]
+    assert "정본" not in body
+    assert body.index("/gu/") > body.index("방법론·출처"), "구 페이지 링크는 출처 목록 안에 둔다"
+
+
+def test_구_사실_블록은_표보다_앞에_온다():
+    ds = _ds()
+    rows = [r for r in ds["complexes"] if r["gu"] == "노원"]
+    facts = build_gu_facts("노원", ds, None, _week([_rec("노원", "노원첫단지")], names={"노원": ["노원첫단지"]}))
+    body = build_gu_post("노원", rows, "2026-10-20", "2026-10-19", facts=facts)["body"]
+    assert "노원구 최근 1주 기록" in body and "노원첫단지 2026-10 84.97㎡ 10억" in body
+    assert body.index("최근 1주 기록") < body.index("<table")
+    assert facts["leads"], "사이트 구 허브와 같은 사실 리드(fact_lead)를 싣는다"
+    assert body.index(html.escape(facts["leads"][0])) < body.index("<table")
+
+
+def _archive(tmp_path, day: str, recs: list[dict], cur_recs: list[dict]) -> Path:
+    from blog import build_explorer as be
+    lawd = be.GU_LAWD["노원"]
+    d = tmp_path / "snapshots/molit"
+    d.mkdir(parents=True, exist_ok=True)
+    with gzip.open(d / f"molit-{day}.json.gz", "wt", encoding="utf-8") as fh:
+        json.dump({lawd: recs}, fh)
+    cur = tmp_path / "molit.json"
+    cur.write_text(json.dumps({lawd: cur_recs}), encoding="utf-8")
+    return cur
+
+
+_OLD = {"apt": "노원첫단지", "area": 84.97, "price": 900_000_000, "ym": "202609", "deal_date": "2026-09-20"}
+_NEW = {"apt": "노원첫단지", "area": 84.97, "price": 1_000_000_000, "ym": "202610", "deal_date": "2026-10-15"}
+
+
+def test_7일전_원본_아카이브가_없으면_최근_기록을_내지_않는다(tmp_path):
+    cur = tmp_path / "molit.json"
+    cur.write_text(json.dumps({"11350": [_NEW]}), encoding="utf-8")
+    assert load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots")) is None
+
+
+def test_7일전_원본_아카이브가_있으면_새_기록과_기준일을_낸다(tmp_path):
+    cur = _archive(tmp_path, "2026-10-14", [_OLD], [_OLD, _NEW])
+    week = load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots"))
+    assert week["base_date"] == "2026-10-14"
+    assert week["filings"]["n_new"] == 1 and week["filings"]["new"][0]["gu"] == "노원"
+    assert week["apt_names"]["노원"] == ["노원첫단지"]
+
+
+def test_7일전_아카이브가_잘린_gzip이면_새_기록만_빼고_실행을_막지_않는다(tmp_path, capsys):
+    cur = _archive(tmp_path, "2026-10-14", [_OLD] * 50, [_OLD, _NEW])
+    gz = tmp_path / "snapshots/molit/molit-2026-10-14.json.gz"
+    gz.write_bytes(gz.read_bytes()[:-12])
+    assert load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots")) is None
+    assert "최근 1주 새 기록 생략" in capsys.readouterr().out
+
+
+def test_오늘_원본이_구별_사전이_아니면_새_기록만_뺀다(tmp_path):
+    cur = _archive(tmp_path, "2026-10-14", [_OLD], [_OLD, _NEW])
+    cur.write_text(json.dumps([_OLD, _NEW]), encoding="utf-8")
+    assert load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots")) is None
+
+
+def test_플래그가_켜지면_구_원고에_사실_블록이_실린다(tmp_path, monkeypatch):
+    monkeypatch.setenv("RE_GU_TISTORY_POSTS", "1")
+    cur = _archive(tmp_path, "2026-10-12", [_OLD], [_OLD, _NEW])
+    paths = write_gu_posts(_ds(), "2026-10-19", "2026-10-19", str(tmp_path), molit_path=str(cur))
+    body = parse_helper(next(p for p in paths if "-gu-노원-" in p))["body"]
+    assert "노원구 최근 1주 기록" in body and "노원첫단지 2026-10 84.97㎡ 10억" in body
+
+
+def test_새_기록은_최근_계약월부터_상한까지_싣고_나머지는_건수로():
+    from blog.gu_tistory_post import _RECORD_LIMIT
+    new = [_rec("노원", "노원첫단지", price=1_000_000_000 + i * 10_000_000, ym="202609") for i in range(_RECORD_LIMIT)]
+    new += [_rec("노원", "노원둘째단지", ym="202610"), _rec("노원", "노원둘째단지", ym="202608")]
+    text = " ".join(build_gu_facts("노원", _ds(), None, _week(new, names={"노원": ["노원첫단지", "노원둘째단지"]}))["week"])
+    assert text.index("노원둘째단지 2026-10") < text.index("노원첫단지 2026-09"), "최근 계약월 먼저"
+    assert "노원둘째단지 2026-08" not in text and "외 2건" in text
