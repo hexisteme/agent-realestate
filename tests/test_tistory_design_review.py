@@ -19,6 +19,10 @@ from blog import tistory_design_review as gate
 from blog import tistory_publish_pw as pub
 from blog.tistory_delivery import read_delivery, write_delivery
 
+# 판정 정본(design-director 검증기)은 이 저장소 밖에 있다 — 그 파일이 없는 환경(CI)에서는 판정 테스트를 건너뛴다.
+requires_validator = pytest.mark.skipif(not gate.VALIDATOR_PATH.is_file(),
+                                        reason=f"design-director 검증기 없음: {gate.VALIDATOR_PATH}")
+
 DAY = "2026-09-11"
 # 리뷰 fixture 의 기본 결속값 — write_review 가 원고 바이트 sha256 으로 바꾼다(계약 §6: 게이트용 리뷰는 결속 필수).
 BIND = "<draft sha256>"
@@ -212,6 +216,7 @@ def test_non_string_asset_sha256_awaits_human(tmp_path):
     assert gate.grade_design_review(target, draft_path=path).result == "AWAIT_HUMAN"
 
 
+@requires_validator
 @pytest.mark.parametrize("asset", ["match", "upper"])
 def test_matching_asset_sha256_is_not_stale(tmp_path, asset):
     path = draft(tmp_path)
@@ -219,6 +224,7 @@ def test_matching_asset_sha256_is_not_stale(tmp_path, asset):
     assert gate.grade_design_review(write_review(path, payload), draft_path=path).result == "PASS"
 
 
+@requires_validator
 @pytest.mark.parametrize("asset", [None, "missing"])
 def test_unbound_review_awaits_human(tmp_path, asset):
     """asset_sha256 null·키 누락은 어느 원고의 판정인지 대조할 수 없다 — 계약 §6 기본 권고 사람 판단."""
@@ -231,6 +237,7 @@ def test_unbound_review_awaits_human(tmp_path, asset):
     assert "결속" in grade.detail or "asset_sha256" in grade.detail
 
 
+@requires_validator
 def test_hash_basis_is_draft_html_file_bytes(tmp_path):
     path = draft(tmp_path)
     target = write_review(path, review(asset_sha256=sha(path)))
@@ -239,6 +246,7 @@ def test_hash_basis_is_draft_html_file_bytes(tmp_path):
     assert gate.grade_design_review(target, draft_path=path).result == "AWAIT_HUMAN"
 
 
+@requires_validator
 def test_open_p1_rule_defect_blocks(tmp_path):
     path = draft(tmp_path)
     target = write_review(path, review([finding(id="B-7", priority="P1", check="rule")]))
@@ -247,6 +255,7 @@ def test_open_p1_rule_defect_blocks(tmp_path):
     assert "B-7" in grade.detail
 
 
+@requires_validator
 def test_open_p1_advisory_defect_awaits_human(tmp_path):
     path = draft(tmp_path)
     target = write_review(path, review([finding(id="B-3", priority="P1", check="advisory")]))
@@ -255,6 +264,7 @@ def test_open_p1_advisory_defect_awaits_human(tmp_path):
     assert "B-3" in grade.detail
 
 
+@requires_validator
 def test_rule_block_wins_over_advisory(tmp_path):
     path = draft(tmp_path)
     target = write_review(path, review([finding(id="B-1", priority="P1", check="advisory"),
@@ -264,6 +274,7 @@ def test_rule_block_wins_over_advisory(tmp_path):
     assert "B-1" in grade.detail and "B-2" in grade.detail
 
 
+@requires_validator
 @pytest.mark.parametrize("reason", ["missing", "", "   ", None, 3])
 @pytest.mark.parametrize("check,expected", [("rule", "BLOCK"), ("advisory", "AWAIT_HUMAN")])
 def test_waived_without_reason_counts_as_open(tmp_path, reason, check, expected):
@@ -275,6 +286,7 @@ def test_waived_without_reason_counts_as_open(tmp_path, reason, check, expected)
     assert grade.result == expected
 
 
+@requires_validator
 def test_waived_with_reason_fixed_and_lower_priorities_pass_with_counts(tmp_path):
     path = draft(tmp_path)
     findings = [
@@ -291,6 +303,7 @@ def test_waived_with_reason_fixed_and_lower_priorities_pass_with_counts(tmp_path
         assert part in grade.detail
 
 
+@requires_validator
 def test_empty_findings_pass(tmp_path):
     path = draft(tmp_path)
     grade = gate.grade_design_review(write_review(path, review([])), draft_path=path)
@@ -308,6 +321,7 @@ def test_detail_is_one_line_even_for_hostile_ids(tmp_path):
 
 # ── 정본 검사기(validate_review.judge) 의미: waive 승인자·waiver_ref·부분 리뷰·계약 위반 ──────────
 
+@requires_validator
 def test_agent_waiver_of_p1_rule_still_blocks(tmp_path):
     path = draft(tmp_path)
     item = finding(id="B-4", priority="P1", status="waived", waiver_reason="스킨 소관", waived_by="codex:exec")
@@ -316,6 +330,7 @@ def test_agent_waiver_of_p1_rule_still_blocks(tmp_path):
     assert "B-4" in grade.detail
 
 
+@requires_validator
 def test_waiver_ref_without_resolvable_baseline_still_blocks(tmp_path):
     path = draft(tmp_path)
     item = finding(id="B-2", priority="P1", status="waived", waiver_reason="승계", waived_by="사용자",
@@ -325,6 +340,7 @@ def test_waiver_ref_without_resolvable_baseline_still_blocks(tmp_path):
     assert "B-2" in grade.detail
 
 
+@requires_validator
 def test_waiver_ref_to_human_baseline_passes(tmp_path):
     path = draft(tmp_path)
     approved = finding(id="B-8", priority="P1", status="waived", waiver_reason="플랫폼 위젯이라 원고에서 못 고친다",
@@ -337,6 +353,7 @@ def test_waiver_ref_to_human_baseline_passes(tmp_path):
     assert "waived 1" in grade.detail
 
 
+@requires_validator
 def test_partial_review_passes_and_says_so(tmp_path):
     path = draft(tmp_path)
     payload = review([finding(priority="P2")])
@@ -347,6 +364,7 @@ def test_partial_review_passes_and_says_so(tmp_path):
     assert "부분 리뷰" in grade.detail and "\n" not in grade.detail
 
 
+@requires_validator
 def test_contract_violation_outside_gate_fields_awaits_human(tmp_path):
     path = draft(tmp_path)
     payload = review([finding(priority="P2")])
@@ -372,6 +390,7 @@ def test_exit_codes_for_design_holds_are_distinct_and_not_crash():
     assert {pub.DESIGN_BLOCK_EXIT, pub.DESIGN_AWAIT_EXIT}.isdisjoint({0, 1, 3, 4})
 
 
+@requires_validator
 def test_gate_runs_before_browser_launch(isolated, monkeypatch):
     root, browser = isolated
     path = draft(root)
@@ -389,6 +408,7 @@ def test_gate_runs_before_browser_launch(isolated, monkeypatch):
     assert order == ["gate", "browser"]
 
 
+@requires_validator
 @pytest.mark.parametrize("kind", ["daily", "periodic"])
 @pytest.mark.parametrize("explicit", [True, False])
 def test_block_leaves_no_success_marker_and_never_launches_browser(isolated, kind, explicit):
@@ -428,6 +448,7 @@ def test_absent_review_logs_one_line_and_reaches_browser(isolated, capsys):
     assert after == before
 
 
+@requires_validator
 def test_pass_logs_one_count_summary_line(isolated, capsys):
     root, browser = isolated
     path = draft(root)
@@ -531,6 +552,7 @@ def test_already_published_day_skips_without_consulting_gate(isolated, monkeypat
     browser.assert_not_called()
 
 
+@requires_validator
 def test_flag_overrides_default_review_location(isolated, tmp_path):
     root, browser = isolated
     path = draft(root)
@@ -543,6 +565,7 @@ def test_flag_overrides_default_review_location(isolated, tmp_path):
     assert pub.publish(str(root), "publish", DAY, design_review=str(blocking)).startswith("DESIGN_BLOCK:")
 
 
+@requires_validator
 def test_cli_block_exits_five_notifies_reason_and_writes_no_marker(isolated, monkeypatch, telegram, capsys):
     root, browser = isolated
     path = draft(root)
@@ -573,6 +596,7 @@ def test_cli_await_human_exits_six_and_notifies(isolated, monkeypatch, telegram)
     assert not Path(pub.marker_paths(str(root), "periodic")[0]).exists()
 
 
+@requires_validator
 def test_design_alert_is_once_per_reason_per_day(isolated, monkeypatch, telegram):
     root, _ = isolated
     path = draft(root)
@@ -586,6 +610,7 @@ def test_design_alert_is_once_per_reason_per_day(isolated, monkeypatch, telegram
     assert telegram.call_count == 2
 
 
+@requires_validator
 def test_cli_no_notify_suppresses_design_alert(isolated, monkeypatch, telegram):
     root, _ = isolated
     path = draft(root)

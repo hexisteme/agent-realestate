@@ -7,7 +7,11 @@ import json
 import pytest
 
 from blog import draft_design_review as ddr
-from blog.tistory_design_review import grade_design_review, load_design_review, resolve_design_review_path
+from blog.tistory_design_review import VALIDATOR_PATH, grade_design_review, load_design_review, resolve_design_review_path
+
+# 판정 정본(design-director 검증기)은 이 저장소 밖에 있다 — 그 파일이 없는 환경(CI)에서는 판정 테스트를 건너뛴다.
+requires_validator = pytest.mark.skipif(not VALIDATOR_PATH.is_file(),
+                                        reason=f"design-director 검증기 없음: {VALIDATOR_PATH}")
 
 NOW = datetime.datetime(2026, 10, 11, 7, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
 SITE_BASE = "https://hexisteme.github.io/seoul-re-snapshot"
@@ -92,6 +96,7 @@ def test_axe_violation_in_draft_is_p1_rule_defect_and_outside_is_p2():
     assert ".another_category th" in findings[1]["location"]
 
 
+@requires_validator
 def test_only_axe_findings_carry_targets(tmp_path):
     measurement = _measurement(violations_390=[_violation("link-name", (".tt_wrap_thumb", False))], scroll_390=812)
 
@@ -131,6 +136,7 @@ def test_interpretation_cannot_block_publication():
     assert len(notes) == 2
 
 
+@requires_validator
 def test_written_review_binds_draft_and_feeds_gate(tmp_path):
     draft = _draft(tmp_path)
     blocked = _measurement(violations_390=[_violation("color-contrast", ("td.x", True))])
@@ -272,6 +278,7 @@ def _codex_failure(_p, _m):
     raise RuntimeError("codex rc=1")
 
 
+@requires_validator
 @pytest.mark.parametrize("interpret, images, cause", [
     (_codex_failure, LOADED, "codex rc=1"),
     (lambda _p, _m: ["형식 아님"], LOADED, "버림"),
@@ -325,6 +332,7 @@ def test_deployed_site_assets_resolve_to_local_build(tmp_path):
         assert local(url) is None, url
 
 
+@requires_validator
 def test_human_waiver_is_inherited_from_baseline(tmp_path):
     draft = _draft(tmp_path)
     baseline = _baseline(tmp_path)
@@ -341,6 +349,7 @@ def test_human_waiver_is_inherited_from_baseline(tmp_path):
     assert grade.result == "PASS" and "waived 1" in grade.detail
 
 
+@requires_validator
 def test_inherited_waiver_copies_the_human_approval(tmp_path):
     draft = _draft(tmp_path)
     _baseline(tmp_path, waived_by="사용자", waived_at="2026-10-10T12:00:00+09:00")
