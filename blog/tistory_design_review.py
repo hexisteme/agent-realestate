@@ -38,7 +38,7 @@ VALIDATOR_PATH = Path(os.environ.get("DESIGN_REVIEW_VALIDATOR")
                       or Path.home() / ".agents/skills/design-director/scripts/validate_review.py")
 # 발행 뒤 사람이 본 리뷰(사람 승인 waiver 기준선)가 모이는 곳 — 계약 §6.
 BASELINE_DIRS = (Path("/Volumes/EXT_SSD/bot/report/design-review"),)
-_VALIDATOR_MODULE = "design_director_validate_review"
+_VALIDATOR_IMPORT_NAME = "design_director_validate_review"
 
 _VOCABULARY = (
     ("priority", ("P1", "P2", "P3")),
@@ -120,21 +120,21 @@ def load_design_review(raw: bytes) -> dict:
 
 def load_validator():
     """design-director 정본 검사기(validate_review.py)를 불러온다. 판정 의미는 그 파일 하나에만 둔다."""
-    module = sys.modules.get(_VALIDATOR_MODULE)
-    if module is None or getattr(module, "__file__", None) != str(VALIDATOR_PATH):
-        spec = importlib.util.spec_from_file_location(_VALIDATOR_MODULE, VALIDATOR_PATH)
+    validator = sys.modules.get(_VALIDATOR_IMPORT_NAME)
+    if validator is None or getattr(validator, "__file__", None) != str(VALIDATOR_PATH):
+        spec = importlib.util.spec_from_file_location(_VALIDATOR_IMPORT_NAME, VALIDATOR_PATH)
         if spec is None or spec.loader is None or not Path(VALIDATOR_PATH).is_file():
             raise ImportError(f"검사기 파일 없음: {VALIDATOR_PATH}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_VALIDATOR_MODULE] = module  # dataclass 가 모듈을 sys.modules 에서 찾는다.
+        validator = importlib.util.module_from_spec(spec)
+        sys.modules[_VALIDATOR_IMPORT_NAME] = validator  # dataclass 가 모듈을 sys.modules 에서 찾는다.
         try:
-            spec.loader.exec_module(module)
+            spec.loader.exec_module(validator)
         except Exception:
-            sys.modules.pop(_VALIDATOR_MODULE, None)
+            sys.modules.pop(_VALIDATOR_IMPORT_NAME, None)
             raise
-    if not callable(getattr(module, "judge", None)):
+    if not callable(getattr(validator, "judge", None)):
         raise ImportError(f"검사기에 judge 없음: {VALIDATOR_PATH}")
-    return module
+    return validator
 
 
 def summarize_design_findings(findings: list, open_flags: list | None = None) -> str:
