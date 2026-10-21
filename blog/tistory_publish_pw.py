@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blog.tistory_publish import _parse_helper  # noqa: E402
+from blog.build_explorer import TAKEDOWN_PLACEHOLDER  # noqa: E402
 from blog.tistory_contract import DraftContractError  # noqa: E402
 from blog.periodic_approval import needs_review  # noqa: E402
 from blog.tistory_delivery import (PUBLICATION_KINDS, is_publication_kind, payload_digest,  # noqa: E402
@@ -428,6 +429,8 @@ def publish(outroot: str = ".", mode: str = "inject", date: str | None = None,
         data = _parse_helper(path) if path else {"title": "", "body": "", "tags": ""}
     except DraftContractError:
         return "ERR:draft contract invalid"
+    if TAKEDOWN_PLACEHOLDER in data["body"]:
+        return "ERR:takedown_contact_placeholder"   # .env 없이 만든 원고(2026-10-20 /135~/139 공개 사고)
     try:
         media = read_media_manifest(path, data) if path else None
     except MediaContractError:

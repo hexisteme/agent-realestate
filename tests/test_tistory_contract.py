@@ -47,3 +47,19 @@ def test_both_publishers_fail_closed_before_browser_on_raw_body(tmp_path):
     assert tistory_publish_pw.publish(str(tmp_path), mode="inject", date="2026-09-26") == (
         "ERR:draft contract invalid"
     )
+
+
+def test_publish_refuses_body_with_takedown_placeholder(tmp_path, monkeypatch):
+    # 2026-10-20 구 원고 5편이 .env 없이 생성돼 연락처 자리표시자가 공개됐다(/135~/139).
+    from unittest.mock import Mock
+    from blog import build_explorer as be
+    monkeypatch.delenv("RE_EMAIL_TO", raising=False)
+    draft_dir = tmp_path / "report/blog/tistory"
+    draft_dir.mkdir(parents=True)
+    body = f"<p>표</p><p>⚖ {be.DISCLAIMER} {be._takedown()}</p>"
+    write_helper(draft_dir / "2026-10-20-gu-금천-tistory-draft.html",
+                 DraftPayload(title="금천구 아파트 실거래가", tags="서울아파트", body=body), "2026-10-20")
+    monkeypatch.setattr(tistory_publish_pw, "_publish_locked", Mock(side_effect=AssertionError("browser reached")))
+    assert tistory_publish_pw.publish(str(tmp_path), "publish", "2026-10-20", kind="gu-금천") == (
+        "ERR:takedown_contact_placeholder"
+    )

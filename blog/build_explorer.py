@@ -35,10 +35,13 @@ SOURCES = [
     {"name": "단지 기본정보(세대수·준공·전용면적·유형)", "note": "공공 건축물대장 등 공개정보 기준."},
 ]
 
+# RE_EMAIL_TO 가 없을 때 _takedown() 이 내는 문구 — 티스토리 발행기는 이 문구가 남은 원고를 거부한다.
+TAKEDOWN_PLACEHOLDER = "(운영자 연락처 — RE_EMAIL_TO 환경변수)"
+
 def _takedown() -> str:
     """이의제기(takedown) 연락처 — RE_EMAIL_TO(.env, gitignored)에서 호출시점 주입(공개 repo 미노출)."""
     return ("사실 오류·이의제기 접수 시 확인 후 수정·삭제합니다. 연락처: "
-            + os.environ.get("RE_EMAIL_TO", "(운영자 연락처 — RE_EMAIL_TO 환경변수)"))
+            + os.environ.get("RE_EMAIL_TO", TAKEDOWN_PLACEHOLDER))
 
 # 필터/표시 band (실명이라 익명화 목적 아님 — 필터 입도용)
 def area_band(a: float) -> str:
