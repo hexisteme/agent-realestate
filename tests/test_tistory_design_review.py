@@ -20,6 +20,8 @@ from blog import tistory_publish_pw as pub
 from blog.tistory_delivery import read_delivery, write_delivery
 
 DAY = "2026-09-11"
+# 리뷰 fixture 의 기본 결속값 — write_review 가 원고 바이트 sha256 으로 바꾼다(계약 §6: 게이트용 리뷰는 결속 필수).
+BIND = "<draft sha256>"
 DATA = {"title": "합성 일간 — 2026-09-11", "body": "<p>합성 본문</p>", "tags": "합성"}
 
 
@@ -78,7 +80,7 @@ def finding(**overrides):
 
 def review(findings=(), **overrides):
     base = {"schema": "design-review/v1", "domain": "blog", "mode": "review",
-            "asset_ref": "report/blog/tistory/2026-09-11-tistory-draft.html", "asset_sha256": None,
+            "asset_ref": "report/blog/tistory/2026-09-11-tistory-draft.html", "asset_sha256": BIND,
             "reviewed_at": "2026-09-11T06:00:00+09:00", "reviewer": "claude-code:design-director",
             "findings": list(findings),
             "coverage": {"inspected": ["390x844 렌더"], "not_inspected": [], "tools": [], "handoff": []}}
@@ -88,6 +90,8 @@ def review(findings=(), **overrides):
 
 def write_review(draft_path, payload, path=None):
     target = Path(path) if path else Path(str(draft_path)[:-len(".html")] + ".design_review.json")
+    if isinstance(payload, dict) and payload.get("asset_sha256") == BIND:
+        payload = {**payload, "asset_sha256": sha(draft_path)}
     target.write_text(payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False))
     return target
 
@@ -208,15 +212,23 @@ def test_non_string_asset_sha256_awaits_human(tmp_path):
     assert gate.grade_design_review(target, draft_path=path).result == "AWAIT_HUMAN"
 
 
-@pytest.mark.parametrize("asset", ["match", "upper", None, "missing"])
-def test_matching_null_or_missing_asset_sha256_is_not_stale(tmp_path, asset):
+@pytest.mark.parametrize("asset", ["match", "upper"])
+def test_matching_asset_sha256_is_not_stale(tmp_path, asset):
     path = draft(tmp_path)
-    payload = review([finding(priority="P2")])
+    payload = review([finding(priority="P2")], asset_sha256={"match": sha(path), "upper": sha(path).upper()}[asset])
+    assert gate.grade_design_review(write_review(path, payload), draft_path=path).result == "PASS"
+
+
+@pytest.mark.parametrize("asset", [None, "missing"])
+def test_unbound_review_awaits_human(tmp_path, asset):
+    """asset_sha256 null·키 누락은 어느 원고의 판정인지 대조할 수 없다 — 계약 §6 기본 권고 사람 판단."""
+    path = draft(tmp_path)
+    payload = review([finding(priority="P2")], asset_sha256=None)
     if asset == "missing":
         del payload["asset_sha256"]
-    else:
-        payload["asset_sha256"] = {"match": sha(path), "upper": sha(path).upper(), None: None}[asset]
-    assert gate.grade_design_review(write_review(path, payload), draft_path=path).result == "PASS"
+    grade = gate.grade_design_review(write_review(path, payload), draft_path=path)
+    assert grade.result == "AWAIT_HUMAN"
+    assert "결속" in grade.detail or "asset_sha256" in grade.detail
 
 
 def test_hash_basis_is_draft_html_file_bytes(tmp_path):
@@ -270,7 +282,7 @@ def test_waived_with_reason_fixed_and_lower_priorities_pass_with_counts(tmp_path
         finding(id="B-2", priority="P1", check="rule", status="fixed"),
         finding(id="B-3", priority="P2", check="rule"),
         finding(id="B-4", priority="P3", kind="suggestion", check="advisory"),
-        finding(id="B-5", priority="P1", kind="suggestion", check="advisory"),
+        finding(id="B-5", priority="P2", kind="suggestion", check="advisory"),
     ]
     grade = gate.grade_design_review(write_review(path, review(findings)), draft_path=path)
     assert grade.result == "PASS"
@@ -290,8 +302,66 @@ def test_detail_is_one_line_even_for_hostile_ids(tmp_path):
     path = draft(tmp_path)
     target = write_review(path, review([finding(id="B-1\nERR:x <b>", priority="P1", check="rule")]))
     grade = gate.grade_design_review(target, draft_path=path)
-    assert grade.result == "BLOCK"
+    assert grade.result == "AWAIT_HUMAN"  # 계약 밖 id 는 깨진 리뷰 — 정본 검사기가 사람 판단으로 넘긴다
     assert "\n" not in grade.detail
+
+
+# ── 정본 검사기(validate_review.judge) 의미: waive 승인자·waiver_ref·부분 리뷰·계약 위반 ──────────
+
+def test_agent_waiver_of_p1_rule_still_blocks(tmp_path):
+    path = draft(tmp_path)
+    item = finding(id="B-4", priority="P1", status="waived", waiver_reason="스킨 소관", waived_by="codex:exec")
+    grade = gate.grade_design_review(write_review(path, review([item])), draft_path=path)
+    assert grade.result == "BLOCK"
+    assert "B-4" in grade.detail
+
+
+def test_waiver_ref_without_resolvable_baseline_still_blocks(tmp_path):
+    path = draft(tmp_path)
+    item = finding(id="B-2", priority="P1", status="waived", waiver_reason="승계", waived_by="사용자",
+                   waiver_ref=f"{tmp_path}/missing.design_review.json#B-8")
+    grade = gate.grade_design_review(write_review(path, review([item])), draft_path=path)
+    assert grade.result == "BLOCK"
+    assert "B-2" in grade.detail
+
+
+def test_waiver_ref_to_human_baseline_passes(tmp_path):
+    path = draft(tmp_path)
+    approved = finding(id="B-8", priority="P1", status="waived", waiver_reason="플랫폼 위젯이라 원고에서 못 고친다",
+                       waived_by="사용자", waived_at="2026-10-10T12:25:00+09:00")
+    baseline = tmp_path / "floker-114.design_review.json"
+    baseline.write_text(json.dumps(review([approved], asset_sha256="0" * 64)), encoding="utf-8")
+    inherited = dict(approved, id="B-1", waiver_ref=f"{baseline}#B-8")
+    grade = gate.grade_design_review(write_review(path, review([inherited])), draft_path=path)
+    assert grade.result == "PASS"
+    assert "waived 1" in grade.detail
+
+
+def test_partial_review_passes_and_says_so(tmp_path):
+    path = draft(tmp_path)
+    payload = review([finding(priority="P2")])
+    payload["coverage"] = {**payload["coverage"], "complete": False,
+                           "not_inspected": ["해석(advisory) 전부 — Codex rc=1"]}
+    grade = gate.grade_design_review(write_review(path, payload), draft_path=path)
+    assert grade.result == "PASS"
+    assert "부분 리뷰" in grade.detail and "\n" not in grade.detail
+
+
+def test_contract_violation_outside_gate_fields_awaits_human(tmp_path):
+    path = draft(tmp_path)
+    payload = review([finding(priority="P2")])
+    del payload["coverage"]
+    grade = gate.grade_design_review(write_review(path, payload), draft_path=path)
+    assert grade.result == "AWAIT_HUMAN"
+    assert "E-COVERAGE" in grade.detail
+
+
+def test_unavailable_validator_awaits_human(tmp_path, monkeypatch):
+    path = draft(tmp_path)
+    monkeypatch.setattr(gate, "VALIDATOR_PATH", tmp_path / "missing_validate_review.py")
+    grade = gate.grade_design_review(write_review(path, review([])), draft_path=path)
+    assert grade.result == "AWAIT_HUMAN"
+    assert "검사기" in grade.detail
 
 
 # ── 퍼블리셔 결선: 브라우저 실행 전, 마커 없음, 종료코드, 알림 ────────────────────
@@ -511,7 +581,7 @@ def test_design_alert_is_once_per_reason_per_day(isolated, monkeypatch, telegram
     assert pub.main() == 5
     assert pub.main() == 5
     assert telegram.call_count == 1
-    target.write_text(json.dumps(review([finding(id="B-2", priority="P1", check="advisory")])))
+    write_review(path, review([finding(id="B-2", priority="P1", check="advisory")]))
     assert pub.main() == 6
     assert telegram.call_count == 2
 

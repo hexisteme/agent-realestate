@@ -12,21 +12,33 @@
 - 파일 없음 → NOT_RUN. 기존 발행 그대로(사용자 결정 — 부재는 비차단), 로그 한 줄만.
 - 읽기·JSON 실패, schema ≠ design-review/v1, domain ≠ blog, 어휘 밖 값, findings 가 목록 아님,
   asset_sha256 이 있는데 현재 원고 sha256 과 다름(오래된 리뷰) → AWAIT_HUMAN.
-- open P1 defect: check=rule → BLOCK, check=advisory → AWAIT_HUMAN.
-  waiver_reason 이 비어 있는 waived 는 open 으로 센다(계약 §2: waived 는 사유 필수).
-- 그 밖 → PASS + 개수 요약 한 줄.
+- 그 뒤 판정은 design-director 정본 검사기(`VALIDATOR_PATH`, validate_review.judge)가 정한다 — 소비자마다
+  의미를 따로 구현해 생긴 드리프트를 없애려고 2026-10-21 통합했다. BLOCK → BLOCK, HUMAN → AWAIT_HUMAN:
+  open P1 defect(rule) → BLOCK, open P1 defect(advisory)·결속 없는 리뷰(asset_sha256 null·키 누락)·계약 위반
+  → AWAIT_HUMAN. 사유 없는 waive·에이전트가 승인자인 waive·기준선과 대조되지 않는 waiver_ref 는 open 으로 센다.
+  waiver_ref 기준선은 그 경로(절대 경로) 또는 리뷰 옆·`BASELINE_DIRS` 아래 같은 파일명에서 찾는다.
+- 검사기를 불러오지 못하면 AWAIT_HUMAN — 깨진 판정 도구를 통과로 취급하지 않는다.
+- 그 밖 → PASS + 개수 요약 한 줄(부분 리뷰면 그 사실도).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import importlib.util
 import json
+import os
 from pathlib import Path
+import sys
 from typing import Literal
 
 DESIGN_REVIEW_SCHEMA = "design-review/v1"
 DESIGN_REVIEW_DOMAIN = "blog"
 DESIGN_REVIEW_SUFFIX = ".design_review.json"
+VALIDATOR_PATH = Path(os.environ.get("DESIGN_REVIEW_VALIDATOR")
+                      or Path.home() / ".agents/skills/design-director/scripts/validate_review.py")
+# 발행 뒤 사람이 본 리뷰(사람 승인 waiver 기준선)가 모이는 곳 — 계약 §6.
+BASELINE_DIRS = (Path("/Volumes/EXT_SSD/bot/report/design-review"),)
+_VALIDATOR_MODULE = "design_director_validate_review"
 
 _VOCABULARY = (
     ("priority", ("P1", "P2", "P3")),
@@ -106,24 +118,36 @@ def load_design_review(raw: bytes) -> dict:
     return review
 
 
-def _effective_status(finding: dict) -> str:
-    """사유 없는 waived 는 open — 리뷰어가 스스로 결함을 지우는 길을 막는다."""
-    reason = finding.get("waiver_reason")
-    if finding["status"] == "waived" and not (isinstance(reason, str) and reason.strip()):
-        return "open"
-    return finding["status"]
+def load_validator():
+    """design-director 정본 검사기(validate_review.py)를 불러온다. 판정 의미는 그 파일 하나에만 둔다."""
+    module = sys.modules.get(_VALIDATOR_MODULE)
+    if module is None or getattr(module, "__file__", None) != str(VALIDATOR_PATH):
+        spec = importlib.util.spec_from_file_location(_VALIDATOR_MODULE, VALIDATOR_PATH)
+        if spec is None or spec.loader is None or not Path(VALIDATOR_PATH).is_file():
+            raise ImportError(f"검사기 파일 없음: {VALIDATOR_PATH}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_VALIDATOR_MODULE] = module  # dataclass 가 모듈을 sys.modules 에서 찾는다.
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(_VALIDATOR_MODULE, None)
+            raise
+    if not callable(getattr(module, "judge", None)):
+        raise ImportError(f"검사기에 judge 없음: {VALIDATOR_PATH}")
+    return module
 
 
-def summarize_design_findings(findings: list) -> str:
-    """findings 개수 요약 한 줄."""
-    statuses = [_effective_status(finding) for finding in findings]
+def summarize_design_findings(findings: list, open_flags: list | None = None) -> str:
+    """findings 개수 요약 한 줄. `open_flags` 는 검사기 judge 의 계약상 open 판정(없으면 적힌 status 그대로)."""
+    flags = open_flags if open_flags is not None else [finding["status"] == "open" for finding in findings]
+    statuses = ["open" if is_open else finding["status"] for finding, is_open in zip(findings, flags)]
     open_by_priority = {
         priority: sum(1 for finding, status in zip(findings, statuses)
                       if status == "open" and finding["priority"] == priority)
         for priority in ("P1", "P2", "P3")
     }
-    unexplained = sum(1 for finding, status in zip(findings, statuses)
-                      if finding["status"] == "waived" and status == "open")
+    reopened = sum(1 for finding, status in zip(findings, statuses)
+                   if finding["status"] == "waived" and status == "open")
     summary = (
         f"findings {len(findings)}건 — open {statuses.count('open')}"
         f"(P1 {open_by_priority['P1']}·P2 {open_by_priority['P2']}·P3 {open_by_priority['P3']})"
@@ -131,8 +155,8 @@ def summarize_design_findings(findings: list) -> str:
         f" · defect {sum(1 for finding in findings if finding['kind'] == 'defect')}"
         f" · suggestion {sum(1 for finding in findings if finding['kind'] == 'suggestion')}"
     )
-    if unexplained:
-        summary += f" · 사유 없는 waived {unexplained}건은 open 으로 셈"
+    if reopened:
+        summary += f" · 계약상 무효인 waived {reopened}건은 open 으로 셈"
     return summary
 
 
@@ -153,6 +177,7 @@ def grade_design_review(review_path, *, draft_path) -> DesignReviewGrade:
             "AWAIT_HUMAN",
             f"design review domain {_clip(repr(review.get('domain')), 30)} ≠ {DESIGN_REVIEW_DOMAIN!r} — {path}")
     asset_sha256 = review.get("asset_sha256")
+    current = None
     if asset_sha256 is not None:
         try:
             current = compute_draft_sha256(draft_path)
@@ -164,21 +189,28 @@ def grade_design_review(review_path, *, draft_path) -> DesignReviewGrade:
                 f"오래된 design review — asset_sha256 {_clip(asset_sha256, 12)} ≠ 현재 원고 {current[:12]}…, "
                 f"현재 원고로 다시 리뷰 필요 — {path}")
 
+    try:
+        judgement = load_validator().judge(review, domain=DESIGN_REVIEW_DOMAIN, asset_sha256=current,
+                                           review_path=path, baseline_dirs=BASELINE_DIRS)
+    except Exception as exc:  # noqa: BLE001 — 판정 도구가 죽으면 통과로 두지 않는다.
+        return DesignReviewGrade(
+            "AWAIT_HUMAN", f"design review 정본 검사기 실패({type(exc).__name__}: {_clip(exc)}) — {path}")
     findings = review["findings"]
-    summary = summarize_design_findings(findings)
+    summary = summarize_design_findings(findings, judgement["open"])
     open_p1_defects = [
-        (index, finding) for index, finding in enumerate(findings)
-        if _effective_status(finding) == "open" and finding["priority"] == "P1" and finding["kind"] == "defect"
+        (index, finding) for index, (finding, is_open) in enumerate(zip(findings, judgement["open"]))
+        if is_open and finding["priority"] == "P1" and finding["kind"] == "defect"
     ]
     rule_ids = [_label_finding(finding, index) for index, finding in open_p1_defects if finding["check"] == "rule"]
     advisory_ids = [_label_finding(finding, index) for index, finding in open_p1_defects
                     if finding["check"] == "advisory"]
-    advisory_text = f"open P1 defect(check=advisory) {len(advisory_ids)}건 사람 판단 필요: {', '.join(advisory_ids)}"
-    if rule_ids:
-        detail = f"open P1 defect(check=rule) {len(rule_ids)}건: {', '.join(rule_ids)}"
-        if advisory_ids:
-            detail += f"; {advisory_text}"
-        return DesignReviewGrade("BLOCK", f"{detail} — {summary} — {path}")
+    parts = [f"open P1 defect(check=rule) {len(rule_ids)}건: {', '.join(rule_ids)}"] if rule_ids else []
     if advisory_ids:
-        return DesignReviewGrade("AWAIT_HUMAN", f"{advisory_text} — {summary} — {path}")
-    return DesignReviewGrade("PASS", f"design review 통과 — {summary} — {path}")
+        parts.append(f"open P1 defect(check=advisory) {len(advisory_ids)}건 사람 판단 필요: {', '.join(advisory_ids)}")
+    parts += [_clip(reason, 160) for reason in judgement["context"]]
+    if judgement["verdict"] == "BLOCK":
+        return DesignReviewGrade("BLOCK", f"{'; '.join(parts)} — {summary} — {path}")
+    if judgement["verdict"] != "PASS":
+        return DesignReviewGrade("AWAIT_HUMAN", f"{'; '.join(parts) or '사람 판단 필요'} — {summary} — {path}")
+    context = "".join(f" — {part}" for part in parts)
+    return DesignReviewGrade("PASS", f"design review 통과 — {summary}{context} — {path}")
