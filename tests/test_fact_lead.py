@@ -240,6 +240,22 @@ def test_pattern_different_majority_in_prev_ds_keeps_prefix():
     assert fam["S3"]["refs"]["reproduced"] is False
 
 
+def test_pattern_value_takes_attr_noun_and_matching_copula():
+    """'이 모두 10~15억다' 비문(2026-10-21 구 원고 사전 점검) — 속성별 명사를 붙이고 받침에 맞는 서술어로 끝낸다."""
+    import blog.fact_lead as fl
+    for attr, val, pred in (("price_segment", "10~15억", "10~15억 가격대다"),
+                            ("decade", "1990년대", "1990년대 준공이다"),
+                            ("area_band", "60-84㎡", "전용 60-84㎡다"),
+                            ("area_band", "~59㎡", "전용 59㎡ 이하다"),
+                            ("area_band", "115㎡+", "전용 115㎡ 이상이다")):
+        rows = [_row("가구", f"저{i}", molit_trend_pct=10.0, molit_recent_eok=5.0, molit_trend_dir="▲")
+                for i in range(15)]
+        rows += [_row("가구", f"고{i}", molit_trend_pct=40.0 + 2 * i, molit_recent_eok=12.0,
+                      molit_trend_dir="▲", **{attr: val}) for i in range(5)]
+        assert fl._s3(rows, None)["text"].endswith(f"5곳 중 5곳이 {pred}."), attr
+        assert fl._g2("가구", rows, None)["text"].endswith(f")이 모두 {pred}."), attr
+
+
 # ── 선택 로직: 유형당 최대 1개 ────────────────────────────────────────────
 
 def test_max_one_per_type_and_limit_respected():

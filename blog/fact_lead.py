@@ -156,6 +156,17 @@ def _attr_share(rows: list[dict], attr: str) -> tuple[str, int, int] | None:
     return val, counts[val], total
 
 
+_ATTR_PRED = {"area_band": "전용 {}다", "decade": "{} 준공이다", "price_segment": "{} 가격대다"}   # '10~15억다' 비문 방지
+_AREA_PRED = {"~59㎡": "전용 59㎡ 이하다", "115㎡+": "전용 115㎡ 이상이다"}   # 기호로 끝나는 면적대는 풀어 쓴다(Codex R1)
+
+
+def _pattern_pred(attr: str, val: str) -> str:
+    """패턴 속성값 → 서술어. 값만 쓰면 '10~15억다'처럼 받침과 서술어가 어긋난다."""
+    if attr == "area_band" and val in _AREA_PRED:
+        return _AREA_PRED[val]
+    return _ATTR_PRED[attr].format(val)
+
+
 def _best_pattern_attr(rows: list[dict]) -> tuple[str, str, int, int] | None:
     """_ATTR_FIELDS 중 다수 비중이 _PATTERN_SHARE 이상인 것들 중 비중 최대(동률은 attr 등록 순서) 하나.
     호출측이 표본 크기(|set|) 조건은 미리 게이트한다 — 이 함수는 다수 속성 판정만 담당."""
@@ -255,7 +266,7 @@ def _s3(elig: list[dict], prev_ds: dict | None) -> dict | None:
                         if r.get("molit_trend_pct") is not None and r["molit_trend_pct"] > p_med + p_iqr]
             prev_best = _best_pattern_attr(prev_hot)
             reproduced = prev_best is not None and prev_best[0] == attr and prev_best[1] == val
-    text = f"3/9개월 상승폭이 {_fmt_pct_signed(round(hi, 1))}를 넘는 {total}곳 중 {cnt}곳이 {val}다."
+    text = f"3/9개월 상승폭이 {_fmt_pct_signed(round(hi, 1))}를 넘는 {total}곳 중 {cnt}곳이 {_pattern_pred(attr, val)}."
     if not reproduced:
         text = "이번 주 관측: " + text
     score = compute_surprise_score(cnt / total, 0.5, _SHARE_IQR_REF, total)
@@ -371,7 +382,8 @@ def _g2(gu: str, gu_rows: list[dict], prev_ds: dict | None) -> dict | None:
     best = _best_pattern_attr(hot)
     if best is not None:
         attr, val, cnt, total = best
-        text += f"이 모두 {val}다." if cnt == total else f" 중 {cnt}곳이 {val}다."
+        pred = _pattern_pred(attr, val)
+        text += f"이 모두 {pred}." if cnt == total else f" 중 {cnt}곳이 {pred}."
         reproduced = False
         if prev_ds is not None:
             prev_rows = [r for r in prev_ds.get("complexes", []) if r.get("gu") == gu]

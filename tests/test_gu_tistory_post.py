@@ -346,7 +346,7 @@ def _archive(tmp_path, day: str, recs: list[dict], cur_recs: list[dict]) -> Path
 
 
 _OLD = {"apt": "노원첫단지", "area": 84.97, "price": 900_000_000, "ym": "202609", "deal_date": "2026-09-20"}
-_NEW = {"apt": "노원첫단지", "area": 84.97, "price": 1_000_000_000, "ym": "202610", "deal_date": "2026-10-15"}
+_NEW = {"apt": "노원첫단지", "area": 84.97, "price": 1_000_000_000, "ym": "202609", "deal_date": "2026-09-25"}   # 10월 중 수집 창의 마지막 월
 
 
 def test_7일전_원본_아카이브가_없으면_최근_기록을_내지_않는다(tmp_path):
@@ -361,6 +361,56 @@ def test_7일전_원본_아카이브가_있으면_새_기록과_기준일을_낸
     assert week["base_date"] == "2026-10-14"
     assert week["filings"]["n_new"] == 1 and week["filings"]["new"][0]["gu"] == "노원"
     assert week["apt_names"]["노원"] == ["노원첫단지"]
+
+
+def test_기준_아카이브가_하루_빠뜨린_기록은_새_기록도_최고가_기준도_아니다(tmp_path):
+    """상류 일시 결손(2026-10-15·16 국토부 API 송파 2026-09: 292→127→132→305건) — 기준일까지 1주 아카이브에
+    있던 기록은 '새로 나타난' 것이 아니고, 최고가 비교 기준에도 든다."""
+    def rec(price, day, ym="202609"):
+        return {**_OLD, "price": price, "ym": ym, "deal_date": day}
+    hist = [rec(900_000_000, "2026-09-01"), rec(950_000_000, "2026-09-02"), rec(960_000_000, "2026-09-03")]
+    dropped = rec(1_100_000_000, "2026-09-04")
+    cur = _archive(tmp_path, "2026-10-13", hist + [dropped], hist + [dropped, _NEW])
+    _archive(tmp_path, "2026-10-14", hist, hist + [dropped, _NEW])          # 기준일 아카이브만 dropped 결손
+    week = load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots"))
+    assert week["base_date"] == "2026-10-14"
+    assert [r["price"] for r in week["filings"]["new"]] == [_NEW["price"]]
+    assert week["filings"]["record_highs"] == [], "11억이 1주 안에 있었으므로 10억은 최고가 경신이 아니다"
+
+
+def test_합집합은_계약일_유무가_섞여도_같은_기록을_두번_세지_않는다(tmp_path):
+    """한 아카이브만 계약일이 없으면 diff_filings 가 계약일 없는 키로 비교한다 — 합집합도 같은 키로 묶어야 한다(Codex R1)."""
+    no_day = {k: v for k, v in _OLD.items() if k != "deal_date"}
+    later = [{**_OLD, "deal_date": d} for d in ("2026-09-21", "2026-09-22")]
+    cur = _archive(tmp_path, "2026-10-13", [no_day], [_OLD] + later)
+    _archive(tmp_path, "2026-10-14", [_OLD], [_OLD] + later)
+    week = load_week_filings("2026-10-21", str(cur), str(tmp_path / "snapshots"))
+    assert week["filings"]["n_new"] == 2
+
+
+def test_합집합은_기준일_수집_창_밖의_월을_최고가_기준에_넣지_않는다(tmp_path):
+    """09-30 아카이브(창 2025-09~2026-08)의 2025-09 기록은 10-01 기준일 12개월 표본이 아니다(Codex R1)."""
+    def rec(price, ym, day):
+        return {**_OLD, "price": price, "ym": ym, "deal_date": day}
+    base = [rec(900_000_000, "202609", "2026-09-01"), rec(950_000_000, "202609", "2026-09-02")]
+    new = rec(1_000_000_000, "202609", "2026-09-25")
+    cur = _archive(tmp_path, "2026-09-30", [rec(800_000_000, "202509", "2025-09-10")], base + [new])
+    _archive(tmp_path, "2026-10-01", base, base + [new])
+    week = load_week_filings("2026-10-08", str(cur), str(tmp_path / "snapshots"))
+    assert week["base_date"] == "2026-10-01"
+    assert [r["price"] for r in week["filings"]["new"]] == [1_000_000_000]
+    assert week["filings"]["record_highs"] == [], "기준일 12개월 표본은 2건 — 최고가 비교 게이트(3건) 미달"
+
+
+def test_수집_창에_새로_든_월의_기록은_새_기록에서_빼고_따로_적는다(tmp_path):
+    """월이 바뀌면 수집기가 직전 달을 처음 담는다 — 기준일 자료에 없던 월이라 '새로 나타난' 기록이 아니다
+    (2026-10-04 주간결산 '새로 확인된 신고 2335건' 중 2239건이 창에 새로 든 2026-09)."""
+    entered = {**_OLD, "price": 1_200_000_000, "ym": "202610", "deal_date": "2026-10-05"}
+    cur = _archive(tmp_path, "2026-10-26", [_OLD], [_OLD, _NEW, entered])
+    week = load_week_filings("2026-11-02", str(cur), str(tmp_path / "snapshots"))
+    assert [r["price"] for r in week["filings"]["new"]] == [_NEW["price"]]
+    text = " ".join(build_gu_facts("노원", _ds(), None, week)["week"])
+    assert "2026-10 계약 1건" in text and "12억" not in text
 
 
 def test_7일전_아카이브가_잘린_gzip이면_새_기록만_빼고_실행을_막지_않는다(tmp_path, capsys):
@@ -382,7 +432,7 @@ def test_플래그가_켜지면_구_원고에_사실_블록이_실린다(tmp_pat
     cur = _archive(tmp_path, "2026-10-12", [_OLD], [_OLD, _NEW])
     paths = write_gu_posts(_ds(), "2026-10-19", "2026-10-19", str(tmp_path), molit_path=str(cur))
     body = parse_helper(next(p for p in paths if "-gu-노원-" in p))["body"]
-    assert "노원구 최근 1주 기록" in body and "노원첫단지 2026-10 84.97㎡ 10억" in body
+    assert "노원구 최근 1주 기록" in body and "노원첫단지 2026-09 84.97㎡ 10억" in body
 
 
 def test_새_기록은_최근_계약월부터_상한까지_싣고_나머지는_건수로():
