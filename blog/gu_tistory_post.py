@@ -37,6 +37,8 @@ from datetime import date, timedelta
 from urllib.parse import quote
 
 import blog.build_explorer as be
+import blog.gu_dikw as gd
+from blog.body_media import bind_body_media
 from blog.build_site import BASE_URL
 from blog.fact_lead import build_fact_leads, render_lead_lines
 from blog.period_delta import (MIN_PAIRS, _all_carry_contract_day, _contract_age_buckets, _filing_key, compute_gu_deltas,
@@ -44,6 +46,7 @@ from blog.period_delta import (MIN_PAIRS, _all_carry_contract_day, _contract_age
 from blog.snapshots import _MOLIT_RE, _date_of, molit_archive_path_on
 from blog.tistory_contract import DraftPayload, write_helper
 from blog.tistory_draft import TISTORY_TAGS, _MUT, build_tistory_section
+from blog.visual_first import BODY_IMAGE_RESERVE
 from blog.wording_guard import assert_lead_wording_ok, assert_wording_ok
 
 GU_POSTS_PER_DAY = 5
@@ -258,7 +261,8 @@ def _facts_html(gu: str, facts: dict | None) -> str:
     return out
 
 
-def _build_body(gu: str, rows: list[dict], today: str, asof: str, shown: int, facts: dict | None = None) -> str:
+def _build_body(gu: str, rows: list[dict], today: str, asof: str, shown: int, facts: dict | None = None,
+                dikw: dict | None = None) -> str:
     hub = f'{BASE_URL}/gu/{quote(gu)}.html'
     label = _gu_label(gu)
     scope = (f'<p style="{_MUT}">표에는 {label} 전체 {len(rows)}곳 중 실거래 중위가 큰 {shown}곳을 담았습니다'
@@ -273,35 +277,41 @@ def _build_body(gu: str, rows: list[dict], today: str, asof: str, shown: int, fa
               f'<a href="{BASE_URL}/methodology.html">방법론 전문</a> · 라이선스 CC-BY-NC-4.0.</p>'
               f'<p style="{_MUT}">⚖ {be.DISCLAIMER} {be._takedown()}</p>')
     ordered = sorted(rows, key=lambda r: (r.get("molit_recent_eok") is None, -(r.get("molit_recent_eok") or 0)))
-    return _facts_html(gu, facts) + scope + build_tistory_section(gu, ordered[:shown]) + method
+    return ((dikw or {}).get("html", "") + _facts_html(gu, facts) + scope
+            + build_tistory_section(gu, ordered[:shown]) + method)
 
 
-def _fit_body(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None) -> str:
-    """예산 안에 드는 가장 많은 행 수를 찾는다(행 수에 대해 본문 크기는 단조 증가 → 이분 탐색)."""
+def _fit_body(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None,
+              dikw: dict | None = None) -> str:
+    """예산 안에 드는 가장 많은 행 수를 찾는다(행 수에 대해 본문 크기는 단조 증가 → 이분 탐색).
+    K·W 그림은 장마다 티스토리 재호스팅 래퍼 몫(BODY_IMAGE_RESERVE)을 예산에서 뺀다."""
+    budget = TISTORY_BUDGET - BODY_IMAGE_RESERVE * len((dikw or {}).get("images", ()))
+
     def size(k: int) -> int:
-        return len(_build_body(gu, rows, today, asof, k, facts).encode("utf-8"))
+        return len(_build_body(gu, rows, today, asof, k, facts, dikw).encode("utf-8"))
 
-    if size(len(rows)) <= TISTORY_BUDGET:
-        return _build_body(gu, rows, today, asof, len(rows), facts)
+    if size(len(rows)) <= budget:
+        return _build_body(gu, rows, today, asof, len(rows), facts, dikw)
     lo, hi = 0, len(rows)          # size(lo) 는 예산 안(또는 lo=0), size(hi) 는 예산 밖
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        if size(mid) <= TISTORY_BUDGET:
+        if size(mid) <= budget:
             lo = mid
         else:
             hi = mid
     if lo == 0:
-        raise ValueError(f"[gu_tistory_post] {gu}: 단지 1곳도 티스토리 본문 예산 {TISTORY_BUDGET}B 에 못 듭니다")
-    return _build_body(gu, rows, today, asof, lo, facts)
+        raise ValueError(f"[gu_tistory_post] {gu}: 단지 1곳도 티스토리 본문 예산 {budget}B 에 못 듭니다")
+    return _build_body(gu, rows, today, asof, lo, facts, dikw)
 
 
-def build_gu_post(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None) -> dict[str, str]:
+def build_gu_post(gu: str, rows: list[dict], today: str, asof: str, facts: dict | None = None,
+                  dikw: dict | None = None) -> dict[str, str]:
     """구 1개의 티스토리 원고 — {"title","tags","body"}. facts = build_gu_facts 결과(없으면 사실 블록 없이).
-    단지가 없으면 발행하지 않고 실패한다."""
+    dikw = gu_dikw.build_dikw_block 결과(W·K 그림 블록 + B 팔 상황형 제목). 단지가 없으면 발행하지 않고 실패한다."""
     if not rows:
         raise ValueError(f"[gu_tistory_post] {gu}: 단지 0곳 — 발행할 내용이 없습니다")
-    title = _build_title(gu, rows, today, asof)
-    body = _fit_body(gu, rows, today, asof, facts)
+    title = (dikw or {}).get("title") or _build_title(gu, rows, today, asof)
+    body = _fit_body(gu, rows, today, asof, facts, dikw)
     assert_wording_ok(title, f"gu_tistory_post:title:{gu}")
     assert_wording_ok(body, f"gu_tistory_post:body:{gu}")
     return {"title": title, "tags": _build_tags(gu, rows), "body": body}
@@ -320,7 +330,12 @@ def write_gu_posts(ds: dict, today: str, asof: str, outdir: str, n: int = GU_POS
     week = load_week_filings(today, molit_path, f"{outdir}/snapshots") if gus else None
     paths = []
     for gu in gus:
-        post = build_gu_post(gu, by[gu], today, asof, facts=build_gu_facts(gu, ds, prev_ds, week))
+        dikw = None
+        if gd.enabled():                                     # K·W 층(2026-10-22) — RE_GU_DIKW=1 일 때만
+            images = gd.write_dikw_images(gu, by[gu], ds["complexes"], today, f"{outdir}/images")
+            dikw = gd.build_dikw_block(gu, by[gu], ds["complexes"], today, asof, images, BASE_URL, _MUT)
+        post = build_gu_post(gu, by[gu], today, asof, facts=build_gu_facts(gu, ds, prev_ds, week), dikw=dikw)
         path = f"{outdir}/tistory/{today}-gu-{gu}-tistory-draft.html"
         paths.append(write_helper(path, DraftPayload(post["title"], post["tags"], post["body"]), today))
+        bind_body_media(path, gd.body_media_entries(dikw["images"], BASE_URL) if dikw else None)
     return paths

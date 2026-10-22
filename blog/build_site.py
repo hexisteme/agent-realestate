@@ -40,14 +40,15 @@ def _daily_body_media(today: str) -> list[str]:
     copied = []
     suffix = "-tistory-draft.body-media.json"
     for sidecar in sorted(Path(SRC, "tistory").glob(f"*{suffix}")):
-        day = sidecar.name[:-len(suffix)]
-        if day > today:
+        stem = sidecar.name[:-len(suffix)]
+        day, is_gu = stem[:10], stem[10:].startswith("-gu-")   # 구 원고 K·W 그림(2026-10-22 gu_dikw)
+        if day > today or (stem != day and not is_gu):
             continue
-        helper = sidecar.parent / f"{day}-tistory-draft.html"
+        helper = sidecar.parent / f"{stem}-tistory-draft.html"
         try:
             images = read_body_media(helper, parse_helper(helper)) or []
         except Exception:
-            if day == today:
+            if day == today and not is_gu:                  # 구 원고 계약이 깨지면 그 구만 발행기(그림 대기)에서 멈춘다
                 raise BodyMediaError() from None
             continue
         for image in images:

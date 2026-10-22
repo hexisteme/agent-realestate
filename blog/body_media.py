@@ -24,7 +24,7 @@ import urllib.request
 from blog.tistory_delivery import payload_digest
 
 SCHEMA = "TistoryBodyMedia/v1"
-_NAME = re.compile(r"dashboard-\d{4}-\d{2}-\d{2}-[0-9a-f]{16}\.png")
+_NAME = re.compile(r"(?:dashboard|gu-reach|gu-axis)-\d{4}-\d{2}-\d{2}-[0-9a-f]{16}\.png")   # gu-* = 구 원고 K·W 그림(2026-10-22 gu_dikw)
 _KAKAO_CDN = re.compile(r"https://blog\.kakaocdn\.net/")
 _MAX_SIDECAR = 16_384
 _MAX_IMAGE = 4_000_000
