@@ -40,11 +40,13 @@ TISTORY_BUDGET = 30000
 # 티스토리 본문 축약 단계 — 예산(TISTORY_BUDGET) 안에 들 때까지 0→4 순서로 낮춘다(사이트 본문은 항상 0단계 전체;
 # 티스토리 본문 끝의 "사이트 원문" 링크가 잘린 표를 받는다). 실측(2026-09-07 프리뷰 927단지): 월간 0단계 30,566B.
 _TRIM_LEVELS = [
-    dict(pos_cols=True,  week_table=True,  mig=40, highs=15, week_bands=True,  gu_full=True),
-    dict(pos_cols=False, week_table=False, mig=40, highs=15, week_bands=True,  gu_full=True),
-    dict(pos_cols=False, week_table=False, mig=20, highs=8,  week_bands=True,  gu_full=True),
-    dict(pos_cols=False, week_table=False, mig=10, highs=0,  week_bands=False, gu_full=True),
-    dict(pos_cols=False, week_table=False, mig=5,  highs=0,  week_bands=False, gu_full=False),
+    dict(pos_cols=True,  week_table=True,  mig=40, highs=15, week_bands=True,  gu_full=True,  extras=True,  macro=True),
+    dict(pos_cols=False, week_table=False, mig=40, highs=15, week_bands=True,  gu_full=True,  extras=True,  macro=True),
+    dict(pos_cols=False, week_table=False, mig=20, highs=8,  week_bands=True,  gu_full=True,  extras=True,  macro=True),
+    dict(pos_cols=False, week_table=False, mig=10, highs=0,  week_bands=False, gu_full=True,  extras=True,  macro=True),
+    dict(pos_cols=False, week_table=False, mig=5,  highs=0,  week_bands=False, gu_full=False, extras=True,  macro=True),
+    # 10-25 월간결산이 공시가 배율·평형 격차·거시 맥락까지 붙어 위 단계로도 35KB — 명단·부가 표·거시 절은 사이트 원문으로.
+    dict(pos_cols=False, week_table=False, mig=0,  highs=0,  week_bands=False, gu_full=False, extras=False, macro=False),
 ]
 MACRO_SECTION_TISTORY = True    # 월간 '거시 맥락' 절(S5, L3) — 게이트 ④ 2026-09-07 Codex 판정(출처·해석 제한 줄 추가) 후 True. False 면 site 원문에만
 MAX_MIGRATION_ROWS = _TRIM_LEVELS[0]["mig"]
@@ -588,7 +590,9 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
                     '단지별 Δ중위와 가격대 이동도 양쪽 집계 게이트를 통과한 짝만 계산.', inline, mut=True))
     mig, cap = d["migrations"], opt["mig"]
     parts.append(_h(f"가격대 이동 단지 {len(mig)}곳", inline))
-    if mig:
+    if mig and not cap:
+        parts.append(_p(f'명단은 사이트 원문(전체 {len(mig)}곳).', inline, mut=True))
+    elif mig:
         rows = [[f'{m["name"]}({_gu_link(m["gu"], inline)}) {m["area_m2"]:g}㎡' if m["area_m2"] else f'{m["name"]}({_gu_link(m["gu"], inline)})',
                  f'{m["from"]} → {m["to"]}', _arrow(m["base_eok"], m["cur_eok"]),
                  f'{_pct_txt(_pct(m["cur_eok"], m["base_eok"]))} n{m["n_base"]}→{m["n"]}']
@@ -661,18 +665,20 @@ def _sections(d: dict, inline: bool, level: int = 0) -> str:
             parts.append(_h("공시가 배율", inline))
             parts.append(_p(f'국토부 실거래 12개월 동일평형 중위 ÷ 같은 평형 공시가격. 공시가를 찾은 면적과 발행 면적이 일치하는 {gm["n"]}/{gm["n_total"]}단지, '
                             f'전체 중위 {_mult(gm["median"])}. 보유세 산정 기준 대비 시세 배율의 사실이며 가치 판단이 아님. 구별 표는 n≥10 인 구만 중위를 적음.', inline))
-            parts.append(_tbl(["가격대", "단지 수", "배율 중위"], [[b["key"], str(b["n"]), _mult(b["median"])] for b in gm["bands"]], inline))
+            if opt["extras"]:
+                parts.append(_tbl(["가격대", "단지 수", "배율 중위"], [[b["key"], str(b["n"]), _mult(b["median"])] for b in gm["bands"]], inline))
             if opt["gu_full"]:
                 parts.append(_tbl(["구", "단지 수", "배율 중위"], [[_gu_link(g["key"], inline), str(g["n"]), _mult(g["median"])] for g in gm["gus"]], inline))
         if sp and sp["n"]:
             parts.append(_h("평형 격차 59↔84", inline))
             parts.append(_p(f'같은 단지 59㎡대와 84㎡대(각 ±3.5㎡, 양쪽 n≥5)의 ㎡당 실거래 중위 비(59÷84−1). 계산 가능 {sp["n"]}/{sp["n_total"]}단지, '
                             f'전체 중위 {_pct_txt(sp["median"])}. 격차의 사실만 적고 원인은 적지 않음.', inline))
-            parts.append(_tbl(["가격대", "단지 수", "격차 중위"], [[b["key"], str(b["n"]), _pct_txt(b["median"])] for b in sp["bands"]], inline))
+            if opt["extras"]:
+                parts.append(_tbl(["가격대", "단지 수", "격차 중위"], [[b["key"], str(b["n"]), _pct_txt(b["median"])] for b in sp["bands"]], inline))
             if opt["gu_full"]:
                 parts.append(_tbl(["구", "단지 수", "격차 중위"], [[_gu_link(g["key"], inline), str(g["n"]), _pct_txt(g["median"])] for g in sp["gus"]], inline))
         mc = d.get("macro_context")
-        if mc and (not inline or MACRO_SECTION_TISTORY):                        # 게이트 ④ 전엔 site 원문에만
+        if mc and (not inline or (MACRO_SECTION_TISTORY and opt["macro"])):     # 게이트 ④ 전·최대 축약엔 site 원문에만
             annual = date.fromisoformat(d["today"]).month == 1                   # 매년 1월 월간결산 = 연간 사이클 리포트(계획 §0)
             parts.append(_h("거시 맥락 · 연간 사이클 리포트" if annual else "거시 맥락", inline))
             parts.append(_p(f'거시 지표 수집 기준일 {mc["asof"]}. 관측 사실과 과거 집계만(국면 라벨·자체 해석 없음).', inline, mut=True))

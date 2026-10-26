@@ -13,6 +13,7 @@ cron: `5 7 * * *  agent-realestate daily` (cli.cmd_daily 가 호출).
 """
 from __future__ import annotations
 import os, glob, argparse
+import sys
 import tempfile
 from datetime import date, datetime
 from collections import defaultdict
@@ -255,6 +256,17 @@ def _attach_inventory(ds: dict, path: str, now: datetime) -> dict:
     return ds
 
 
+def write_period_post_guarded(ds: dict, today: str, outdir: str, molit_path: str | None,
+                              macro_snapshot: dict | None) -> dict:
+    """결산 실패가 그날 일간 원고·사이트·티스토리 발행을 멈추지 않게 한다(10-25 예산 초과 ValueError 로 하루 전체 중단)."""
+    from blog.period_delta import write_period_post
+    try:
+        return write_period_post(ds, today, outdir, molit_path=molit_path, macro_snapshot=macro_snapshot)
+    except Exception as e:
+        print(f"❌ [period] 결산 생성 실패 — 일간은 계속: {type(e).__name__}: {e}", file=sys.stderr)
+        return {"failed": type(e).__name__}
+
+
 def main():
     from agent_realestate import config
     config.load_env_file()   # .env 주입 — scope-aware 기본값(build_arg_parser)이 파서 구성 시점에 보려면
@@ -374,8 +386,7 @@ def main():
             print(f"구 원고: {gp}")
         # 주간결산/월간결산(2026-09-07) — 일요일/월 마지막 일요일에만 posts/{today}-{주간|월간}결산.html + periodic 티스토리 원고.
         #   base 스냅샷이 없으면(첫 회차 등) skip 사유만 남긴다. 신고 델타는 snapshots/molit 아카이브가 base 날짜에 있을 때만.
-        from blog.period_delta import write_period_post
-        pp = write_period_post(ds, today, a.out, molit_path=a.molit, macro_snapshot=macro_snap)   # 월간 '거시 맥락' 절(S5, site 만)
+        pp = write_period_post_guarded(ds, today, a.out, a.molit, macro_snap)   # 월간 '거시 맥락' 절(S5, site 만)
         print(f"기간 결산: {pp}")
     print(f"발행 {len(by)}구 / {ds['count']}단지 · today={today} asof={a.asof} · 제외 {ds.get('excluded')}"
           + (" · ⚠STALE" if stale else ""))

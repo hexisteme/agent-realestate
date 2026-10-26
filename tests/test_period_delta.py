@@ -146,6 +146,29 @@ def test_render_worst_case_fits_tistory_budget_by_trimming():
     assert len(post["claims"]) == 4 + 25 + len(d["migrations"])
 
 
+def test_monthly_with_macro_extras_fits_budget():
+    """R1(10-26): 10-25 월간결산이 공시가 배율·평형 격차·거시 맥락까지 붙어 마지막 축약에도 35KB → ValueError 로
+    블로그 생성 전체가 멈춰 일간 원고도 못 나갔다. 실제 10-25 세 절(fixture)을 붙인 최악 사례도 예산 안이어야 한다."""
+    from pathlib import Path
+    extras = json.loads((Path(__file__).parent / "fixtures/period_monthly_extras_2026-10-25.json").read_text(encoding="utf-8"))
+    gus = list(pd.be.GU_LAWD)
+    base_rows = [_row(gus[i % 25], f"단지{i:03d}", 9.0 + (i % 12), pos=100) for i in range(300)]
+    cur_rows = [_row(gus[i % 25], f"단지{i:03d}", (9.0 + (i % 12)) * (1.25 if i < 60 else 1.0), pos=100) for i in range(300)]
+    cur, base = _ds(cur_rows, gen="2026-10-25"), _ds(base_rows, gen="2026-09-27")
+    prev = {"11680": [{"apt": f"경신{i}", "area": 84.9, "price": p, "ym": "202506"} for i in range(20) for p in (18e8, 19e8, 20e8)]}
+    curm = {"11680": prev["11680"] + [{"apt": f"경신{i}", "area": 84.9, "price": 21e8, "ym": "202510"} for i in range(20)]}
+    wk = pd.build_period_delta(cur, base, "weekly", "2026-10-25", date(2026, 10, 18))
+    rows = [{"date": f"2026-10-{dd:02d}", "n": 300, "seoul_median": 12.0, "delta_pct": 0.1, "bands": {b: 75 for b in pd.BANDS}}
+            for dd in (4, 11, 18, 25)]
+    d = pd.build_period_delta(cur, base, "monthly", "2026-10-25", date(2026, 9, 27),
+                              filings=pd.diff_filings(prev, curm), weekly=wk, weekly_rows=rows)
+    d.update(extras)
+    post = pd.render_period_post(d)
+    assert len(post["tistory_html"].encode()) <= pd.TISTORY_BUDGET
+    assert "지면 한도로" in post["tistory_html"]
+    assert "거시 맥락" in post["html"] and "공시가 배율" in post["html"]          # 사이트는 전체 절
+
+
 def test_pool_change_keeps_medians_on_paired_complexes(tmp_path, monkeypatch):
     """발행 풀이 640→927 처럼 커져도 '기준→이번' 중위는 짝 단지만으로 — 새 단지 유입이 +22.8% 로 찍히던 경로(게이트 ② Codex 판정)."""
     base = _ds([_row("강남", "A", 10.0), _row("강남", "B", 12.0), _row("노원", "C", 5.0)], asof="2026-08-30", gen="2026-09-06")
@@ -369,3 +392,12 @@ def test_weekly_post_takes_the_window_end_from_the_archive_date_not_the_base_sna
     pd.write_period_post(_ds([_row("송파", "A", 10.0)], gen="2026-06-07"), "2026-06-07", str(tmp_path), molit_path=str(raw))
     html_txt = (tmp_path / "posts" / "2026-06-07-주간결산.html").read_text(encoding="utf-8")
     assert "새로 나타난 실거래 기록 1건" in html_txt and "수집 창에 새로 든" not in html_txt
+
+
+def test_period_failure_does_not_stop_daily_run(monkeypatch, capsys):
+    """R1(10-26): 결산 렌더 예외가 run_daily 를 rc=1 로 끝내 그날 일간 원고·사이트·티스토리 발행이 모두 멈췄다."""
+    from unittest.mock import Mock
+    from blog import run_daily
+    monkeypatch.setattr(pd, "write_period_post", Mock(side_effect=ValueError("budget")))
+    assert run_daily.write_period_post_guarded({}, "2026-10-25", "out", None, None) == {"failed": "ValueError"}
+    assert "결산 생성 실패" in capsys.readouterr().err
