@@ -89,11 +89,30 @@ def test_probe_names_kakao_dkaptcha_widget():
     assert "kaptcha" in pub._CAPTCHA_PROBE and "빈칸에 들어갈 글자" in pub._CAPTCHA_PROBE
 
 
-def test_no_redirect_without_captcha_closes_tab(isolated, monkeypatch):
+def test_no_redirect_without_captcha_still_keeps_tab_in_cdp_mode(isolated, monkeypatch):
+    """R2(10-26 09:06 강북): '저장중'에서 멈춘 순간엔 캡차가 아직 없어 탭을 닫았다 — 미확인이면 사람 확인용으로 남긴다."""
     _image_draft(isolated)
-    _, _, _, page = _browser(monkeypatch)
+    _, _, ctx, page = _browser(monkeypatch)
     _no_redirect(page, monkeypatch, captcha=False)
     result = pub.publish(str(isolated), "publish", "2026-10-10")
     assert "NO_REDIRECT" in result and "CAPTCHA_SHOWN" not in result
     page.screenshot.assert_called_once()
+    page.close.assert_not_called()
+    ctx.close.assert_not_called()
+
+
+def test_late_captcha_is_still_named(isolated, monkeypatch):
+    _image_draft(isolated)
+    _, _, _, page = _browser(monkeypatch)
+    _no_redirect(page, monkeypatch, captcha=False)
+    seen = iter([False, False, True])
+    inner = page.evaluate.side_effect
+    page.evaluate.side_effect = lambda script, *a: next(seen) if "captcha" in script else inner(script, *a)
+    assert "CAPTCHA_SHOWN" in pub.publish(str(isolated), "publish", "2026-10-10")
+
+
+def test_published_tab_is_closed_in_cdp_mode(isolated, monkeypatch):
+    _image_draft(isolated)
+    _, _, _, page = _browser(monkeypatch)
+    pub.publish(str(isolated), "publish", "2026-10-10")
     page.close.assert_called_once()

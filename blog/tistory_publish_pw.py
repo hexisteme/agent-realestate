@@ -799,14 +799,18 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 # 리다이렉트 20s 단일 신호로 실패 단정 금지 — 공개 블로그 원격 대조 2차 확인.
                 page.wait_for_timeout(5000)
                 log.append(f"NO_REDIRECT(stage={_auth_stage(page.url)})")
+                # 캡차는 사람이 푼다. 상주 크롬이면 미확인 탭을 남겨 두고, 다음 슬롯은 원격 대조로만 마무리한다.
+                # 캡차는 '저장중' 뒤 늦게 그려지기도 해(10-26 강북) 몇 초 더 본다.
+                keep_tab = bool(CDP_URL)
                 try:
+                    for _ in range(5):
+                        if page.evaluate(_CAPTCHA_PROBE):
+                            log.append("CAPTCHA_SHOWN")
+                            break
+                        page.wait_for_timeout(2000)
                     shot = os.path.join(outroot, DIAG_DIR, f"{day}-{kind}-no-redirect.png")
                     os.makedirs(os.path.dirname(shot), exist_ok=True)
                     page.screenshot(path=shot)
-                    if page.evaluate(_CAPTCHA_PROBE):
-                        # 캡차는 사람이 푼다. 상주 크롬이면 탭을 남겨 두고, 다음 슬롯은 원격 대조로만 마무리한다.
-                        log.append("CAPTCHA_SHOWN")
-                        keep_tab = bool(CDP_URL)
                 except Exception as e:
                     log.append(f"DIAG_FAIL:{type(e).__name__}")
             # 이동만으로 성공 마커를 쓰지 않는다. 공개 글 링크가 확인돼야 완료다.
