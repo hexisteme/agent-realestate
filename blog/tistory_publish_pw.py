@@ -97,6 +97,15 @@ PROFILE_DIR = os.environ.get(
     "TISTORY_PW_PROFILE", "/Volumes/EXT_SSD/bot/agent_realestate/.pw-profile")
 # 세션 쿠키 영속 파일: ctx.close() 로 증발하는 __T_/__T_SECURE 등 persist=0 쿠키를 보존.
 STATE_FILE = os.path.join(PROFILE_DIR, "tistory_state.json")
+# 떠 있는 정식 크롬(launchd 상주, 원격 디버깅)에 CDP 로 붙는다 — 비면 Playwright 가 크롬을 띄운다.
+# 10-24·10-26 07시 무인 발행이 클릭 뒤 이동 없이 끝나 Playwright 가 띄운 창 대신 상주 창에서 전용 탭만 쓴다.
+CDP_URL = os.environ.get("TISTORY_CDP_URL", "")
+DIAG_DIR = "report/blog/tistory/diag"
+_CAPTCHA_PROBE = (
+    "() => { const q = ['captcha', 'kaptcha'].map(k => `[id*=${k} i],[class*=${k} i],iframe[src*=${k} i]`).join(',');"
+    " const t = document.body ? document.body.innerText : '';"
+    " return !!document.querySelector(q)"
+    " || /자동\\s*(입력|등록)\\s*방지|보안\\s*문자|빈칸에 들어갈 글자|로봇이 아닙니다/.test(t); }")
 # 발행 성공 마커(중복발행 방지)·시도 마커(at-most-once)·알림 nag-once 마커 — outroot 기준.
 PUBLISH_MARKER = ".last-tistory-published"
 ATTEMPT_MARKER = ".last-tistory-attempted"
@@ -565,9 +574,12 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
             return f"[{name}] ERR:body_image_source_unready({source}) | {' '.join(log)}"
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            PROFILE_DIR, channel="chrome", headless=headless,
-            args=["--no-first-run", "--no-default-browser-check"])
+        if CDP_URL:
+            ctx = p.chromium.connect_over_cdp(CDP_URL).contexts[0]
+        else:
+            ctx = p.chromium.launch_persistent_context(
+                PROFILE_DIR, channel="chrome", headless=headless,
+                args=["--no-first-run", "--no-default-browser-check"])
         try:
             ctx.grant_permissions(["clipboard-read", "clipboard-write"],
                                   origin="https://floker.tistory.com")
@@ -580,6 +592,7 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 # '저장된 글 이어서 작성' 복원 confirm 만 거부 — 수락하면 이전 슬롯의
                 # 자동저장 본문이 복원돼 이중 본문 발행 위험 (2026-07-06 리뷰).
                 msg = d.message or ""
+                log.append(f"DIALOG:{d.type}:{' '.join(msg.split())[:80]}")
                 if "이어서" in msg or "저장된 글" in msg:
                     d.dismiss()
                 else:
@@ -590,8 +603,12 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
         # 세션 쿠키 복원: 직전 실행에서 저장한 __T_/__T_SECURE 등을 컨텍스트에 주입.
         # (ctx.close() 는 persist=0 쿠키를 SQLite 에서 제거 → goto 전에 재주입 필요.)
         _load_state(ctx, log)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if CDP_URL:
+            page = ctx.new_page()
+        else:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
         authenticated = False
+        keep_tab = False
         try:
             page.bring_to_front()
             page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
@@ -782,6 +799,16 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 # 리다이렉트 20s 단일 신호로 실패 단정 금지 — 공개 블로그 원격 대조 2차 확인.
                 page.wait_for_timeout(5000)
                 log.append(f"NO_REDIRECT(stage={_auth_stage(page.url)})")
+                try:
+                    shot = os.path.join(outroot, DIAG_DIR, f"{day}-{kind}-no-redirect.png")
+                    os.makedirs(os.path.dirname(shot), exist_ok=True)
+                    page.screenshot(path=shot)
+                    if page.evaluate(_CAPTCHA_PROBE):
+                        # 캡차는 사람이 푼다. 상주 크롬이면 탭을 남겨 두고, 다음 슬롯은 원격 대조로만 마무리한다.
+                        log.append("CAPTCHA_SHOWN")
+                        keep_tab = bool(CDP_URL)
+                except Exception as e:
+                    log.append(f"DIAG_FAIL:{type(e).__name__}")
             # 이동만으로 성공 마커를 쓰지 않는다. 공개 글 링크가 확인돼야 완료다.
             published = _verify_published_on_blog(title, log) is True
             if published:
@@ -796,7 +823,10 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
                 if authenticated and not save_session_state(ctx, STATE_FILE, log):
                     raise RuntimeError("session persistence failed")
             finally:
-                ctx.close()
+                if not CDP_URL:
+                    ctx.close()
+                elif not keep_tab:
+                    page.close()
 
 
 def _notify_failure(detail: str, outroot: str = ".", kind: str = "daily") -> None:

@@ -103,6 +103,11 @@ fi
 # 2026-09-23: SSO 비밀번호 폼은 macOS Keychain 폴백으로 1회 재인증. Keychain 부재·거부·
 # 계정 선택·추가 인증은 기존 사람 대기로 닫으며 비밀값은 argv·환경·로그에 남기지 않는다.
 # --login-wait 120: 무인 재로그인 실패 시 사람이 창을 볼 기회 — 재시도마다 2분.
+# 2026-10-26: 발행 클릭 뒤 카카오 DKAPTCHA 가 뜬다. 상주 정식 크롬(원격 디버깅 9334)이 떠 있으면 거기에 붙어
+# 캡차 탭을 사람 입력용으로 남긴다. 없으면 기존처럼 Playwright 가 크롬을 띄운다.
+if (exec 3<>/dev/tcp/127.0.0.1/9334) 2>/dev/null; then
+  export TISTORY_CDP_URL=http://127.0.0.1:9334
+fi
 publish_rc=0
 publish_kind() {
   local kind="$1" rc

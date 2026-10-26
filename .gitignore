@@ -62,3 +62,4 @@ dist/
 # ADR 의사결정 로그 본문 — 개인 운영 레이어와 동일 원칙(공개 제외, 로컬 유지); 게이트 메커니즘+템플릿만 공개
 docs/adr/*
 !docs/adr/_template.md
+.cdp-profile/
