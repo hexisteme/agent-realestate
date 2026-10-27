@@ -7,11 +7,13 @@
 import gzip
 import html
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
 from blog.gu_tistory_post import (
+    GU_CYCLE_DAYS,
     GU_POSTS_PER_DAY,
     build_gu_facts,
     build_gu_post,
@@ -45,48 +47,50 @@ def _ds(gus=("강남", "서초", "노원", "마포", "송파", "중랑")) -> dic
 
 
 # ── 회전(rotation) ──────────────────────────────────────────────────────────
-# 2026-10-19 = 월요일. 평일 5일 × 5구 = 25구 → 구마다 정확히 주 1회(사이트 주간 구 포스트와 같은 주기).
-_WEEK = ("2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23")
+# 2026-10-27 사용자 결정(카카오 DKAPTCHA 대응): 하루 2구, 주말 포함 14일에 25구 한 바퀴.
+# 10-26(월)·10-27(화) 주간 회전이 강남~도봉 10구를 냈으므로 10-28 은 동대문·동작부터 잇는다.
+_CYCLE = [(date(2026, 10, 28) + timedelta(days=i)).isoformat() for i in range(14)]
 
 
-def test_평일_하루_발행수는_5개다():
-    assert GU_POSTS_PER_DAY == 5
-    for day in _WEEK:
-        assert len(select_rotation_gus(_GUS, day)) == 5, day
+def test_하루_발행수는_2개_이하다():
+    assert GU_POSTS_PER_DAY == 2 and GU_CYCLE_DAYS == 14
+    for day in _CYCLE:
+        assert len(select_rotation_gus(_GUS, day)) <= 2, day
 
 
-def test_평일_5일이면_25구를_중복없이_완주한다():
-    seen: list[str] = []
-    for day in _WEEK:
-        seen += select_rotation_gus(_GUS, day)
-    assert sorted(seen) == sorted(_GUS), "월~금 × 5구 = 25구 정확히 1회씩"
+def test_14일이면_25구를_중복없이_완주한다():
+    seen = [g for day in _CYCLE for g in select_rotation_gus(_GUS, day)]
+    assert sorted(seen) == sorted(_GUS), "14일 × 2구 블록 = 25구 정확히 1회씩"
 
 
-def test_주말에는_구_포스트가_없다():
-    assert select_rotation_gus(_GUS, "2026-10-24") == []   # 토
-    assert select_rotation_gus(_GUS, "2026-10-25") == []   # 일
+def test_주말에도_구_포스트가_나간다():
+    assert len(select_rotation_gus(_GUS, "2026-10-31")) == 2   # 토
+    assert len(select_rotation_gus(_GUS, "2026-11-01")) == 2   # 일
 
 
-def test_7일_동안_구마다_정확히_1회다():
-    from collections import Counter
-    from datetime import date, timedelta
-    d0 = date.fromisoformat("2026-10-19")
-    c = Counter(g for i in range(7) for g in select_rotation_gus(_GUS, (d0 + timedelta(days=i)).isoformat()))
-    assert set(c.values()) == {1} and len(c) == 25
+def test_같은_구는_14일마다_같은_요일에_돌아온다():
+    for day in _CYCLE:
+        later = (date.fromisoformat(day) + timedelta(days=GU_CYCLE_DAYS)).isoformat()
+        assert select_rotation_gus(_GUS, day) == select_rotation_gus(_GUS, later), day
+
+
+def test_10월28일은_도봉_다음_동대문_동작부터_잇는다():
+    import blog.build_explorer as be
+    assert select_rotation_gus(list(be.GU_LAWD), "2026-10-28") == ["동대문", "동작"]
 
 
 def test_같은_날짜는_같은_구를_준다():
     assert select_rotation_gus(_GUS, "2026-10-20") == select_rotation_gus(_GUS, "2026-10-20")
 
 
-def test_구가_5개_이하면_월요일에_전부_나간다():
-    assert select_rotation_gus(["강남", "서초"], "2026-10-19") == ["강남", "서초"]
-    assert select_rotation_gus(["강남", "서초"], "2026-10-20") == []
+def test_구가_2개_이하면_바퀴_첫날에_전부_나간다():
+    assert select_rotation_gus(["강남", "서초"], "2026-11-06") == ["강남", "서초"]
+    assert select_rotation_gus(["강남", "서초"], "2026-11-07") == []
 
 
-def test_구가_25개를_넘어도_평일_5일에_전부_돈다():
-    many = [f"구{i:02d}" for i in range(27)]
-    seen = [g for day in _WEEK for g in select_rotation_gus(many, day)]
+def test_구가_28개를_넘어도_14일에_전부_돈다():
+    many = [f"구{i:02d}" for i in range(31)]
+    seen = [g for day in _CYCLE for g in select_rotation_gus(many, day)]
     assert sorted(seen) == sorted(many)
 
 
@@ -153,7 +157,7 @@ def test_플래그가_꺼지면_아무것도_쓰지_않는다(tmp_path, monkeypa
 def test_플래그가_켜지면_구별_헬퍼를_쓴다(tmp_path, monkeypatch):
     monkeypatch.setenv("RE_GU_TISTORY_POSTS", "1")
     assert enabled() is True
-    paths = write_gu_posts(_ds(), "2026-10-20", "2026-10-19", str(tmp_path))
+    paths = write_gu_posts(_ds(), "2026-10-23", "2026-10-22", str(tmp_path))   # 바퀴 첫날 — 강남·노원
     assert 1 <= len(paths) <= GU_POSTS_PER_DAY
     for p in paths:
         assert Path(p).exists()
@@ -429,8 +433,8 @@ def test_오늘_원본이_구별_사전이_아니면_새_기록만_뺀다(tmp_pa
 
 def test_플래그가_켜지면_구_원고에_사실_블록이_실린다(tmp_path, monkeypatch):
     monkeypatch.setenv("RE_GU_TISTORY_POSTS", "1")
-    cur = _archive(tmp_path, "2026-10-12", [_OLD], [_OLD, _NEW])
-    paths = write_gu_posts(_ds(), "2026-10-19", "2026-10-19", str(tmp_path), molit_path=str(cur))
+    cur = _archive(tmp_path, "2026-10-16", [_OLD], [_OLD, _NEW])
+    paths = write_gu_posts(_ds(), "2026-10-23", "2026-10-23", str(tmp_path), molit_path=str(cur))   # 바퀴 첫날 — 강남·노원
     body = parse_helper(next(p for p in paths if "-gu-노원-" in p))["body"]
     assert "노원구 최근 1주 기록" in body and "노원첫단지 2026-09 84.97㎡ 10억" in body
 

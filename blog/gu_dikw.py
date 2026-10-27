@@ -10,7 +10,7 @@ W(판단 도구) = 닿는 가격(ReachablePrice)·닿는 단지 수(ReachableCou
   독자는 그림에서 자기 자리를 찾고 한도를 묶는 것(LTV·절대한도·스트레스 DSR)과 무엇을 늘려야 닿는 가격이 움직이는지 본다.
   대출 심사가 아니다(FINANCE_CONFIRM_NOTICE). 생애최초(LTV 70%)·기존 대출·전세 끼고 사기(토허 2년 실거주)는 넣지 않는다.
 제목 실험(TitleArm): A = 기존 키워드형(gu_tistory_post._build_title), B = 독자 상황 질문형(build_situation_title).
-  본문은 두 팔이 같고 제목만 다르다. 같은 구는 주마다 번갈아든다(assign_title_arm). 기록: report/experiments/gu-dikw-title-20261022.md
+  본문은 두 팔이 같고 제목만 다르다. 같은 구는 회전 바퀴(14일)마다 번갈아든다(assign_title_arm). 기록: report/experiments/gu-dikw-title-20261022.md
 
 되돌리기: RE_GU_DIKW=1 일 때만 동작한다. 지우면 구 원고는 2026-10-21 형태(사실 블록 + 표) 그대로다.
 """
@@ -246,12 +246,13 @@ def build_knowledge_lines(gu: str, rows: list[dict], all_rows: list[dict]) -> li
 # ── 제목 실험 ───────────────────────────────────────────────────────────────
 
 def assign_title_arm(gu: str, today: str, gus: list[str]) -> str:
-    """TitleArm — 월요일 시작 주 번호 + 정렬한 구 목록에서의 자리 홀짝. 같은 주 안에서는 같고, 같은 구는 주마다 번갈아든다.
-    회전(select_rotation_gus)도 정렬 순서로 5구씩 자르므로 하루 5구는 3:2, 한 주 25구는 13:12 로 갈린다
-    (crc32 홀짝은 고정 11:14 집합이라 주마다 11:14 ↔ 14:11 로 출렁였다 — Codex R1)."""
-    d = date.fromisoformat(today)
-    week = (d.toordinal() - d.weekday()) // 7
-    return "B" if (week + sorted(gus).index(gu)) % 2 == 0 else "A"
+    """TitleArm — 회전 바퀴 번호(14일) + 정렬한 구 목록에서의 자리 홀짝. 같은 구는 바퀴마다 번갈아든다.
+    회전(select_rotation_gus)도 정렬 순서로 2구씩 자르므로 하루 2구는 1:1, 한 바퀴 25구는 13:12 로 갈린다
+    (crc32 홀짝은 고정 11:14 집합이라 주마다 11:14 ↔ 14:11 로 출렁였다 — Codex R1).
+    2026-10-26 주까지는 월요일 시작 주 번호였다. 바퀴 0 은 그 주 번호(짝수)와 홀짝이 같아, 구마다 회전 변경 뒤
+    첫 글이 직전 주간 회전 글과 팔이 엇갈린다."""
+    from blog.gu_tistory_post import rotation_cycle
+    return "B" if (rotation_cycle(today) + sorted(gus).index(gu)) % 2 == 0 else "A"
 
 
 
@@ -265,20 +266,21 @@ class TitleArmVerdict:
 
 
 def judge_title_arms(records: list[dict]) -> TitleArmVerdict:
-    """TitleArm 판정 — records 는 글마다 {gu, week(월요일 ISO), arm, impressions, clicks}(게시 후 같은 14일 창).
-    같은 구의 이웃한 두 주 글(팔이 다름)을 짝짓고, B 먼저 짝과 A 먼저 짝의 B−A 평균을 반씩 섞는다(교차 설계).
+    """TitleArm 판정 — records 는 글마다 {gu, day(게시일 ISO), arm, impressions, clicks}(게시 후 같은 14일 창).
+    같은 구의 이웃한 두 글(회전 한 바퀴 안, 팔이 다름)을 짝짓고, B 먼저 짝과 A 먼저 짝의 B−A 평균을 반씩 섞는다(교차 설계).
     주 사이 추세는 두 순서에 부호가 반대로 들어가 지워진다 — 구별 승패 과반·팔 합계 CTR 은 13:12 로 많은 쪽 순서에
     추세가 얹혀 효과가 없어도 B 를 고른다(Codex R2 반례). 노출 0 인 글이 낀 짝은 뺀다. 클릭·CTR 효과가 모두 0 보다 커야 B."""
+    from blog.gu_tistory_post import GU_CYCLE_DAYS
     by_gu: dict[str, list[dict]] = {}
-    for r in sorted(records, key=lambda r: (r["gu"], r["week"])):
+    for r in sorted(records, key=lambda r: (r["gu"], r["day"])):
         by_gu.setdefault(r["gu"], []).append(r)
     diffs: dict[str, list[tuple[int, float]]] = {"B": [], "A": []}
     for posts in by_gu.values():
         i = 0
         while i + 1 < len(posts):
             first, second = posts[i], posts[i + 1]
-            gap = date.fromisoformat(second["week"]) - date.fromisoformat(first["week"])
-            if gap.days != 7 or first["arm"] == second["arm"]:
+            gap = date.fromisoformat(second["day"]) - date.fromisoformat(first["day"])
+            if gap.days > GU_CYCLE_DAYS or first["arm"] == second["arm"]:
                 i += 1
                 continue
             b, a = (first, second) if first["arm"] == "B" else (second, first)

@@ -104,24 +104,42 @@ def _gus():
     return list(be.GU_LAWD)
 
 
-def test_제목_팔은_결정론이고_같은_구는_주마다_번갈아든다():
-    monday = date(2026, 10, 26)
-    arms = [gd.assign_title_arm("송파", (monday + timedelta(weeks=k)).isoformat(), _gus()) for k in range(4)]
+def test_제목_팔은_결정론이고_같은_구는_회전_바퀴마다_번갈아든다():
+    day = date(2026, 10, 31)
+    arms = [gd.assign_title_arm("송파", (day + timedelta(days=14 * k)).isoformat(), _gus()) for k in range(4)]
     assert arms[0] != arms[1] and arms[0] == arms[2] and arms[1] == arms[3]
-    assert gd.assign_title_arm("송파", "2026-10-26", _gus()) == gd.assign_title_arm("송파", "2026-10-30", _gus())
+    assert gd.assign_title_arm("송파", "2026-10-31", _gus()) == gd.assign_title_arm("송파", "2026-11-05", _gus())
 
 
-def test_제목_팔은_주마다_25구가_13대12_안쪽으로_갈리고_하루_5구도_3대2_안쪽이다():
-    from blog.gu_tistory_post import select_rotation_gus
-    monday = date(2026, 10, 26)
-    for w in range(4):
-        week = []
-        for d in range(5):
-            day = (monday + timedelta(weeks=w, days=d)).isoformat()
+def test_제목_팔은_14일마다_25구가_13대12이고_하루_2구는_1대1이다():
+    from blog.gu_tistory_post import GU_CYCLE_DAYS, select_rotation_gus
+    start = date(2026, 10, 28)
+    for c in range(3):
+        cycle = []
+        for d in range(GU_CYCLE_DAYS):
+            day = (start + timedelta(days=c * GU_CYCLE_DAYS + d)).isoformat()
             arms = [gd.assign_title_arm(g, day, _gus()) for g in select_rotation_gus(_gus(), day)]
             assert abs(arms.count("A") - arms.count("B")) <= 1, (day, arms)
-            week += arms
-        assert len(week) == 25 and abs(week.count("A") - week.count("B")) == 1   # Codex R1: 11:14 교대 → 13:12
+            cycle += arms
+        assert len(cycle) == 25 and abs(cycle.count("A") - cycle.count("B")) == 1   # Codex R1: 11:14 교대 → 13:12
+
+
+def test_회전_변경_뒤_첫_글은_직전_주간_회전_글과_팔이_엇갈린다():
+    # 10-23(금) 용산~중랑, 10-26(월) 강남~관악, 10-27(화) 광진~도봉은 주 번호 홀짝(옛 배정)으로 나갔다.
+    from blog.gu_tistory_post import select_rotation_gus
+    gus = sorted(_gus())
+
+    def weekly_arm(gu, day):
+        d = date.fromisoformat(day)
+        return "B" if ((d.toordinal() - d.weekday()) // 7 + gus.index(gu)) % 2 == 0 else "A"
+    last = {g: "2026-10-26" for g in gus[:5]} | {g: "2026-10-27" for g in gus[5:10]} | {g: "2026-10-23" for g in gus[20:]}
+    first: dict[str, str] = {}
+    for d in range(14):
+        day = (date(2026, 10, 28) + timedelta(days=d)).isoformat()
+        for g in select_rotation_gus(gus, day):
+            first.setdefault(g, day)
+    for g, day in last.items():
+        assert gd.assign_title_arm(g, first[g], gus) != weekly_arm(g, day), (g, day, first[g])
 
 
 def test_상황형_제목은_구명_자기자본_단지수를_싣고_금칙어가_없다():
@@ -159,10 +177,18 @@ def test_꺼져_있으면_동작하지_않는다(monkeypatch):
 
 
 
-def _arm_records(clicks_of, weeks=("2026-10-26", "2026-11-02")):
-    return [dict(gu=g, week=w, arm=gd.assign_title_arm(g, w, _gus()), impressions=100,
-                 clicks=clicks_of(i, gd.assign_title_arm(g, w, _gus())))
-            for i, w in enumerate(weeks) for g in _gus()]
+def _arm_records(clicks_of, gap=14):
+    """바퀴 첫날 11-06 부터 두 바퀴 — 구마다 gap 일 떨어진 두 글."""
+    from blog.gu_tistory_post import select_rotation_gus
+    start = date(2026, 11, 6)
+    out = []
+    for i in range(2):
+        for d in range(14):
+            day = (start + timedelta(days=i * gap + d)).isoformat()
+            for g in select_rotation_gus(_gus(), day):
+                arm = gd.assign_title_arm(g, day, _gus())
+                out.append(dict(gu=g, day=day, arm=arm, impressions=100, clicks=clicks_of(i, arm)))
+    return out
 
 
 def test_제목_판정은_발행주_추세만_있으면_B를_고르지_않는다():
@@ -177,11 +203,11 @@ def test_제목_판정은_발행주_추세를_빼고_남은_B_효과를_잡는�
     assert v.verdict == "B" and v.click_effect == pytest.approx(1) and v.ctr_effect == pytest.approx(0.01)
 
 
-def test_제목_판정은_한쪽_순서만_있거나_이웃_주가_아니면_판정하지_않는다():
+def test_제목_판정은_한쪽_순서만_있거나_이웃_바퀴가_아니면_판정하지_않는다():
     first_b = [r for r in _arm_records(lambda i, arm: 1)
-               if gd.assign_title_arm(r["gu"], "2026-10-26", _gus()) == "B"]
+               if gd.assign_title_arm(r["gu"], "2026-11-06", _gus()) == "B"]
     assert gd.judge_title_arms(first_b).verdict == "판정 불가"
-    apart = _arm_records(lambda i, arm: 1, weeks=("2026-10-26", "2026-11-09"))   # 같은 팔 두 편 — 짝 없음
+    apart = _arm_records(lambda i, arm: 1, gap=28)   # 두 바퀴 떨어진 같은 팔 두 편 — 짝 없음
     assert gd.judge_title_arms(apart).verdict == "판정 불가"
 
 
@@ -190,7 +216,7 @@ def test_제목_판정은_한쪽_순서만_있거나_이웃_주가_아니면_판
 def _dikw_ds():
     rows = []
     import blog.build_explorer as be
-    for gu in be.GU_LAWD:                                     # 25구 — 평일 회전이 하루 5구를 고른다
+    for gu in be.GU_LAWD:                                     # 25구 — 회전이 하루 2구를 고른다
         rows += [dict(r, gu=gu, name=f"{gu}{r['name']}") for r in _k_rows() + _w_rows()]
     return {"complexes": rows, "count": len(rows), "data_asof": "2026-10-22", "generated": "2026-10-23"}
 
@@ -237,7 +263,7 @@ def test_사이트_빌드는_구_원고_그림도_검증해_복사한다(tmp_pat
     monkeypatch.setattr(bs, "SRC", str(tmp_path))
     monkeypatch.setattr(bs, "SITE", str(tmp_path / "site"))
     copied = bs._daily_body_media("2026-10-20")
-    assert len(copied) == 10 and all((tmp_path / "site" / c).is_file() for c in copied)
+    assert len(copied) == 4 and all((tmp_path / "site" / c).is_file() for c in copied)
     assert bs._daily_body_media("2026-10-19") == []          # 미래 날짜 원고는 복사하지 않는다
 
 

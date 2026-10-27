@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _run_cron(tmp_path, daily_rc=0, periodic_rc=0, *, periodic=True,
               build_rc=0, already_published=False, review_rc=0,
               series_due="", series_due_rc=0, series_rc=0, series_publish_rc=0,
-              gu=(), gu_published=(), gu_publish_rc=0, gu_other_day=()):
+              gu=(), gu_published=(), gu_publish_rc=0, gu_other_day=(), gu_attempted=(), hour="12"):
     root = tmp_path / "root"
     root.mkdir()
     bins = tmp_path / "bin"
@@ -33,8 +33,16 @@ def _run_cron(tmp_path, daily_rc=0, periodic_rc=0, *, periodic=True,
         (drafts / f"2026-09-10-gu-{g}-tistory-draft.html").write_text("fixture")
     for g in gu_published:
         (root / f".last-tistory-published-gu-{g}").write_text(today + "\n")
+    receipts = root / "report/blog/publications"
+    receipts.mkdir(parents=True)
+    for g in gu_attempted:
+        (receipts / f"{today}-gu-{g}.json").write_text('{"state": "ATTEMPTED"}')
     stubs = {
-        "date": 'printf "%s\\n" "2026-09-11"\n',
+        "date": '''case "${1:-}" in
+  +%H) printf '%s\\n' "$STUB_HOUR" ;;
+  *) printf '%s\\n' "2026-09-11" ;;
+esac
+''',
         "cat": '''if [ ! -f "$1" ]; then exit 1; fi
 while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line"; done < "$1"
 ''',
@@ -100,6 +108,7 @@ esac
         "STUB_SERIES_RC": str(series_rc),
         "STUB_SERIES_PUBLISH_RC": str(series_publish_rc),
         "STUB_GU_PUBLISH_RC": str(gu_publish_rc),
+        "STUB_HOUR": hour,
         "AGENT_REALESTATE_ROOT": str(root),
         "LC_ALL": "C",
     }
@@ -227,21 +236,69 @@ def _gu_calls(calls):
     return [line for line in calls if line.startswith("publish ") and "--kind gu-" in line]
 
 
+def _gu_kinds(calls):
+    return [line.split("--kind ")[1].split(" ")[0] for line in _gu_calls(calls)]
+
+
 def test_today_gu_drafts_publish_after_daily_without_design_review(tmp_path):
     result, calls = _run_cron(tmp_path, periodic=False, gu=("금천", "노원"), gu_other_day=("도봉",))
     assert result.returncode == 0, result.stderr
-    gu_calls = _gu_calls(calls)
-    assert sorted(gu_calls) == sorted(f"publish blog/tistory_publish_pw.py --mode publish --login-wait 120 "
-                                      f"--kind gu-{g} --date 2026-09-11" for g in ("금천", "노원"))
+    assert _gu_calls(calls) == ["publish blog/tistory_publish_pw.py --mode publish --login-wait 120 "
+                                "--kind gu-금천 --date 2026-09-11"]
     published = [line for line in calls if line.startswith("publish ")]
     assert " --pending" in published[0]
     assert not [line for line in calls if line.startswith("review ") and "gu-" in line]
     assert "tistory gu-금천: 완료 또는 기발행" in result.stdout
 
 
+# 2026-10-27 사용자 결정(카카오 DKAPTCHA): 구 원고는 이름순 k번째가 GU_SLOT_HOURS[k] 시(12·18) 슬롯부터, 슬롯당 새 클릭 1편.
+@pytest.mark.parametrize("hour", ["07", "09", "11"])
+def test_gu_waits_for_noon_slot(tmp_path, hour):
+    result, calls = _run_cron(tmp_path, periodic=False, gu=("금천", "노원"), hour=hour)
+    assert result.returncode == 0, result.stderr
+    assert _gu_kinds(calls) == []
+
+
+def test_second_gu_waits_for_evening_slot(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True, gu=("금천", "노원"),
+                              gu_published=("금천",), hour="15")
+    assert result.returncode == 0, result.stderr
+    assert _gu_kinds(calls) == [] and "멱등 가드" in result.stdout
+
+
+def test_evening_slot_publishes_second_gu(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True, gu=("금천", "노원"),
+                              gu_published=("금천",), hour="18")
+    assert result.returncode == 0, result.stderr
+    assert _gu_kinds(calls) == ["gu-노원"]
+
+
+def test_one_new_gu_click_per_slot(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, gu=("금천", "노원"), hour="18")
+    assert _gu_kinds(calls) == ["gu-금천"]
+
+
+def test_attempted_gu_is_rechecked_in_any_slot_without_using_the_click(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True, gu=("금천", "노원"),
+                              gu_attempted=("금천", "노원"), hour="09")
+    assert "멱등 가드" not in result.stdout
+    assert _gu_kinds(calls) == ["gu-금천", "gu-노원"]
+    (tmp_path / "evening").mkdir()
+    result, calls = _run_cron(tmp_path / "evening", periodic=False, gu=("금천", "노원"),
+                              gu_attempted=("금천",), hour="18")
+    assert _gu_kinds(calls) == ["gu-금천", "gu-노원"]
+
+
+def test_drafts_beyond_slots_are_not_published(tmp_path):
+    result, calls = _run_cron(tmp_path, periodic=False, already_published=True,
+                              gu=("광진", "구로", "금천", "노원", "도봉"), gu_published=("광진", "구로"), hour="21")
+    assert result.returncode == 0, result.stderr
+    assert _gu_kinds(calls) == [] and "멱등 가드" in result.stdout
+
+
 def test_pending_gu_bypasses_success_guard_and_published_gu_is_skipped(tmp_path):
     result, calls = _run_cron(tmp_path, periodic=False, already_published=True,
-                              gu=("금천", "노원"), gu_published=("금천",))
+                              gu=("금천", "노원"), gu_published=("금천",), hour="18")
     assert result.returncode == 0, result.stderr
     assert "멱등 가드" not in result.stdout
     assert [line.split("--kind ")[1] for line in _gu_calls(calls)] == ["gu-노원 --date 2026-09-11"]

@@ -57,17 +57,28 @@ periodic_pending() { [ -f "$PERDRAFT" ] && [ "$(cat "$PERSTAMP" 2>/dev/null || t
 # 연재(2026-10-14 사용자 결정 — 둘째·셋째·넷째 화요일 upsize·deposit·watch, 판정 통과 시 무인 발행).
 # due = 오늘 할 일이 남은 연재 회차 "kind T"(회차 화요일 T~금요일 유예·보류 기록·발행 마커·RE_SERIES_AUTOPUBLISH 반영,
 # blog/series_edition.py). 확인 실패는 연재만 건너뛰고 알린다 — 일간 흐름을 막지 않는다.
-# 구 단위 분할(2026-10-20 사용자 결정 — 자동 공개): run_daily 가 평일 5개 구 원고(RE_GU_TISTORY_POSTS=1)를 쓴다.
+# 구 단위 분할(2026-10-20 사용자 결정 — 자동 공개): run_daily 가 하루 2개 구 원고(RE_GU_TISTORY_POSTS=1)를 쓴다.
 # 오늘 원고 중 kind 별 마커(.last-tistory-published-gu-<구>)가 오늘이 아닌 구만 "gu-<구>" 로 낸다 — 실패한 구만 다음 슬롯 재시도.
+# 2026-10-27 사용자 결정(카카오 DKAPTCHA, report/2026-10-26-tistory-dkaptcha.md): 연달아 올리지 않는다. 이름순 k번째 원고는
+# GU_SLOT_HOURS[k] 시 슬롯부터 내고, 자리가 없는 원고(회전 전환일 잔여)는 새로 내지 않는다. 발행을 이미 시도한 원고
+# (영수증 있음)는 시각과 무관하게 넣는다 — 퍼블리셔는 클릭 없이 원격 대조만 한다.
+GU_SLOT_HOURS=(12 18)
 gu_pending_kinds() {
-  local draft gu
+  local draft gu k=0 hour
+  hour=$((10#$(date +%H)))
   for draft in "$ROOT/report/blog/tistory/${TODAY}-gu-"*-tistory-draft.html; do
     [ -f "$draft" ] || continue
     gu="${draft##*/${TODAY}-gu-}"
     gu="${gu%-tistory-draft.html}"
-    [ "$(cat "$ROOT/.last-tistory-published-gu-$gu" 2>/dev/null || true)" = "$TODAY" ] || echo "gu-$gu"
+    if [ "$(cat "$ROOT/.last-tistory-published-gu-$gu" 2>/dev/null || true)" != "$TODAY" ]; then
+      if gu_attempted "gu-$gu" || { [ "$k" -lt "${#GU_SLOT_HOURS[@]}" ] && [ "$hour" -ge "${GU_SLOT_HOURS[$k]}" ]; }; then
+        echo "gu-$gu"
+      fi
+    fi
+    k=$((k + 1))
   done
 }
+gu_attempted() { [ -f "$ROOT/report/blog/publications/${TODAY}-$1.json" ]; }
 SERIES_OPEN=""
 if ! SERIES_OPEN="$(python3 -m blog.series_edition due --day "$TODAY" --outroot "$ROOT")"; then
   SERIES_OPEN=""
@@ -173,8 +184,14 @@ if [ -n "$SERIES_KIND" ]; then
       ;;
   esac
 fi
-# 4편째부터: 구 단위 분할. 디자인 리뷰는 쓰지 않는다(하루 5회 Codex 호출 방지 — 게이트 NOT_RUN 비차단, 2026-10-20 390px 실측 통과).
+# 4편째부터: 구 단위 분할. 디자인 리뷰는 쓰지 않는다(구마다 Codex 호출 방지 — 게이트 NOT_RUN 비차단, 2026-10-20 390px 실측 통과).
+# 한 슬롯에 새 발행 클릭은 구 1편 — 앞 원고가 실패해 뒤 원고 슬롯과 겹쳐도 다음 슬롯으로 민다. 원격 대조는 세지 않는다.
+gu_clicked=0
 for gu_kind in $(gu_pending_kinds); do
+  if ! gu_attempted "$gu_kind"; then
+    [ "$gu_clicked" -eq 0 ] || continue
+    gu_clicked=1
+  fi
   publish_kind "$gu_kind" --kind "$gu_kind" --date "$TODAY"
 done
 echo "[$(date)] done (publish rc=$publish_rc)"

@@ -1,4 +1,4 @@
-"""구 단위 티스토리 포스트 — 하루 5구 회전 발행(2026-10-20 분할 실험).
+"""구 단위 티스토리 포스트 — 하루 2구 회전 발행(2026-10-20 분할 실험, 2026-10-27 5구 → 2구).
 
 왜: 일간 다이제스트는 25구를 1편에 담아 제목이 `서울 아파트 실거래가 — 비교 N단지 …` 였다
 (`daily_digest._build_digest_title`). 제목·URL 에 구명도 단지명도 없어 "노원구 아파트 실거래"
@@ -7,8 +7,9 @@
 
 중복 가드: 사이트측 구 포스트는 2026-09-06 P0 이후 주 1회만 쓴다
 (`build_explorer.should_write_weekly_posts` — 25편/일이 실질 중복이라는 진단). 이 모듈은 사이트가
-아니라 티스토리 표면만 늘리고, 평일(월~금) 하루 5구 × 5일 = 25구로 구마다 정확히 주 1회다. 주말은
-쉰다. 사이트 구 페이지는 방법론·출처의 원문 링크로만 건다.
+아니라 티스토리 표면만 늘리고, 주말 포함 하루 2구 × 14일 = 25구로 구마다 정확히 2주 1회다(처음엔 평일 하루
+5구·주 1회였다 — 2026-10-24 부터 카카오 DKAPTCHA 가 연달아 올린 글에 뜨기 시작해 10-27 사용자 결정으로 줄이고
+슬롯을 나눴다, report/2026-10-26-tistory-dkaptcha.md). 사이트 구 페이지는 방법론·출처의 원문 링크로만 건다.
 
 고유 사실(2026-10-21 P1): 첫 5편(/135~/139)은 표 밖 산문이 편끼리 5-gram Jaccard 0.95(숫자 마스킹)였고
 "허브가 정본" 문장이 사이트 한 곳으로 유도했다 — Google 스팸 정책 doorway 예시와 같은 형태
@@ -49,12 +50,14 @@ from blog.tistory_draft import TISTORY_TAGS, _MUT, build_tistory_section
 from blog.visual_first import BODY_IMAGE_RESERVE
 from blog.wording_guard import assert_lead_wording_ok, assert_wording_ok
 
-GU_POSTS_PER_DAY = 5
+GU_POSTS_PER_DAY = 2
+GU_CYCLE_DAYS = 14       # 주말 포함 14일에 한 바퀴 — 같은 구는 2주마다 같은 요일에 돌아온다
 TISTORY_BUDGET = 28000   # daily_digest._TISTORY_TEXT_BUDGET 와 같은 값 — 30KB 중 대표이미지 메타 2KB 예약
-_WEEKDAYS = 5            # 월~금
+# 바퀴 첫날. 10-26·27 주간 회전이 강남~도봉을 냈으므로 10-28 이 6번째 날(동대문·동작)이 되게 잡는다.
+_ROTATION_EPOCH = date(2026, 10, 23)
 _FLAG = "RE_GU_TISTORY_POSTS"
 _TAG_LIMIT = 10
-_WEEK_DAYS = 7           # 구마다 주 1회 — 최근 기록은 7일 전 원본 아카이브(±1일)와 비교한다
+_WEEK_DAYS = 7           # 최근 1주 기록 — 7일 전 원본 아카이브(±1일)와 비교한다(회전은 14일, 그 앞 1주는 일간·결산 몫)
 _RECORD_LIMIT = 8        # 새 기록 목록 상한(최근 계약월부터) — 나머지는 건수만
 _HIGHS_LIMIT = 3         # 기준 최고가를 넘긴 기록 상한
 
@@ -69,17 +72,20 @@ def _gu_label(gu: str) -> str:
     return gu if gu.endswith("구") else gu + "구"
 
 
-def select_rotation_gus(gus: list[str], today: str, n: int = GU_POSTS_PER_DAY) -> list[str]:
-    """요일로 결정되는 회전 — 월~금 5일에 전체 구를 정확히 1회씩 돌고, 주말은 [] 다.
+def rotation_cycle(today: str) -> int:
+    """회전 바퀴 번호 — _ROTATION_EPOCH 부터 GU_CYCLE_DAYS 일씩 센다. 제목 팔 배정(gu_dikw.assign_title_arm)이 쓴다."""
+    return (date.fromisoformat(today) - _ROTATION_EPOCH).days // GU_CYCLE_DAYS
 
-    구를 정렬해 블록으로 자르고 요일(월=0)로 블록을 고른다. 구가 n×5 를 넘으면 블록 크기를 늘려
-    평일 5일 안에 모두 돈다. 같은 날짜는 항상 같은 블록이다(재현성)."""
-    weekday = date.fromisoformat(today).weekday()
-    if weekday >= _WEEKDAYS:
-        return []
+
+def select_rotation_gus(gus: list[str], today: str, n: int = GU_POSTS_PER_DAY) -> list[str]:
+    """날짜로 결정되는 회전 — 주말 포함 GU_CYCLE_DAYS 일에 전체 구를 정확히 1회씩 돈다.
+
+    구를 정렬해 블록으로 자르고 바퀴 안의 날(0~13)로 블록을 고른다. 구가 n×14 를 넘으면 블록 크기를 늘려
+    한 바퀴 안에 모두 돈다. 블록이 남지 않은 끝 날은 [] 다. 같은 날짜는 항상 같은 블록이다(재현성)."""
+    day = (date.fromisoformat(today) - _ROTATION_EPOCH).days % GU_CYCLE_DAYS
     ordered = sorted(gus)
-    size = max(n, math.ceil(len(ordered) / _WEEKDAYS))
-    return ordered[weekday * size:(weekday + 1) * size]
+    size = max(n, math.ceil(len(ordered) / GU_CYCLE_DAYS))
+    return ordered[day * size:(day + 1) * size]
 
 
 def _lead_complex(rows: list[dict]) -> dict:
