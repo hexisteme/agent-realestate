@@ -28,7 +28,10 @@ import datetime
 import glob
 import os
 import re
+import subprocess
 import sys
+import time
+import urllib.request
 from urllib.parse import urlsplit
 
 # 기존 파서 재사용 (헬퍼 HTML → title/tags/body)
@@ -101,6 +104,11 @@ STATE_FILE = os.path.join(PROFILE_DIR, "tistory_state.json")
 # 10-24·10-26 07시 무인 발행이 클릭 뒤 이동 없이 끝나 Playwright 가 띄운 창 대신 상주 창에서 전용 탭만 쓴다.
 CDP_URL = os.environ.get("TISTORY_CDP_URL", "")
 DIAG_DIR = "report/blog/tistory/diag"
+# 상주 크롬 launchd 라벨. 붙기가 실패하면 한 번 재기동하고 다시 붙는다 — 10-28 07:05 응답 없는 newtab 탭 하나가
+# connect_over_cdp 를 180초 묶어 슬롯 전체가 실패했다. 재기동은 사람 입력을 기다리던 캡차 탭도 닫는다.
+RESIDENT_CHROME_LABEL = "com.hexisteme.re-blog.chrome"
+CDP_CONNECT_TIMEOUT_MS = 45000
+CDP_RESTART_WAIT_S = 30
 _CAPTCHA_PROBE = (
     "() => { const q = ['captcha', 'kaptcha'].map(k => `[id*=${k} i],[class*=${k} i],iframe[src*=${k} i]`).join(',');"
     " const t = document.body ? document.body.innerText : '';"
@@ -117,6 +125,36 @@ DESIGN_BLOCK_EXIT = 5  # open P1 defect(check=rule) — 발행 안 함
 DESIGN_AWAIT_EXIT = 6  # 깨진·오래된 리뷰 또는 open P1 defect(check=advisory) — 사람 판단 전 발행 안 함
 # 부동산 블로그 소유 카카오 계정(비밀 아님). 공개 저장소라 값은 .env/환경변수에만 둔다.
 KAKAO_ACCOUNT_KEY = "TISTORY_KAKAO_ACCOUNT"
+
+
+def restart_resident_chrome(cdp_url: str = CDP_URL, wait_s: int = CDP_RESTART_WAIT_S) -> bool:
+    """상주 크롬을 launchd 로 재기동하고 원격 디버깅 포트가 다시 답할 때까지 기다린다."""
+    try:
+        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{RESIDENT_CHROME_LABEL}"],
+                       check=True, capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{cdp_url}/json/version", timeout=3):
+                return True
+        except OSError:
+            time.sleep(1)
+    return False
+
+
+def connect_resident_chrome(chromium, log: list):
+    """상주 크롬에 붙는다. 실패하면 크롬을 한 번 재기동해 다시 붙고, 그래도 안 되면 None(발행 시도 전이라 다음 슬롯이 다시 한다)."""
+    for restarted in (False, True):
+        try:
+            return chromium.connect_over_cdp(CDP_URL, timeout=CDP_CONNECT_TIMEOUT_MS)
+        except Exception as e:
+            log.append(f"CDP_CONNECT_FAIL:{type(e).__name__}")
+        if restarted or not restart_resident_chrome():
+            return None
+        log.append("CDP_CHROME_RESTARTED")
+    return None
 
 
 def _read_marker(path: str) -> str:
@@ -575,7 +613,10 @@ def _publish_locked(outroot, mode, day, name, data, headless, login_wait_s, post
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         if CDP_URL:
-            ctx = p.chromium.connect_over_cdp(CDP_URL).contexts[0]
+            browser = connect_resident_chrome(p.chromium, log)
+            if browser is None:
+                return f"[{name}] ERR:cdp_connect_failed | {' '.join(log)}"
+            ctx = browser.contexts[0]
         else:
             ctx = p.chromium.launch_persistent_context(
                 PROFILE_DIR, channel="chrome", headless=headless,
@@ -910,7 +951,8 @@ def result_exit_code(result: str, mode: str) -> int:
 # --pending 한 번에 새로 발행하는 상한. 실패한 날은 세지 않는다.
 PENDING_PUBLISH_LIMIT = 2
 # 원고와 무관한 실패 — 다음 날짜도 같은 이유로 실패하거나 마커가 어긋나므로 건너뛰지 않고 멈춘다.
-RUN_WIDE_FAILURES = ("ERR:not_logged_in", "ERR:login_timeout", "ERR:exception", "MARKER_FAIL", "STATE_SAVE_FAIL")
+RUN_WIDE_FAILURES = ("ERR:not_logged_in", "ERR:login_timeout", "ERR:exception", "ERR:cdp_connect_failed",
+                     "MARKER_FAIL", "STATE_SAVE_FAIL")
 
 
 def pending_dates(outroot: str, today: str) -> list[str]:

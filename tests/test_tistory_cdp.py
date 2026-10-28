@@ -3,7 +3,7 @@
 10-24·10-26 07시 무인 발행이 클릭 뒤 이동 없이(NO_REDIRECT) 끝났고, 대화상자는 조용히 수락돼 원인 기록이 없었다.
 """
 import sys
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -39,7 +39,7 @@ def test_cdp_url_attaches_to_running_chrome_and_closes_only_its_tab(isolated, mo
     _, p, ctx, page = _browser(monkeypatch)
     result = pub.publish(str(isolated), "inject", "2026-10-10")
     assert "INJECT_OK" in result
-    p.chromium.connect_over_cdp.assert_called_once_with("http://127.0.0.1:9334")
+    p.chromium.connect_over_cdp.assert_called_once_with("http://127.0.0.1:9334", timeout=pub.CDP_CONNECT_TIMEOUT_MS)
     p.chromium.launch_persistent_context.assert_not_called()
     ctx.new_page.assert_called_once()
     page.close.assert_called_once()
@@ -116,3 +116,56 @@ def test_published_tab_is_closed_in_cdp_mode(isolated, monkeypatch):
     _, _, _, page = _browser(monkeypatch)
     pub.publish(str(isolated), "publish", "2026-10-10")
     page.close.assert_called_once()
+
+
+def test_hung_resident_chrome_is_restarted_once_and_reattached(isolated, monkeypatch):
+    """R3(10-28 07:05): 응답 없는 newtab 탭 하나가 connect_over_cdp 를 180초 묶어 슬롯 전체가 실패했다."""
+    _image_draft(isolated)
+    _, p, ctx, _ = _browser(monkeypatch)
+    p.chromium.connect_over_cdp.side_effect = [TimeoutError("synthetic"), Mock(contexts=[ctx])]
+    restart = Mock(return_value=True)
+    monkeypatch.setattr(pub, "restart_resident_chrome", restart)
+    result = pub.publish(str(isolated), "inject", "2026-10-10")
+    assert "INJECT_OK" in result
+    assert "CDP_CONNECT_FAIL:TimeoutError" in result and "CDP_CHROME_RESTARTED" in result
+    restart.assert_called_once()
+    assert p.chromium.connect_over_cdp.call_count == 2
+
+
+def test_unrecoverable_cdp_is_run_wide_failure_before_any_attempt(isolated, monkeypatch):
+    _image_draft(isolated)
+    _, p, _, _ = _browser(monkeypatch)
+    p.chromium.connect_over_cdp.side_effect = TimeoutError("synthetic")
+    monkeypatch.setattr(pub, "restart_resident_chrome", Mock(return_value=False))
+    result = pub.publish(str(isolated), "publish", "2026-10-10")
+    assert "ERR:cdp_connect_failed" in result
+    assert pub.result_exit_code(result, "publish") == 1
+    assert any(m in result for m in pub.RUN_WIDE_FAILURES)
+    _, attempted, _ = pub.marker_paths(str(isolated))
+    assert not (isolated / attempted).exists()
+    assert p.chromium.connect_over_cdp.call_count == 1
+
+
+def test_restart_kicks_launchd_job_and_waits_for_debug_port(monkeypatch):
+    import subprocess
+    import urllib.request
+    run = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    answers = iter([OSError("refused"), MagicMock()])
+
+    def urlopen(url, timeout):
+        value = next(answers)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(pub.time, "sleep", Mock())
+    assert pub.restart_resident_chrome("http://127.0.0.1:9334", wait_s=5) is True
+    argv = run.call_args.args[0]
+    assert argv[:3] == ["launchctl", "kickstart", "-k"] and argv[3].endswith("/" + pub.RESIDENT_CHROME_LABEL)
+
+
+def test_restart_reports_failure_when_launchctl_fails(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", Mock(side_effect=subprocess.CalledProcessError(1, "launchctl")))
+    assert pub.restart_resident_chrome("http://127.0.0.1:9334", wait_s=1) is False
