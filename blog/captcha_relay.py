@@ -27,6 +27,9 @@ ANSWER_INPUT = "#inpDkaptcha"
 SUBMIT_BUTTON = "#btn_dkaptcha_submit"
 CHANGE_BUTTON = "#btn_dkaptcha_change"
 QUESTION_IMAGE = "img.img_map"
+# 캡차 창이 문제 대신 띄우는 오류 화면(10-28 18:06 'Bad Request') — 답을 넣을 칸이 없다.
+ERROR_SCREEN = ".wrap_error"
+ERROR_TEXT = ".txt_error"
 NEW_QUESTION_WORDS = ("새문제", "새 문제", "/new")
 ANSWER_WAIT_S = 45
 OUTCOME_WAIT_S = 15
@@ -93,10 +96,23 @@ def question_of(page) -> str:
     return f"{widget_of(src)}:{hashlib.sha256(image.encode()).hexdigest()[:10]}"
 
 
+def error_of(page) -> str:
+    """캡차 창이 문제 대신 띄운 오류 문구. 오류 화면이 아니면 빈 문자열."""
+    frame = page.frame_locator(CAPTCHA_FRAME)
+    if frame.locator(ERROR_SCREEN).count() == 0:
+        return ""
+    return (frame.locator(ERROR_TEXT).first.inner_text() or "").strip()[:80] or "오류"
+
+
+def tab_key(tab: dict) -> str:
+    return " ".join((tab["cdp"], tab["target"], tab["widget"]))
+
+
 def tabs_to_announce(state: dict, tabs: list[dict]) -> list[dict]:
-    """아직 사진을 보내지 않은 캡차(탭·문제 쌍)만 고른다."""
+    """아직 사진(오류 화면이면 알림)을 보내지 않은 캡차(탭·문제 쌍)만 고른다."""
     announced = {(e["cdp"], e["target"], e["widget"]) for e in state["sent"].values()}
-    return [t for t in tabs if (t["cdp"], t["target"], t["widget"]) not in announced]
+    return [t for t in tabs if (t["cdp"], t["target"], t["widget"]) not in announced
+            and tab_key(t) not in state.get("errors", {})]
 
 
 def compose_caption(tab: dict) -> str:
@@ -185,15 +201,21 @@ def _target_id(ctx, page) -> str:
         session.detach()
 
 
-def find_captcha_tabs(cdp: str, ctx) -> list[dict]:
-    """캡차가 떠 있는 탭 — iframe 주소로만 찾고 캡차 내용은 읽지 않는다."""
+def find_captcha_tabs(cdp: str, ctx, log=print) -> list[dict]:
+    """캡차가 떠 있는 탭 — iframe 주소로만 찾고 캡차 내용은 읽지 않는다. 읽지 못한 탭은 이번 실행에서 건너뛴다."""
     tabs = []
     for page in ctx.pages:
-        if not has_captcha(page):
-            continue
-        title = page.evaluate("() => (document.querySelector('#post-title-inp') || {}).value || document.title")
-        tabs.append({"cdp": cdp, "target": _target_id(ctx, page), "widget": question_of(page),
-                     "host": urlsplit(page.url).hostname or "", "title": title or "", "page": page})
+        try:
+            if not has_captcha(page):
+                continue
+            error = error_of(page)
+            src = page.locator(CAPTCHA_FRAME).first.get_attribute("src") or ""
+            widget = f"{widget_of(src)}:error" if error else question_of(page)
+            title = page.evaluate("() => (document.querySelector('#post-title-inp') || {}).value || document.title")
+            tabs.append({"cdp": cdp, "target": _target_id(ctx, page), "widget": widget, "error": error,
+                         "host": urlsplit(page.url).hostname or "", "title": title or "", "page": page})
+        except Exception as e:
+            log(f"CAPTCHA_TAB_UNREADABLE {type(e).__name__}")
     return tabs
 
 
@@ -278,6 +300,8 @@ OUTCOME_TEXT = {
     "PASSED_UNCONFIRMED": "캡차는 사라졌지만 발행 이동은 확인하지 못했습니다. 다음 슬롯이 원격 대조합니다.",
     "GONE": "이 캡차 탭은 이미 닫혔거나 사라졌습니다.",
 }
+# 답을 받기 전에 캡차 창이 사라지면(10-28 21:42 → 21:49) 늦은 답장이 버려지지 않게 그 사진에 바로 알린다.
+VANISHED_TEXT = "이 캡차는 답을 받기 전에 사라졌습니다. 이 사진에는 답하지 마세요. 발행을 다시 누르면 새 사진을 보냅니다."
 
 
 def _announce(state: dict, tab: dict, token: str, chat: str, opener, log) -> None:
@@ -289,6 +313,14 @@ def _announce(state: dict, tab: dict, token: str, chat: str, opener, log) -> Non
     log(f"CAPTCHA_ANNOUNCED {tab['host']} {tab['target'][:8]} msg={mid}")
 
 
+def _report_error(state: dict, tab: dict, token: str, chat: str, opener, log) -> None:
+    send_text(token, chat, f"[티스토리 캡차 오류] {tab['host']}\n{tab['title'][:120]}\n"
+                           f"캡차 창이 문제 대신 오류 화면({tab['error']})을 띄웠습니다. "
+                           f"답을 넣을 수 없어 발행을 다시 눌러야 합니다.", opener=opener)
+    state["errors"][tab_key(tab)] = {"cdp": tab["cdp"], "title": tab["title"], "noticed_epoch": int(time.time())}
+    log(f"CAPTCHA_ERROR_SCREEN {tab['host']} {tab['target'][:8]} {tab['error']}")
+
+
 def relay_once(cdp_urls, credentials, state: dict, *, connect, answer_wait_s: int = ANSWER_WAIT_S,
                opener=urllib.request.urlopen, log=print, busy=lambda: False) -> dict:
     """탭을 훑어 새 캡차 사진을 보내고, 대기 중인 캡차가 있으면 답을 기다려 넣는다.
@@ -298,7 +330,8 @@ def relay_once(cdp_urls, credentials, state: dict, *, connect, answer_wait_s: in
     """
     token, chat = credentials
     if state.get("bot") != bot_key(token):
-        state.update(bot=bot_key(token), offset=0, sent={})
+        state.update(bot=bot_key(token), offset=0, sent={}, errors={})
+    state.setdefault("errors", {})
     tabs, reached = [], set()
     for cdp in cdp_urls:
         found = connect(cdp)
@@ -306,10 +339,19 @@ def relay_once(cdp_urls, credentials, state: dict, *, connect, answer_wait_s: in
             reached.add(cdp)
             tabs.extend(found)
     by_key = {(t["cdp"], t["target"], t["widget"]): t for t in tabs}
-    state["sent"] = {mid: e for mid, e in state["sent"].items()
-                     if e["cdp"] not in reached or (e["cdp"], e["target"], e["widget"]) in by_key}
+    vanished = {mid: e for mid, e in state["sent"].items()
+                if e["cdp"] in reached and (e["cdp"], e["target"], e["widget"]) not in by_key}
+    state["sent"] = {mid: e for mid, e in state["sent"].items() if mid not in vanished}
+    for mid, entry in vanished.items():
+        send_text(token, chat, VANISHED_TEXT, reply_to=mid, opener=opener)
+        log(f"CAPTCHA_VANISHED {entry['host']} {entry['target'][:8]} msg={mid}")
+    live = {tab_key(t) for t in tabs}
+    state["errors"] = {k: e for k, e in state["errors"].items() if e["cdp"] not in reached or k in live}
     for tab in tabs_to_announce(state, tabs):
-        _announce(state, tab, token, chat, opener, log)
+        if tab.get("error"):
+            _report_error(state, tab, token, chat, opener, log)
+        else:
+            _announce(state, tab, token, chat, opener, log)
     if busy():
         log("PUBLISHER_BUSY — 답 받기 건너뜀")
         return state

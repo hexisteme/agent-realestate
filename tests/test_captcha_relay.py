@@ -20,6 +20,7 @@ class _Captcha:
     def __init__(self, widget, question="q1"):
         self.src = f"https://dkaptcha.kakao.com/dkaptcha/quiz?widget={widget}&platform=pc"
         self.question, self.filled, self.clicked = question, [], []
+        self.error = None
 
 
 class _Locator:
@@ -31,7 +32,12 @@ class _Locator:
         return self
 
     def count(self):
+        if self.inside and self.selector == relay.ERROR_SCREEN:
+            return 1 if self.page.captcha and self.page.captcha.error else 0
         return 1 if self.page.captcha else 0
+
+    def inner_text(self):
+        return self.page.captcha.error
 
     def get_attribute(self, name):
         if self.inside:
@@ -96,6 +102,9 @@ class _Page:
             self.captcha = None
         elif self.after_submit == "wrong":
             self.captcha.question = "q2"
+
+    def evaluate(self, script):
+        return "서울 아파트 실거래가"
 
     def close(self):
         self.closed = True
@@ -366,3 +375,60 @@ def test_r3_save_rejected_after_captcha_is_its_own_outcome(monkeypatch):
     page.dialog = _Dialog("게시글을 작성하는데 실패했습니다. 잠시 후 다시 시도해주세요.")
     assert relay.submit_answer(page, "중앙", sleep=lambda s: None) == "SAVE_REJECTED"
     assert "SAVE_REJECTED" in relay.OUTCOME_TEXT
+
+
+class _Ctx:
+    def __init__(self, pages):
+        self.pages = pages
+
+    def new_cdp_session(self, page):
+        return type("S", (), {"send": lambda _, m: {"targetInfo": {"targetId": page.target}},
+                              "detach": lambda _: None})()
+
+
+class _UnreadablePage(_Page):
+    def frame_locator(self, selector):
+        raise TimeoutError("Locator.get_attribute: Timeout 30000ms exceeded.")
+
+
+def test_error_screen_is_reported_once_as_text_and_never_waited_on():
+    """10-28 18:06 동작: 캡차 창이 'Bad Request' 오류 화면이라 문제 그림이 없었고 중계가 매분 멈췄다."""
+    page = _Page()
+    page.captcha.error = "Bad Request"
+    tab = dict(_tab(page, widget="w1:error"), error="Bad Request")
+    telegram = _Telegram()
+    state = relay.relay_once([CDP], ("tok", CHAT), _state(), connect=lambda cdp: [tab], answer_wait_s=5,
+                             opener=telegram, log=lambda m: None)
+    assert telegram.methods() == ["sendMessage"] and state["sent"] == {} and len(state["errors"]) == 1
+    again = relay.relay_once([CDP], ("tok", CHAT), state, connect=lambda cdp: [tab], answer_wait_s=5,
+                             opener=telegram, log=lambda m: None)
+    assert telegram.methods() == ["sendMessage"] and len(again["errors"]) == 1
+    gone = relay.relay_once([CDP], ("tok", CHAT), again, connect=lambda cdp: [], answer_wait_s=5,
+                            opener=telegram, log=lambda m: None)
+    assert gone["errors"] == {} and telegram.methods() == ["sendMessage"]
+
+
+def test_find_captcha_tabs_marks_the_error_screen_and_skips_an_unreadable_tab():
+    broken, failed, ready = _UnreadablePage(), _Page(widget="w2"), _Page(widget="w3")
+    broken.target, failed.target, ready.target = "T0", "T1", "T2"
+    failed.captcha.error = "Bad Request"
+    logged = []
+    tabs = relay.find_captcha_tabs(CDP, _Ctx([broken, failed, ready]), log=logged.append)
+    assert [(t["target"], t["widget"], t["error"]) for t in tabs] == [
+        ("T1", "w2:error", "Bad Request"), ("T2", relay.question_of(ready), "")]
+    assert logged == ["CAPTCHA_TAB_UNREADABLE TimeoutError"]
+
+
+def test_vanished_captcha_tells_its_photo_not_to_be_answered():
+    """10-28 21:42 동작: 캡차 창이 7분쯤 뒤 사라졌는데 알림이 없어 21:56 답장이 아무 데도 들어가지 않았다."""
+    logs = []
+    telegram = _Telegram()
+    state = relay.relay_once([CDP], ("tok", CHAT), _state(**{"7": _entry()}), connect=lambda cdp: [], answer_wait_s=5,
+                             opener=telegram, log=logs.append)
+    assert state["sent"] == {} and telegram.methods() == ["sendMessage"]
+    body = telegram.calls[0][1].decode()
+    assert "reply_to_message_id=7" in body and relay.urllib.parse.quote("사라졌") in body
+    assert any(line.startswith("CAPTCHA_VANISHED") for line in logs)
+    again = relay.relay_once([CDP], ("tok", CHAT), state, connect=lambda cdp: [], answer_wait_s=5,
+                             opener=telegram, log=logs.append)
+    assert again["sent"] == {} and telegram.methods() == ["sendMessage"]
