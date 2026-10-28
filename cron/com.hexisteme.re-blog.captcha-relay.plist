@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.hexisteme.re-blog.captcha-relay</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd /Volumes/EXT_SSD/bot/agent_realestate &amp;&amp; echo "[$(date '+%F %T')] relay" &amp;&amp; python3 -u -m blog.captcha_relay</string>
+  </array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/kimjonghyun/Library/Logs/re-blog-captcha-relay.log</string>
+  <key>StandardErrorPath</key><string>/Users/kimjonghyun/Library/Logs/re-blog-captcha-relay.log</string>
+</dict>
+</plist>
