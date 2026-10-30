@@ -255,6 +255,19 @@ def test_r3_agy3_page_guard_blocks_causal_words():
     assert {"덕분에", "영향으로", "때문에"} <= set(ac._EXTRA_WORDS)
 
 
+def test_r4_codex_lead_does_not_claim_every_month_when_one_drops_out():
+    """R4: 중간 결측으로 빠진 달이 있으면 '그 기간의 모든 달'은 거짓 — 확인된 달 전부라고만 쓴다."""
+    raw = _raw()
+    book = ac.build_analog_casebook(raw, "2026-10-30")
+    hole = ac.shift_month(book.main.base[12]["from"], 30)
+    raw["mortgage_rate"] = {m: v for m, v in raw["mortgage_rate"].items() if m != ac.shift_month(hole, -1)}
+    holed = ac.build_analog_casebook(raw, "2026-10-30")
+    b = holed.main.base[12]
+    assert ac._m(b["to"]) - ac._m(b["from"]) + 1 > b["n"]                 # 기간 안에 빠진 달이 있다
+    s = ac.base_rate_sentence(holed)
+    assert "그 기간의 모든 달" not in s and "6개 지표와 결과가 모두 확인된 달 전부" in s
+
+
 def test_build_is_deterministic():
     raw = _raw()
     assert ac.render_analogs_page(ac.build_analog_casebook(raw, "2026-10-30"), "2026-10-30") == \
