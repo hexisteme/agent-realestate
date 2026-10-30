@@ -571,8 +571,13 @@ def plain_period_line(d: dict) -> str:
     if pct is None:
         return ""
     span = (date.fromisoformat(d["today"]) - date.fromisoformat(d["base_date"])).days
-    moved = "그대로였습니다" if pct == 0 else f"{_eok(cur)}로 {pct:+.1f}% 움직였습니다"
-    return (f"지난 {span}일 동안 두 번 다 집계된 같은 서울 아파트 {d['n_valid']:,}곳의 가격 가운데 값은 {_eok(base)}에서 "
+    if cur == base:
+        moved = f"{_eok(base)} 그대로였습니다"
+    elif pct == 0:   # Codex R2: ±0.05% 미만 변화를 '그대로'로 쓰지 않는다
+        moved = f"{_eok(base)}에서 {_eok(cur)}로 거의 같았습니다(변화 ±0.1% 미만)"
+    else:
+        moved = f"{_eok(base)}에서 {_eok(cur)}로 {pct:+.1f}% 움직였습니다"
+    return (f"지난 {span}일 동안 두 번 다 집계된 같은 서울 아파트 {d['n_valid']:,}곳의 가격 가운데 값은 "
             f"{moved}. 단지마다 최근 12개월 실거래의 가운데 값을 견준 것이라 이 기간 거래만의 변화는 아닙니다. "
             f"가격대를 옮긴 단지는 {len(d.get('migrations') or []):,}곳입니다.")
 

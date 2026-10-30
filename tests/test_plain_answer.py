@@ -4,6 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import pytest
+
 from blog import market_charts as mch
 from blog.wording_guard import assert_wording_ok
 from test_market_charts import snapshot
@@ -31,7 +33,7 @@ def test_plain_answer_states_fall_and_flat_in_words():
     falling = {"n_total": 100, "n_judged": 40, "up": 10, "down": 30}
     assert "40곳 중 30곳(75%)에서 최근 3개월 가격이 그 전 9개월보다 낮았습니다" in mch.plain_answer_lines(falling, d)[0]
     import dataclasses
-    flat_trades = dataclasses.replace(d.trades, mom=0.0)
+    flat_trades = dataclasses.replace(d.trades, points=(("2026-07", 6300.0), ("2026-08", 6300.0)), mom=0.0)
     line = mch.plain_answer_lines(_COUNTS, dataclasses.replace(d, trades=flat_trades))[1]
     assert "7월과 같았습니다" in line
 
@@ -55,3 +57,24 @@ def test_visual_first_puts_plain_answer_before_the_technical_summary():
     gated = vf.count_gated_trends(rows)
     assert f"{gated['n_judged']}곳 중" in head
     assert vf._plain_html({}, None, {"complexes": []}) == ""
+
+
+def test_codex_r2_tiny_trade_change_is_not_called_the_same():
+    # Codex R2(2026-10-30): 6,300→6,301호는 mom 0.0% 로 반올림되지만 '같았습니다'는 거짓
+    import dataclasses
+    d = mch.build_market_dashboard(snapshot(), "2026-10-10")
+    tr = dataclasses.replace(d.trades, points=(("2026-07", 6300.0), ("2026-08", 6301.0)), mom=0.0)
+    line = mch.plain_answer_lines(_COUNTS, dataclasses.replace(d, trades=tr))[1]
+    assert "같았습니다" not in line and "7월보다 1호 많았습니다" in line
+    same = dataclasses.replace(d.trades, points=(("2026-07", 6300.0), ("2026-08", 6300.0)), mom=0.0)
+    assert "7월과 같았습니다" in mch.plain_answer_lines(_COUNTS, dataclasses.replace(d, trades=same))[1]
+
+
+@pytest.mark.parametrize("counts,expect", [
+    ({"n_judged": 100, "up": 0, "down": 0}, "100곳 모두 최근 3개월 가격이 그 전 9개월과 같았습니다"),
+    ({"n_judged": 10, "up": 4, "down": 4}, "10곳 중 높아진 곳과 낮아진 곳이 4곳씩 같았습니다(나머지 2곳은 변화 없음)"),
+    ({"n_judged": 10, "up": 6, "down": 1}, "10곳 중 6곳(60%)에서 최근 3개월 가격이 그 전 9개월보다 높았습니다(낮아진 곳 1곳, 변화 없는 곳 3곳)"),
+])
+def test_codex_r2_flat_and_tied_price_counts_are_stated_as_they_are(counts, expect):
+    line = mch.plain_answer_lines(counts, None)[0]
+    assert expect in line, line

@@ -343,17 +343,31 @@ def plain_answer_lines(counts: dict, d: MarketDashboard | None) -> list[str]:
     lines = []
     if all(isinstance(counts.get(k), int) for k in ("n_judged", "up", "down")) and counts["n_judged"] > 0:
         n, up, down = counts["n_judged"], counts["up"], counts["down"]
-        k, word, other, other_word = (up, "높았습니다", down, "낮아진") if up >= down else (down, "낮았습니다", up, "높아진")
-        share = (k * 200 + n) // (2 * n)   # 반올림(HALF_UP), 정수 연산
-        lines.append(f"가격 — 거래가 충분한 단지 {n:,}곳 중 {k:,}곳({share}%)에서 최근 3개월 가격이 그 전 9개월보다 {word}"
-                     f"({other_word} 곳 {other:,}곳). 같은 집이 아니라 그 기간에 거래된 집들의 가운데 값입니다.")
+        flat = n - up - down
+        if up == down == 0:
+            head = f"거래가 충분한 단지 {n:,}곳 모두 최근 3개월 가격이 그 전 9개월과 같았습니다"
+        elif up == down:   # Codex R2: 동률·전부 보합을 '0곳(0%)에서 높았다'로 쓰지 않는다
+            head = (f"거래가 충분한 단지 {n:,}곳 중 높아진 곳과 낮아진 곳이 {up:,}곳씩 같았습니다"
+                    + (f"(나머지 {flat:,}곳은 변화 없음)" if flat else ""))
+        else:
+            k, word, other, other_word = (up, "높았습니다", down, "낮아진") if up > down else (down, "낮았습니다", up, "높아진")
+            share = (k * 200 + n) // (2 * n)   # 반올림(HALF_UP), 정수 연산
+            head = (f"거래가 충분한 단지 {n:,}곳 중 {k:,}곳({share}%)에서 최근 3개월 가격이 그 전 9개월보다 {word}"
+                    f"({other_word} 곳 {other:,}곳" + (f", 변화 없는 곳 {flat:,}곳)" if flat else ")"))
+        lines.append(f"가격 — {head}. 같은 집이 아니라 그 기간에 거래된 집들의 가운데 값입니다.")
     if d and d.trades:
         month, value = d.trades.latest
         line = f"거래 — {_month_label(month)} 서울 아파트 매매 신고는 {value:,.0f}호"
         if d.trades.mom is not None and len(d.trades.points) >= 2:
-            prev = _month_label(d.trades.points[-2][0])
-            line += (f"로 {prev}과 같았습니다." if d.trades.mom == 0 else
-                     f"로 {prev}보다 {abs(d.trades.mom):.1f}% {'많았습니다' if d.trades.mom > 0 else '적었습니다'}.")
+            prev_month, prev_value = d.trades.points[-2]
+            prev, diff = _month_label(prev_month), value - prev_value
+            more = "많았습니다" if diff > 0 else "적었습니다"
+            if diff == 0:
+                line += f"로 {prev}과 같았습니다."
+            elif round(abs(d.trades.mom), 1) == 0:   # Codex R2: 증감률이 0.0% 로 반올림돼도 값이 다르면 '같다'가 아니다
+                line += f"로 {prev}보다 {abs(diff):,.0f}호 {more}."
+            else:
+                line += f"로 {prev}보다 {abs(d.trades.mom):.1f}% {more}."
         else:
             line += "였습니다."
         lines.append(line)

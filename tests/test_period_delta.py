@@ -419,3 +419,13 @@ def test_plain_period_line_leads_both_bodies_in_plain_words():
         assert "<p>한눈에 보기 — 지난 7일" in body
         assert body.index("한눈에 보기") < body.index("기준 스냅샷")
     assert pd.plain_period_line({**d, "seoul_median_base": None}) == ""
+
+
+def test_codex_r2_period_plain_line_unchanged_and_near_zero_wording():
+    base_rows = [_row("강남", f"단지{i}", 10.0, pos=100) for i in range(12)]
+    d = pd.build_period_delta(_ds(base_rows, gen="2026-09-20"), _ds(base_rows, gen="2026-09-13"), "weekly", "2026-09-20",
+                              date(2026, 9, 13))
+    assert "가격 가운데 값은 10억 그대로였습니다" in pd.plain_period_line(d)
+    near = {**d, "seoul_median_base": 10.0, "seoul_median_cur": 10.004}
+    line = pd.plain_period_line(near)
+    assert "그대로" not in line and "거의 같았습니다" in line
