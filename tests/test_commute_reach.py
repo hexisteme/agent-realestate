@@ -164,15 +164,16 @@ def test_transfer_priority_reverse_older_alias_and_missing():
 
 
 def test_transfer_duplicates_resolve_independent_of_row_order():
-    rows = [["1", "다", "2호선", None, 200], ["1", "다", "2호선", None, 160], ["2", "다", "지선", None, 70], ["2", "다", "지선", None, 50]]
+    rows = [["1", "다", "2호선", None, 200], ["1", "다", "2호선", None, 160], ["2", "다", "2호선", None, 70], ["2", "다", "2호선", None, 50]]
     lines_at = {"다": {"1", "2"}}
     for perm in (rows, rows[::-1]):
         walks, branch, _ = cr.resolve_transfer_walks([{"rows": perm}], lines_at)
         assert walks[("다", "1", "2")] == 160 and branch == {("다", "2"): 50}
 
 
-def test_branch_walk_charges_same_line_train_change():
-    v = _vintage(transfers=[{"rows": [["1", "다", "2호선", None, 180], ["1", "나", "지선", None, 45]]}])
+def test_codex_r3_same_line_transfer_row_is_the_branch_walk():
+    # Codex R3: 원천은 성수·신도림(2→2)·강동(5→5) 지선 환승을 같은 호선 행으로 적는다 — '지선' 문자열만 보던 구현은 둘 다 버려 0초로 셌다
+    v = _vintage(transfers=[{"rows": [["1", "다", "2호선", None, 180], ["1", "나", "1호선", None, 45]]}])
     g = cr.build_station_graph(v)
     assert (("A", "1", "102"), 45) in g.rev[("B", "1", "102")]
     assert (("A", "1", "103"), 0) in g.rev[("B", "1", "103")]
@@ -292,7 +293,7 @@ def test_coordinate_match_stages_and_gates():
     coords, dongs, stats = cr.match_complex_coordinates(cxs, kapt, apts, molit)
     assert coords == {"1": (37.651, 127.061), "2": (37.652, 127.062), "3": (37.654, 127.064)}
     assert stats == {"kapt": 1, "name": 1, "jibun": 1, "none": 1}
-    assert dongs["4"] == "상계동"
+    assert dongs == {"1": "상계동", "2": "상계동", "3": "상계동"}            # 좌표가 붙은 단지만
 
 
 def test_coordinate_match_rejects_other_ordinal_and_unverified_kapt():
@@ -319,11 +320,36 @@ def test_coordinate_spatial_outlier_is_dropped():
     assert coords == {} and stats["spatial"] == 1
 
 
-def test_dong_choice_is_mode_with_name_tiebreak():
-    molit = {LAWD: [{"apt": "가", "umd": "중계동", "jibun": "1"}, {"apt": "가", "umd": "상계동", "jibun": "2"}]}
-    for recs in (molit[LAWD], molit[LAWD][::-1]):
-        _, dongs, _ = cr.match_complex_coordinates([_cx(1, "가")], {}, _filler(), {LAWD: recs})
+def test_codex_r3_dong_follows_the_coordinate_row():
+    # Codex R3: 흔한 이름 '삼성'의 MOLIT 거래가 수서동에 더 많아, 도곡동 좌표로 계산한 단지를 수서동으로 세던 경로
+    apts = _filler() + [_apt("D1", "도곡삼성", 37.651, 127.061, dong="중계동")]
+    recs = [{"apt": "삼성", "umd": "상계동", "jibun": "1"}, {"apt": "삼성", "umd": "상계동", "jibun": "2"},
+            {"apt": "삼성", "umd": "중계동", "jibun": "3"}]
+    kapt = {"1": {"kapt_code": "D1", "kapt_verified": True}}
+    _, dongs, _ = cr.match_complex_coordinates([_cx(1, "삼성")], kapt, apts, {LAWD: recs})
+    assert dongs == {"1": "중계동"}
+
+
+def test_dong_falls_back_to_molit_mode_when_source_dong_is_foreign():
+    # 실측: 공동주택 정보 행의 법정동이 다른 구 이름('합동')인 오기 — 그 구 MOLIT 기록에 없는 이름이면 MOLIT 최빈(동률은 가나다순)
+    apts = _filler() + [_apt("D1", "가", 37.651, 127.061, dong="합동")]
+    kapt = {"1": {"kapt_code": "D1", "kapt_verified": True}}
+    recs = [{"apt": "가", "umd": "중계동", "jibun": "1"}, {"apt": "가", "umd": "상계동", "jibun": "2"}]
+    for order in (recs, recs[::-1]):
+        _, dongs, _ = cr.match_complex_coordinates([_cx(1, "가")], kapt, apts, {LAWD: order})
         assert dongs == {"1": "상계동"}
+
+
+def test_jung_gu_and_guro_prefixes_are_handled():
+    # R3 검증 중 발견: '중구'+'구' = '중구구' 로 이름·지번 풀이 비고, '구로'.replace('구') = '로' 로 구 접두어를 못 떼던 경로
+    assert cr._sgg("중구") == "중구" and cr._sgg("강남") == "강남구"
+    assert "현대" in cr._name_forms("구로현대", "구로", "개봉동")
+    apts = [[f"F{i}", f"채움{i}", "중구", "신당동", "", 127.01 + 0.001 * i, 37.56, 500.0, "2000-01-01"] for i in range(3)]
+    apts.append(["J1", "신당어딘가", "중구", "신당동", "100-1", 127.011, 37.561, 500.0, "2000-01-01"])
+    molit = {be.GU_LAWD["중구"]: [{"apt": "신당이름", "umd": "신당동", "jibun": "100-1"}]}
+    cx = {"complex_no": 1, "gu": "중구", "name": "신당이름", "units": 500, "built_year": 2000}
+    coords, dongs, stats = cr.match_complex_coordinates([cx], {}, apts, molit)
+    assert coords == {"1": (37.561, 127.011)} and stats == {"jibun": 1} and dongs == {"1": "신당동"}
 
 
 # ── 묶음 ──────────────────────────────────────────────────────────────────
@@ -479,6 +505,7 @@ def test_collector_parsers_and_vintage_io(tmp_path, monkeypatch):
 
 def test_collector_assembles_all_sources_without_partial_vintage(monkeypatch):
     monkeypatch.setenv("SEOUL_OPENAPI_KEY", "test-key")
+    monkeypatch.setattr(ci, "MIN_ROWS", {"timetable": 1, "stations": 1, "apts": 1})
     tt = ("LINE,SI_ID,STATION_NM,WEEKTAG,INOUTTAG,GUBHANG,TRAIN_NO,STT,EDT\n"
           "1,0150,서울역,DAY,UP,0,K1,06:58:00,06:58:30\n1,0151,시청,DAY,UP,0,K1,07:00:00,\n").encode("cp949")
     tr = ("호선,환승역명,환승노선,환승거리,환승소요시간\n" + "".join(f"1,역{i},2호선,10,1분\n" for i in range(100))).encode("utf-8-sig")
@@ -494,6 +521,30 @@ def test_collector_assembles_all_sources_without_partial_vintage(monkeypatch):
     broken = dict(files, **{"OA-13290": ("환승.csv", "호선,환승역명\n".encode())})
     with pytest.raises(ValueError):
         ci.collect_commute_inputs("2026-10-30", download=lambda s: broken[s["infId"]], openapi=lambda s, k: api[s])
+
+
+def test_codex_r3_thin_api_response_is_not_saved_as_a_new_vintage(monkeypatch):
+    # Codex R3: 빈(정상 코드) API 응답이 새 판으로 저장돼 이전 판을 가리던 경로 — 첫 판 실측의 절반 아래면 판을 만들지 않는다
+    monkeypatch.setenv("SEOUL_OPENAPI_KEY", "test-key")
+    tt = ("LINE,SI_ID,STATION_NM,WEEKTAG,INOUTTAG,GUBHANG,TRAIN_NO,STT,EDT\n"
+          + "".join(f"1,0150,서울역,DAY,UP,0,K{i},07:00:00,07:00:30\n1,0151,시청,DAY,UP,0,K{i},07:02:00,\n" for i in range(20_000))).encode()
+    tr = ("호선,환승역명,환승노선,환승거리,환승소요시간\n" + "".join(f"1,역{i},2호선,10,1분\n" for i in range(100))).encode()
+    files = {"OA-22522": ("시각표(250930).csv", tt), "OA-13290": ("환승.csv", tr)}
+    st = [{"BLDN_ID": str(i), "BLDN_NM": f"역{i}", "ROUTE": "1호선", "LAT": "37.5", "LOT": "127.0"} for i in range(700)]
+    apt = {"APT_CD": "A", "APT_NM": "가", "SGG_ADDR": "노원구", "EMD_ADDR": "상계동", "XCRD": "127.06", "YCRD": "37.65"}
+    full = {"subwayStationMaster": st, "OpenAptInfo": [dict(apt, APT_CD=f"A{i}") for i in range(2_100)]}
+    assert len(ci.collect_commute_inputs("2026-10-30", download=lambda s: files[s["infId"]], openapi=lambda s, k: full[s])["apts"]) == 2_100
+    for thin in ({"subwayStationMaster": [], "OpenAptInfo": full["OpenAptInfo"]}, {"subwayStationMaster": st, "OpenAptInfo": []}):
+        with pytest.raises(RuntimeError):
+            ci.collect_commute_inputs("2026-10-30", download=lambda s: files[s["infId"]], openapi=lambda s, k: thin[s])
+
+
+def test_codex_r3_switching_station_clears_the_previous_result_while_loading():
+    # Codex R3: 역을 바꾼 뒤 응답을 기다리는 동안 앞 역 결과(집계·표 열)가 그대로 보이던 동작
+    js = rc._JS_COMMUTE
+    load = js[js.index("function commuteLoad("):js.index("function commuteAfter(")]
+    assert load.index("CMT.vals=null") < load.index("reachRender()") < load.index("fetch(")
+    assert "CMT.wait=!!id" in load and "불러오는 중" in js
 
 
 # ── 실제 판(없으면 건너뜀) ─────────────────────────────────────────────────
@@ -548,6 +599,12 @@ def test_real_model_agrees_with_connection_scan(real_graph, origin, dest):
     scans = [_csa_seconds(v, g, origin, dest, t) for t in range(T7, T7 + 6600, 600)]
     mean = sum(scans) / len(scans)
     assert abs(model - mean) <= max(120, 0.10 * mean), (origin, dest, model, mean)
+
+
+def test_real_branch_walks_come_from_same_line_rows(real_graph):
+    v, g = real_graph
+    _, branch, _ = cr.resolve_transfer_walks(v["transfers"], {k: {l for l, _ in s} for k, s in g.sids_at.items()})
+    assert branch == {("강동", "5"): 16, ("성수", "2"): 19, ("신도림", "2"): 68}
 
 
 def test_real_missing_transfers_are_pinned(real_graph):

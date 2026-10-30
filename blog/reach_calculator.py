@@ -179,7 +179,7 @@ function reachRender(){
 """
 
 _JS_COMMUTE = r"""
-var CMT={id:null,vals:null,req:0,err:''};
+var CMT={id:null,vals:null,req:0,err:'',wait:false};
 function commuteTally(hit,vals,limit){   // commute_reach.tally_commute 와 같은 규칙 — 이내+초과+없음=행 수
   var o={m:hit.length,within:0,over:0,gap:{},dongs:{}};
   hit.forEach(function(x){var v=vals[x._i];
@@ -193,16 +193,18 @@ function commuteLine(){
   var esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
   var st=(D.commute.lines[q('cline').value]||[]);
   q('cstn').innerHTML='<option value="">역을 고르세요</option>'+st.map(function(s){return '<option value="'+esc(s[0])+'">'+esc(s[1])+'</option>';}).join('');
-  q('cstn').disabled=!st.length;CMT.id=null;CMT.vals=null;CMT.err='';CMT.req++;reachRender();}
+  q('cstn').disabled=!st.length;CMT.id=null;CMT.vals=null;CMT.err='';CMT.wait=false;CMT.req++;reachRender();}
 function commuteLoad(){
   var D=window.REACH_D,id=document.getElementById('cstn').value,my=++CMT.req;
-  CMT.id=null;CMT.vals=null;CMT.err='';
-  if(!id){reachRender();return;}
+  CMT.id=null;CMT.vals=null;CMT.err='';CMT.wait=!!id;
+  reachRender();                                             // 받는 동안 앞 역 결과를 남기지 않는다(Codex R3)
+  if(!id)return;
   fetch('reach-commute/'+id+'.json').then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(j){
     if(my!==CMT.req)return;                                  // 더 나중에 고른 역이 있으면 버린다
+    CMT.wait=false;
     if(j.v!==D.commute.v||!j.t||j.t.length!==D.rows.length){CMT.err='ver';}else{CMT.id=id;CMT.vals=j.t;}
     reachRender();
-  }).catch(function(){if(my!==CMT.req)return;CMT.err='load';reachRender();});}
+  }).catch(function(){if(my!==CMT.req)return;CMT.wait=false;CMT.err='load';reachRender();});}
 function commuteAfter(D,hit,esc){
   var q=function(id){return document.getElementById(id);};
   if(!D.commute)return null;
@@ -210,6 +212,7 @@ function commuteAfter(D,hit,esc){
   if(CMT.err){box.style.display='';th.style.display='none';q('cmt-dongs').innerHTML='';
     q('cmt-head').textContent=CMT.err==='ver'?'통근 자료가 이 페이지와 다른 날의 것이라 쓰지 않았습니다. 새로고침해 주세요.':'통근 자료를 불러오지 못했습니다.';
     return null;}
+  if(CMT.wait){box.style.display='';th.style.display='none';q('cmt-dongs').innerHTML='';q('cmt-head').textContent='통근 자료를 불러오는 중입니다.';return null;}
   if(!CMT.vals){box.style.display='none';th.style.display='none';return null;}
   var C=D.commute,lim=C.limit,t=commuteTally(hit,CMT.vals,lim),u=t.m-t.within-t.over,nm=C.names[CMT.id];
   var gaps=C.gap_order.filter(function(k){return t.gap[k];}).map(function(k){return C.gap[k]+' '+t.gap[k];}).join(' · ');

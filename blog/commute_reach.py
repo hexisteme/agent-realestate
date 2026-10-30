@@ -3,7 +3,8 @@
 설계 정본: report/2026-10-30-dikw-kw-review/p2/DESIGN-r3.md(2판 DESIGN-r2.md 위에 R2 Codex·agy 반영). 사용자 결정 10-30: 1~9호선
 일반열차, 좌표 없는 단지는 '계산자료 없음'으로 공개.
 - 역 그래프: 운행시각표 편을 이어붙인 운행(TrainRun)에서 구간 간선(RideSegment)을 만든다. 무게 = 대기(창 안 운행 수로 배차 절반) + 승차 중위.
-  환승 = 환승표 걷기(반대 방향 행·옛 판·노선 별칭 허용), 같은 호선 열차 바꾸기 = '지선' 걷기. 빠진 환승 쌍은 잇지 않는다.
+  환승 = 환승표 걷기(반대 방향 행·옛 판·노선 별칭 허용), 같은 호선 열차 바꾸기 = 같은 호선 행 걷기(성수·신도림 2→2, 강동 5→5 지선).
+  빠진 환승 쌍은 잇지 않는다.
 - 단지 좌표(ComplexCoordinate): 공동주택 아파트 정보 좌표를 K-apt 코드 → 법정동 안 이름 → 지번으로 붙이고, 공간 일치 검사를 통과한 것만 쓴다.
 - Python 이 도착역마다 단지별 초(또는 사유 코드)를 끝까지 계산하고, 페이지 JS 는 받아서 세기만 한다(tally_commute 와 같은 규칙).
 결과는 '선택역까지의 모형 추정'이며 회사까지 걸음·혼잡·급행은 넣지 않는다. 단지 좌표는 게시하지 않는다.
@@ -38,7 +39,6 @@ GAP_TEXT = {GAP_NO_COORD: "좌표 미확인", GAP_NO_STATION: "1km 안 지원 �
             GAP_UNSUPPORTED_NEARER: "지원 밖 노선이 더 가까움", GAP_UNREACHABLE: "경로 미연결"}
 SAME_STATION = {"이수": "총신대입구"}           # 4호선 총신대입구 = 7호선 이수(한 역, 이름 둘)
 KORAIL_ALIASES = ("국철", "경원선", "경부선", "경인선")   # 그 역에 1호선이 있을 때만 1호선
-BRANCH = "지선"
 _NAME_SUB = (("에스케이", "sk"), ("skview", "sk뷰"), ("sk view", "sk뷰"), ("e편한세상", "이편한세상"), ("e-편한세상", "이편한세상"))
 
 
@@ -191,8 +191,6 @@ def _route_line(route: str, station: str, from_line: str, lines_at: dict[str, se
     m = re.fullmatch(r"(\d)호선", r)
     if m:
         return m.group(1) if m.group(1) in SUPPORTED_LINES else None
-    if r == BRANCH:
-        return BRANCH
     if r in KORAIL_ALIASES and from_line != "1" and "1" in lines_at.get(station, ()):
         return "1"
     return None
@@ -201,7 +199,8 @@ def _route_line(route: str, station: str, from_line: str, lines_at: dict[str, se
 def resolve_transfer_walks(transfer_files: list[dict], lines_at: dict[str, set[str]]
                            ) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str], int], list[str]]:
     """환승표(우선순위 순) → (걷기 {(역, A, B): 초}, 지선 걷기 {(역, 호선): 초}, 빠진 쌍 목록).
-    우선순위: 최신판 같은 방향 → 최신판 반대 방향 → 옛 판 같은 방향 → 옛 판 반대 방향(같은 통로로 본다)."""
+    우선순위: 최신판 같은 방향 → 최신판 반대 방향 → 옛 판 같은 방향 → 옛 판 반대 방향(같은 통로로 본다).
+    출발 호선과 환승 노선이 같은 행(2호선→2호선)은 본선↔지선 승강장 걷기다(Codex R3 — 원천은 '지선'이라 적지 않는다)."""
     found: dict[tuple[str, str, str], dict[tuple[int, int], int]] = defaultdict(dict)
     branch_found: dict[tuple[str, str], dict[int, int]] = defaultdict(dict)
     keep = lambda d, k, v: d.__setitem__(k, min(d.get(k, v), v))   # 같은 우선순위 안 중복 행은 짧은 쪽 — 행 순서와 무관하게
@@ -211,10 +210,8 @@ def resolve_transfer_walks(transfer_files: list[dict], lines_at: dict[str, set[s
             b = _route_line(route, stn, a, lines_at)
             if b is None or a not in SUPPORTED_LINES:
                 continue
-            if b == BRANCH:
-                keep(branch_found[(stn, a)], p, int(secs))
-                continue
             if a == b:
+                keep(branch_found[(stn, a)], p, int(secs))
                 continue
             keep(found[(stn, a, b)], (p, 0), int(secs))
             keep(found[(stn, b, a)], (p, 1), int(secs))
@@ -338,7 +335,7 @@ def _name_forms(name: str, gu: str, dong: str) -> set[str]:
     """정규화 이름 + 구·법정동 접두어를 뗀 형태(대치포스코더샵 ↔ 포스코더샵)."""
     c = _canon(name)
     out = {c}
-    for p in (gu.replace("구", ""), re.sub(r"\d*동$|\d+가$", "", dong or ""), (dong or "").replace("동", "")):
+    for p in (re.sub(r"구$", "", gu), re.sub(r"\d*동$|\d+가$", "", dong or ""), (dong or "").replace("동", "")):
         if p and c.startswith(p) and len(c) > len(p) + 1:
             out.add(c[len(p):])
     return {f for f in out if f}
@@ -378,11 +375,18 @@ def spatial_outliers(apts: list[list]) -> set[str]:
     return out
 
 
+def _sgg(gu: str) -> str:
+    """데이터셋 구 이름('강남'·'중구') → 공동주택 정보 SGG_ADDR('강남구'·'중구')."""
+    return gu if gu.endswith("구") else gu + "구"
+
+
 def match_complex_coordinates(complexes: list[dict], kapt: dict, apts: list[list], molit: dict
                               ) -> tuple[dict[str, tuple[float, float]], dict[str, str], Counter]:
-    """단지 → (위도, 경도), 단지 → 법정동, 단계별 집계.
+    """단지 → (위도, 경도), 좌표가 붙은 단지 → 법정동, 단계별 집계.
     ① K-apt 검증 코드 ② MOLIT 법정동 안 이름 완전 일치 + 차수 일치 + 게이트 ③ 지번(본번-부번) 완전 일치 + 게이트.
-    APT_CD 하나에 단지 둘 이상이면 모두 버리고, 공간 일치 검사에 걸린 좌표도 버린다."""
+    APT_CD 하나에 단지 둘 이상이면 모두 버리고, 공간 일치 검사에 걸린 좌표도 버린다.
+    법정동은 좌표를 준 공동주택 정보 행의 법정동 — 그 구 MOLIT 기록에 없는 이름이면(원천 오기) 이름이 맞은 MOLIT 기록의 최빈 법정동.
+    (Codex R3: 흔한 이름 '삼성'이 다른 동 거래에 더 많이 붙어 좌표는 도곡동인데 수서동으로 세던 경로)"""
     from blog import build_explorer as be
     by_cd = {a[0]: a for a in apts}
     by_gd: dict[tuple[str, str], list[list]] = defaultdict(list)
@@ -391,7 +395,8 @@ def match_complex_coordinates(complexes: list[dict], kapt: dict, apts: list[list
     bad_xy = spatial_outliers(apts)
     idx: dict[str, dict] = {}
     picked: dict[str, str] = {}
-    dongs: dict[str, str] = {}
+    molit_dong: dict[str, str] = {}
+    known_umd: dict[str, set[str]] = {}
     stats: Counter = Counter()
     for c in complexes:
         cn = str(c["complex_no"])
@@ -399,20 +404,20 @@ def match_complex_coordinates(complexes: list[dict], kapt: dict, apts: list[list
         recs = molit.get(lawd, []) if lawd else []
         if lawd and lawd not in idx:
             idx[lawd] = be.build_name_index({r["apt"] for r in recs})
+            known_umd[lawd] = {r["umd"] for r in recs if r.get("umd")}
         names = be.match_molit_names(c["name"], [], idx[lawd]) if lawd else set()
         mine = [r for r in recs if r["apt"] in names and r.get("umd")]
         if mine:
             cnt = Counter(r["umd"] for r in mine)
-            dongs[cn] = min(cnt, key=lambda d: (-cnt[d], d))   # 최빈 법정동, 동률이면 가나다순(입력 순서와 무관)
+            molit_dong[cn] = min(cnt, key=lambda d: (-cnt[d], d))   # 최빈 법정동, 동률이면 가나다순(입력 순서와 무관)
         f = kapt.get(cn) or {}
         code = f.get("kapt_code") if f.get("kapt_verified") else None
         if code and code in by_cd:
             picked[cn] = code
             stats["kapt"] += 1
-            dongs.setdefault(cn, by_cd[code][3])
             continue
         keys = {(r["umd"], r["jibun"]) for r in mine if r.get("jibun")}
-        pool = [a for d in sorted({k[0] for k in keys}) for a in by_gd[(c["gu"] + "구", d)]]
+        pool = [a for d in sorted({k[0] for k in keys}) for a in by_gd[(_sgg(c["gu"]), d)]]   # Codex R3 이후: '중구'+'구' 로 풀이 비던 경로
         forms = set().union(*(_name_forms(c["name"], c["gu"], d) for d in {k[0] for k in keys})) if keys else set()
         hit = [a for a in pool if _name_forms(a[1], a[2], a[3]) & forms and _ordinals(a[1]) == _ordinals(c["name"]) and _gate(c, a)]
         if len(hit) == 1:
@@ -427,7 +432,8 @@ def match_complex_coordinates(complexes: list[dict], kapt: dict, apts: list[list
             continue
         stats["none"] += 1
     shared = {cd for cd, n in Counter(picked.values()).items() if n > 1}
-    coords = {}
+    lawd_of = {str(c["complex_no"]): be.GU_LAWD.get(c["gu"]) for c in complexes}
+    coords, dongs = {}, {}
     for cn, cd in picked.items():
         if cd in shared:
             stats["shared"] += 1
@@ -435,6 +441,10 @@ def match_complex_coordinates(complexes: list[dict], kapt: dict, apts: list[list
             stats["spatial"] += 1
         else:
             coords[cn] = (by_cd[cd][6], by_cd[cd][5])
+            emd = by_cd[cd][3]
+            dong = emd if emd in known_umd.get(lawd_of[cn], ()) else molit_dong.get(cn)
+            if dong:
+                dongs[cn] = dong
     return coords, dongs, stats
 
 

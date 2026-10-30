@@ -34,6 +34,7 @@ TRANSFER_FILES = ({"infId": "OA-13290", "seq": "8", "infSeq": "1"},   # 환승�
 TIMETABLE_COLUMNS = ("LINE", "SI_ID", "STATION_NM", "WEEKTAG", "INOUTTAG", "GUBHANG", "TRAIN_NO", "STT", "EDT")
 TRANSFER_COLUMNS = ("호선", "환승역명", "환승노선", "환승거리", "환승소요시간")   # 판마다 단위 꼬리표("(m)"·"(초)")가 붙거나 빠진다
 LINES = tuple(str(n) for n in range(1, 10))
+MIN_ROWS = {"timetable": 30_000, "stations": 600, "apts": 2_000}   # 첫 판 실측 59,957·784·2,854 — 이보다 적으면 부분 응답(Codex R3)
 KEEP_FROM_S, KEEP_TO_S = 6 * 3600, 12 * 3600
 
 
@@ -170,8 +171,12 @@ def collect_commute_inputs(today: str, download=_download_file, openapi=_openapi
     apts = [[r["APT_CD"], r["APT_NM"], r["SGG_ADDR"], r["EMD_ADDR"], r.get("DADDR") or "", float(r["XCRD"]), float(r["YCRD"]),
              r.get("TNOHSH"), str(r.get("USE_APRV_YMD") or "")]
             for r in openapi("OpenAptInfo", key) if r.get("XCRD") and r.get("YCRD")]
+    timetable = parse_timetable(_decode(tt_body))
+    for name, n in (("timetable", len(timetable)), ("stations", len(stations)), ("apts", len(apts))):
+        if n < MIN_ROWS[name]:
+            raise RuntimeError(f"{name} 행이 너무 적음({n} < {MIN_ROWS[name]}) — 이전 판 유지")
     return {"asof": today,
-            "timetable": {"file": tt_name, "rows": parse_timetable(_decode(tt_body))},
+            "timetable": {"file": tt_name, "rows": timetable},
             "transfers": transfers,                                   # 우선순위 순(최신판 먼저)
             "stations": stations, "apts": apts}
 
