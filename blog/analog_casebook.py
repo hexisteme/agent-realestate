@@ -1,7 +1,7 @@
 """닮은국면사례집(AnalogCasebook) — analogs.html. 지금과 지표 구간이 닮았던 과거 판정월의 12·36개월 뒤 서울 아파트 매매지수 변화를
 "비중복 사례 전부"로 보인다. DIKW 검토 2026-10-30 P3(케이스2). **탐색적 사례집** — 예측력 검증이 아니다.
 
-규칙 정본: `docs/analog-casebook-prereg-v2.md`(v1 결과를 본 뒤 고친 탐색적 수정, v2 결과 계산 전 커밋). v1 은 부록으로 함께 계산한다.
+규칙 정본: `docs/analog-casebook-prereg-v2.md`(v1 결과를 본 뒤 고친 탐색적 수정, v2 결과 계산 전 커밋). v1 은 첫 계산 결과 고정본(docs/analog-casebook-v1-result-2026-10-30.json)을 부록으로 그린다.
 - 축 6개를 판정월 t 에 관측월 t−L(공표 시차)의 값으로, 그 축의 확장 창 3분위(유효값 60개 이상)로 낮음·중간·높음.
 - 닮음규칙(MatchRule) 주 규칙(48, 4): 6축 모두 판정 가능, 현재와 48개월 이상 간격, A1 가격 흐름 구간·방향 일치 + 나머지 5축 중 4개 이상.
   변형 9개(간격 36·48·60 × 일치 3·4·5)를 0건 포함 전부 싣는다.
@@ -12,14 +12,17 @@
 from __future__ import annotations
 
 import html
+import json
 import statistics
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from blog.wording_guard import assert_lead_wording_ok, assert_wording_ok
 
 PREREG_VERSION = "v2"
 PREREG_PATH = "docs/analog-casebook-prereg-v2.md"
 PREREG_V1_PATH = "docs/analog-casebook-prereg-v1.md"
+V1_RESULT_PATH = "docs/analog-casebook-v1-result-2026-10-30.json"   # v1 첫 계산 결과 고정본(f9428dc 코드·2026-10-30 판 입력)
 MIN_WINDOW = 60
 HORIZONS = (12, 36)
 FLAT_PCT = 0.5
@@ -28,7 +31,8 @@ MIN_CASES = 5
 CHAIN_MAX_SPREAD = 0.01
 CHAIN_MIN_OVERLAP = 12
 BANDS = ("낮음", "중간", "높음")
-_EXTRA_WORDS = ("확률", "전망", "예상", "것이다", "때문에", "추천", "유망", "급등", "급락", "지금과 같은 시장", "아무 달")
+_EXTRA_WORDS = ("확률", "전망", "예상", "것이다", "때문에", "추천", "유망", "급등", "급락", "덕분에", "영향으로", "지금과 같은 시장", "아무 달")
+_EPS = 1e-9
 
 
 @dataclass(frozen=True)
@@ -161,41 +165,29 @@ def judge_month_bands(axes_series: dict[str, dict[str, float]], t: str) -> list[
 
 
 def current_judge_month(axes_series: dict[str, dict[str, float]]) -> str:
-    """모든 축의 관측이 있는 가장 최근 판정월 = 축마다 (마지막 관측월 + 시차) 의 최소."""
+    """판정월 상한 = 축마다 (마지막 관측월 + 시차) 의 최소. 실제 현재 판정월은 이 상한부터 거슬러 6축 모두 판정 가능한 달."""
     return _s(min(_m(max(axes_series[a.key])) + a.lag for a in AXES))
 
 
 @dataclass(frozen=True)
 class MatchRule:
-    """닮음규칙(MatchRule) — gap_m: 현재 판정월과의 최소 간격(개월). other_k: A1 구간·방향 필수 + 나머지 5축 일치 수(v2).
-    total_k: 6축 대칭 투표 일치 수, 판정 가능 축 total_k 개 이상이면 후보(v1 부록)."""
+    """닮음규칙(MatchRule) — gap_m: 현재 판정월과의 최소 간격(개월). other_k: A1 구간·방향 필수 + 나머지 5축 일치 수.
+    v1 규칙(6축 대칭 투표)은 고정 결과(V1_RESULT_PATH)로만 남긴다."""
     gap_m: int
-    other_k: int | None = None
-    total_k: int | None = None
-
-    @property
-    def label(self) -> str:
-        if self.total_k is not None:
-            return f"v1 · 6개 중 {self.total_k}개 이상 같음(가격 흐름 불일치 허용) · 지금 바로 앞 달 포함"
-        return f"지금보다 {self.gap_m}개월 이상 앞 · 가격 흐름 같음 + 나머지 5개 중 {self.other_k}개 이상 같음"
+    other_k: int
 
 
-RULE_V1 = MatchRule(gap_m=1, total_k=5)
 RULE_MAIN = MatchRule(48, 4)
 RULE_GRID = tuple(MatchRule(g, k) for g in (36, 48, 60) for k in (3, 4, 5))
 
 
 def is_eligible(rule: MatchRule, bands_t: list) -> bool:
-    if rule.total_k is not None:
-        return sum(b is not None for b in bands_t) >= rule.total_k
     return all(b is not None for b in bands_t)
 
 
 def is_analog(rule: MatchRule, bands_t: list, bands_c: list) -> bool:
     """판정 불가 축은 불일치. v2 는 A1 구간과 방향(원값 ±FLAT_PCT)이 모두 같아야 한다."""
     same = [b is not None and c is not None and b["band"] == c["band"] for b, c in zip(bands_t, bands_c)]
-    if rule.total_k is not None:
-        return sum(same) >= rule.total_k
     a1t, a1c = bands_t[0], bands_c[0]
     return (same[0] and direction(a1t["value"]) == direction(a1c["value"]) and sum(same[1:]) >= rule.other_k)
 
@@ -237,7 +229,8 @@ def outcome_pct(price: dict[str, float], t: str, h: int) -> float | None:
 
 
 def direction(pct: float) -> str:
-    return "상승" if pct > FLAT_PCT else "하락" if pct < -FLAT_PCT else "보합"
+    """±FLAT_PCT 경계값은 보합 — 부동소수 오차(_EPS)로 정확히 ±0.5% 인 값이 오름·내림으로 갈리지 않게 한다(R3 Codex 4)."""
+    return "상승" if pct > FLAT_PCT + _EPS else "하락" if pct < -FLAT_PCT - _EPS else "보합"
 
 
 def _summary(values: list[float]) -> dict:
@@ -252,9 +245,9 @@ def _summary(values: list[float]) -> dict:
 
 def compute_base_rate(bands: dict[str, list], price: dict[str, float], current: str, h: int, rule: MatchRule) -> dict:
     """비교기준비율(BaseRate) — 규칙의 후보 모집단 중 결과가 확인된 모든 판정월의 오름·내림 수와 중위. 월별 결과 창은 겹친다."""
-    months = candidate_months(bands, current, rule)
-    out = _summary([v for t in months if (v := outcome_pct(price, t, h)) is not None])
-    out["from"], out["to"] = (months[0], months[-1]) if months else (None, None)
+    done = [(t, v) for t in candidate_months(bands, current, rule) if (v := outcome_pct(price, t, h)) is not None]
+    out = _summary([v for _, v in done])
+    out["from"], out["to"] = (done[0][0], done[-1][0]) if done else (None, None)   # 기간도 결과 확인된 달에서(R3)
     return out
 
 
@@ -277,8 +270,7 @@ class AnalogCasebook:
     first_judgeable: str | None       # 6축 모두 판정 가능한 첫 판정월
     main: Variant
     grid: list[Variant]
-    v1: Variant
-    loo: list[dict] = field(default_factory=list)   # 주 규칙·12개월, 결과 확인 ≥ MIN_CASES 일 때만
+    loo: list[dict] = field(default_factory=list)   # 주 규칙·12개월, 하나 뺀 뒤에도 결과 확인 ≥ MIN_CASES 일 때만
 
 
 def _variant(rule: MatchRule, bands: dict, price: dict, current: str) -> Variant:
@@ -293,20 +285,31 @@ def _variant(rule: MatchRule, bands: dict, price: dict, current: str) -> Variant
 def build_analog_casebook(raw: dict, today: str) -> AnalogCasebook:
     axes_series, extra = prepare_inputs(raw)
     price = extra["price"]
-    current = current_judge_month(axes_series)
+    upper = current_judge_month(axes_series)
     first = min(_m(min(s)) for s in axes_series.values())
-    months = [_s(n) for n in range(first, _m(current) + 1)]
+    months = [_s(n) for n in range(first, _m(upper) + 1)]
     bands = {t: judge_month_bands(axes_series, t) for t in months}
-    if any(b is None for b in bands[current]):
-        raise ValueError(f"현재 판정월 {current} 에 판정 불가 축이 있다")
     full = [t for t in months if all(b is not None for b in bands[t])]
+    if not full:
+        raise ValueError("6개 축이 모두 판정 가능한 달이 없다")
+    current = full[-1]   # 상한 달에 축 하나가 비어도 거슬러 올라간다(R3 Codex 5)
     main = _variant(RULE_MAIN, bands, price, current)
     grid = [main if r == RULE_MAIN else _variant(r, bands, price, current) for r in RULE_GRID]
-    done = [c for c in main.cases if c["outcomes"][12][0] == "값"]
-    loo = ([{"drop": c["rep"], **_summary([d["outcomes"][12][1] for d in done if d is not c])} for c in done]
-           if len(done) >= MIN_CASES else [])
-    return AnalogCasebook(today, current, bands[current], extra["chain"], full[0] if full else None, main, grid,
-                          _variant(RULE_V1, bands, price, current), loo)
+    return AnalogCasebook(today, current, bands[current], extra["chain"], full[0], main, grid, leave_one_out(main.cases))
+
+
+def leave_one_out(cases: list[dict], h: int = 12) -> list[dict]:
+    """대표월 하나씩 빼고 다시 센 요약 — 뺀 뒤 표본도 MIN_CASES 이상일 때만(R3 Codex 2: 5건이면 4건 집계가 새어 나갔다)."""
+    done = [c for c in cases if c["outcomes"][h][0] == "값"]
+    if len(done) - 1 < MIN_CASES:
+        return []
+    return [{"drop": c["rep"], **_summary([d["outcomes"][h][1] for d in done if d is not c])} for c in done]
+
+
+def load_v1_result(path: str = V1_RESULT_PATH) -> dict:
+    """v1 첫 계산 결과 고정본 — 매번 다시 계산하지 않는다(R3 Codex 3). None 결과는 모두 2026-10-30 판 기준 미도래."""
+    with open(Path(__file__).resolve().parents[1] / path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 # ── 문장·페이지 ─────────────────────────────────────────────────────────────
@@ -323,14 +326,25 @@ def _val(v: float, unit: str) -> str:
     return f"{v:,.0f}{unit}" if unit == "호" else f"{v:,.2f}{unit}"
 
 
+_ERAS = (("2000년대 중반 상승기", "2007-12"), ("2008년 금융위기 뒤 하락기", "2009-12"), ("2010~2013년 침체기", "2013-12"))
+
+
+def _missed_eras(first: str | None) -> list[str]:
+    return [name for name, end in _ERAS if first and end < first]
+
+
 def base_rate_sentence(book: AnalogCasebook, h: int = 12) -> str | None:
-    """첫머리 비교 기준 문장(사례와 같은 모집단). 결과 확인 < MIN_CASES 면 None."""
+    """첫머리 비교 기준 문장(사례와 같은 모집단, 결과 확인된 달). 결과 확인 < MIN_CASES 면 None.
+    닮은 달을 고른 집계가 아니고 매수·매도 근거로 검증되지 않았다는 것을 같은 문단에 둔다(R3 Codex 6·agy 2)."""
     b = book.main.base[h]
     if b["n"] < MIN_CASES:
         return None
-    return (f"{_ym(b['from'])}~{_ym(b['to'])} 사이 6개 지표가 모두 있는 달 {b['n']}개 가운데 {h}개월 뒤 서울 아파트 매매지수(명목)가 "
-            f"{FLAT_PCT}% 넘게 오른 달은 {b['up']}개, {FLAT_PCT}% 넘게 내린 달은 {b['down']}개였습니다. 달마다 결과 기간이 겹쳐 같은 "
-            f"상승기·하락기를 여러 번 셉니다. 이 집계는 지금 이후의 방향을 말하지 않습니다.")
+    missed = _missed_eras(book.first_judgeable)
+    era = f" {', '.join(missed)}는 이 기간에 들지 않습니다." if missed else ""
+    return (f"{_ym(b['from'])}~{_ym(b['to'])} 사이 6개 지표가 모두 있고 {h}개월 뒤 결과까지 확인된 달 {b['n']}개 가운데 서울 아파트 "
+            f"매매지수(명목)가 {FLAT_PCT}% 넘게 오른 달은 {b['up']}개, {FLAT_PCT}% 넘게 내린 달은 {b['down']}개였습니다. 이 {b['n']}개월은 "
+            f"지금과 닮은 달을 고른 것이 아니라 그 기간의 모든 달이고, 이웃한 달끼리 결과 기간이 겹쳐 같은 상승기·하락기를 여러 번 셉니다.{era} "
+            f"이 집계는 지금 이후의 방향을 말하지 않으며 매수·매도 판단의 근거로 검증된 자료가 아닙니다.")
 
 
 def casebook_sentence(book: AnalogCasebook, h: int = 12) -> str:
@@ -350,13 +364,12 @@ def casebook_sentence(book: AnalogCasebook, h: int = 12) -> str:
 
 DISCLAIMER = ("공공 통계로 과거 사례를 정리한 탐색적 참고 자료이며 매수·매도를 권하거나 앞으로의 가격을 말하지 않습니다. 과거 사례는 최신 "
               "개정 자료로 다시 분류한 것이라 당시 알려진 값과 다를 수 있습니다.")
-_ERAS = (("2000년대 중반 상승기", "2007-12"), ("2008년 금융위기 뒤 하락기", "2009-12"), ("2010~2013년 침체기", "2013-12"))
 
 
 def limits_text(book: AnalogCasebook) -> str:
     """한계 고지 — 비교 모집단 첫 달보다 앞선 국면은 빠졌다고 적는다(첫 달은 데이터에서 계산)."""
     first = book.first_judgeable
-    missed = [name for name, end in _ERAS if first and end < first]
+    missed = _missed_eras(first)
     head = (f"6개 지표가 모두 5년 치 이상 쌓인 {_ym(first)} 이후 달만 비교하므로 {', '.join(missed)}는 비교 대상에 들지 않습니다. "
             if missed else "")
     return (head + "6개 지표에는 정책 대출(예: 2023년 특례보금자리론)과 대출 규제 변화가 들어 있지 않습니다. "
@@ -368,29 +381,53 @@ def _outcome_txt(o: tuple[str, float | None]) -> str:
     return f"{_pct(pct)} {direction(pct)}" if state == "값" else state
 
 
+def _members_txt(members: list[str]) -> str:
+    return ", ".join(m[2:] for m in members)
+
+
 def _cases_inline(v: Variant, h: int) -> str:
+    """변형 한 칸 — 결과 확인 ≥ MIN_CASES 면 요약, 아니면 사례마다 결과(지평별 게이트, R3 Codex 1)."""
     s = v.stats[h]
     if s["n"] >= MIN_CASES:
         iqr = f", 가운데 절반 {_pct(s['q1'])}~{_pct(s['q3'])}" if s["q1"] is not None else ""
         return f"{s['n']}건 중 오름 {s['up']}·내림 {s['down']}·보합 {s['flat']}, 가운데 값 {_pct(s['median'])}{iqr}"
-    if not v.cases:
-        return "닮은 사례 없음"
-    return " · ".join(f"{_ym(c['rep'])} {_outcome_txt(c['outcomes'][h])}" for c in v.cases)
+    return " · ".join(f"{_ym(c['rep'])} {_outcome_txt(c['outcomes'][h])}" for c in v.cases) or "—"
 
 
-def _case_table(v: Variant) -> str:
+def _band_cell(a: Axis, b: dict | None) -> str:
+    """구간 + 원값 + 그 달의 경계(낮음 끝/중간 끝) — 과거 사례도 '당시 분포에서'(R3 Codex 8)."""
+    if not b:
+        return "<td>판정 불가</td>"
+    return (f"<td>{html.escape(b['band'])}<br><span class=mut>{_val(b['value'], a.unit)} · 경계 "
+            f"{_val(b['q1'], a.unit)}/{_val(b['q2'], a.unit)}</span></td>")
+
+
+def _case_table(cases: list[dict]) -> str:
     head = "".join(f"<th>{html.escape(a.label.split('(')[0])}</th>" for a in AXES)
     rows = "".join(
-        f"<tr><td>{_ym(c['rep'])}<br><span class=mut>묶인 달 {html.escape(', '.join(m[2:] for m in c['members']))}</span></td>"
-        + "".join(f"<td>{html.escape(b['band'])}<br><span class=mut>{_val(b['value'], a.unit)}</span></td>" if b else "<td>판정 불가</td>"
-                  for a, b in zip(AXES, c["bands"]))
-        + "".join(f"<td>{_outcome_txt(c['outcomes'][h])}</td>" for h in HORIZONS) + "</tr>" for c in v.cases)
+        f"<tr><td>{_ym(c['rep'])}<br><span class=mut>묶인 달 {html.escape(_members_txt(c['members']))}</span></td>"
+        + "".join(_band_cell(a, b) for a, b in zip(AXES, c["bands"]))
+        + "".join(f"<td>{_outcome_txt(c['outcomes'][h])}</td>" for h in HORIZONS) + "</tr>" for c in cases)
     return (f"<div class=tblwrap><table><thead><tr><th>대표월</th>{head}<th>12개월 뒤</th><th>36개월 뒤</th></tr></thead>"
             f"<tbody>{rows or '<tr><td colspan=9>닮은 사례 없음</td></tr>'}</tbody></table></div>")
 
 
-def render_analogs_page(book: AnalogCasebook | None, today: str) -> str:
-    """analogs.html — 비교 기준 → 닮은 사례 문장(게이트) → 지금 구간 → 사례 전부 → 변형 9개 → v1 부록 → 규칙·출처·고지."""
+def _v1_appendix(v1: dict) -> tuple[str, str]:
+    """(HTML, 문구 검사용 글) — 고정본을 그대로 그린다. None 결과는 계산일 기준 미도래."""
+    def conv(c: dict) -> dict:
+        return {**c, "outcomes": {h: ("값", c["outcomes"][str(h)]) if c["outcomes"][str(h)] is not None else ("미도래", None)
+                                  for h in HORIZONS}}
+    note = (f"v1 규칙: {v1['rule']}. {v1['asof']}에 판정월 {_ym(v1['current'])} 기준으로 계산한 결과를 고쳐 쓰지 않고 그대로 둡니다"
+            f"(전체 값은 저장소 {V1_RESULT_PATH}). v1 은 지금 바로 앞 달이 사례로 잡히고 가격 흐름이 반대인 달도 닮았다고 보는 문제가 있어 "
+            f"v2 로 고쳤습니다.")
+    tables = "".join(f"<h3>6개 중 {k}개 이상 같음{' (v1 주 규칙)' if k == '5' else ''}</h3>"
+                     f"{_case_table([conv(c) for c in cs])}" for k, cs in v1["cases"].items())
+    return (f"<h2>부록 — 첫 계산(v1) 결과 <span class=mut>({v1['asof']} 계산 고정)</span></h2>"
+            f"<p class=mut>{html.escape(note)}</p>{tables}", note)
+
+
+def render_analogs_page(book: AnalogCasebook | None, today: str, v1: dict | None = None) -> str:
+    """analogs.html — 비교 기준 → 닮은 사례 문장(게이트) → 지금 구간 → 사례 전부 → 변형 9개 → v1 부록(고정본) → 규칙·출처·고지."""
     from blog.build_site import BASE_URL, ga4_snippet
     from blog.daily_digest import _SITE_CSS
     head = (f"<!DOCTYPE html><html lang=ko><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">"
@@ -398,20 +435,22 @@ def render_analogs_page(book: AnalogCasebook | None, today: str) -> str:
             f"<meta name=description content=\"금리·대출·유동성·공급·가격 흐름 6개 지표가 지금과 닮았던 과거 달들의 12·36개월 뒤 서울 아파트 매매지수 변화를 사례 전부로 보여 줍니다.\">"
             f"<link rel=canonical href=\"{BASE_URL}/analogs.html\"><style>{_SITE_CSS}"
             "table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #e3ded3;padding:6px 4px;text-align:left;vertical-align:top}"
-            f"h2{{margin:22px 0 8px;font-size:17px}}</style>{ga4_snippet()}</head><body><div class=wrap>"
+            f"h2{{margin:22px 0 8px;font-size:17px}}h3{{margin:14px 0 6px;font-size:15px}}</style>{ga4_snippet()}</head><body><div class=wrap>"
             "<nav class=top><a href=\"index.html\">구 허브</a><a href=\"macro.html\">거시 지표</a><a href=\"cycles.html\">금리 사이클</a>"
             "<a href=\"reach.html\">예산 계산기</a><a href=\"methodology.html\">방법론</a></nav>"
             "<div class=crumb><a href=\"index.html\">서울</a> › 닮은 국면 사례집</div><h1>지금과 닮았던 과거</h1>")
     if book is None:
         return head + f"<p class=meta>{today}</p><p>지표를 아직 모으지 못해 이번 판은 비어 있습니다.</p></div></body></html>"
+    v1_html, v1_note = _v1_appendix(v1 if v1 is not None else load_v1_result())
     base_txt = base_rate_sentence(book) or "비교할 수 있는 과거 달이 아직 적어 기준 집계를 싣지 않습니다."
     case_txt = casebook_sentence(book)
     cur_rows = "".join(
         f"<tr><td>{html.escape(a.label)}</td><td>{html.escape(b['band'])}</td><td>{_val(b['value'], a.unit)}</td>"
         f"<td>{_val(b['q1'], a.unit)} / {_val(b['q2'], a.unit)}</td><td>{_ym(b['obs'])}</td></tr>" for a, b in zip(AXES, book.current_bands))
     grid_rows = "".join(
-        f"<tr><td>{v.rule.gap_m}개월</td><td>{v.rule.other_k}개</td><td>{len(v.cases)}건{' (주 규칙)' if v.rule == RULE_MAIN else ''}</td>"
-        f"<td>{html.escape(_cases_inline(v, 12))}</td></tr>" for v in book.grid)
+        f"<tr><td>{v.rule.gap_m}개월</td><td>{v.rule.other_k}개</td><td>{len(v.cases)}건{' (주 규칙)' if v.rule == RULE_MAIN else ''}"
+        + "".join(f"<br><span class=mut>{_ym(c['rep'])} · 묶인 달 {html.escape(_members_txt(c['members']))}</span>" for c in v.cases)
+        + "</td>" + "".join(f"<td>{html.escape(_cases_inline(v, h))}</td>" for h in HORIZONS) + "</tr>" for v in book.grid)
     base_rows = "".join(
         f"<tr><td>{h}개월 뒤</td><td>{b['n']}개 중 오름 {b['up']}·내림 {b['down']}·보합 {b['flat']}, 가운데 값 {_pct(b['median'])}"
         + (f", 가운데 절반 {_pct(b['q1'])}~{_pct(b['q3'])}" if b["q1"] is not None else "") + "</td></tr>"
@@ -425,9 +464,11 @@ def render_analogs_page(book: AnalogCasebook | None, today: str) -> str:
              f"같은 사례로 묶는 기준은 대표월 사이 {CASE_GAP_M}개월입니다. 가격지수는 한국부동산원 서울 아파트 매매지수 901Y093(2003-11~)에 "
              f"901Y149 를 이은 작성자 연쇄이며 공식 장기지수가 아닙니다 — 두 판이 겹치는 {ch['n_overlap']}개월({ch['overlap_from']}~"
              f"{ch['overlap_to']}) 동안 비율이 {ch['spread']:.2%} 안에서만 움직여 기준만 다른 같은 흐름으로 보고 평균 비율 {ch['factor']:.4f} 로 "
-             f"{ch['joined_from']}부터 이었습니다. 6개 지표가 모두 판정 가능한 첫 달은 {_ym(book.first_judgeable) if book.first_judgeable else '없음'}입니다.")
+             f"{ch['joined_from']}부터 이었습니다. 6개 지표가 모두 판정 가능한 첫 달은 {_ym(book.first_judgeable)}입니다.")
     limits = limits_text(book)
-    body_text = " ".join([base_txt, case_txt, DISCLAIMER, limits, rules, loo_txt])
+    overlap = ("이웃한 달끼리 12개월 뒤 결과는 11개월, 36개월 뒤 결과는 35개월이 겹칩니다 — 서로 독립된 결과를 그 수만큼 모은 것이 "
+               "아닙니다.")
+    body_text = " ".join([base_txt, case_txt, DISCLAIMER, limits, rules, loo_txt, overlap, v1_note])
     assert_wording_ok(body_text, "analog_casebook:page")
     assert_lead_wording_ok(base_txt + " " + case_txt, "analog_casebook:lead")
     for w in _EXTRA_WORDS:
@@ -440,17 +481,16 @@ def render_analogs_page(book: AnalogCasebook | None, today: str) -> str:
         f"<h2>지금의 지표 구간 <span class=mut>(그 달까지의 분포에서)</span></h2>"
         f"<div class=tblwrap><table><thead><tr><th>지표</th><th>구간</th><th>값</th><th>낮음 끝 / 중간 끝</th><th>관측월</th></tr></thead>"
         f"<tbody>{cur_rows}</tbody></table></div>"
-        f"<h2>닮은 사례 전부 <span class=mut>(주 규칙 · 대표월 기준)</span></h2>{_case_table(book.main)}"
+        f"<h2>닮은 사례 전부 <span class=mut>(주 규칙 · 대표월 기준)</span></h2>{_case_table(book.main.cases)}"
         + (f"<p class=mut>사례 하나씩 빼고 다시 세면: {html.escape(loo_txt)}</p>" if loo_txt else "")
         + (f"<h2>같은 기간 모든 달 <span class=mut>(월별 결과 기간이 겹침)</span></h2>"
-           f"<div class=tblwrap><table><tbody>{base_rows}</tbody></table></div>" if base_rows else "")
-        + f"<h2>규칙을 바꾸면 <span class=mut>(미리 정한 9개 변형 전부 · 12개월 뒤)</span></h2>"
-        f"<div class=tblwrap><table><thead><tr><th>지금과의 간격</th><th>나머지 5개 중 같음</th><th>사례</th><th>12개월 뒤</th></tr></thead>"
-        f"<tbody>{grid_rows}</tbody></table></div>"
+           f"<div class=tblwrap><table><tbody>{base_rows}</tbody></table></div><p class=mut>{html.escape(overlap)}</p>" if base_rows else "")
+        + f"<h2>규칙을 바꾸면 <span class=mut>(미리 정한 9개 변형 전부)</span></h2>"
+        f"<div class=tblwrap><table><thead><tr><th>지금과의 간격</th><th>나머지 5개 중 같음</th><th>사례</th><th>12개월 뒤</th>"
+        f"<th>36개월 뒤</th></tr></thead><tbody>{grid_rows}</tbody></table></div>"
         f"<p class=mut>결과가 확인된 사례가 {MIN_CASES}건 미만이면 몇 건 중 몇 건으로 묶지 않고 사례를 그대로 적습니다.</p>"
-        f"<h2>부록 — 첫 계산(v1) 결과 <span class=mut>({html.escape(book.v1.rule.label)})</span></h2>{_case_table(book.v1)}"
-        f"<p class=mut>v1 은 지금 바로 앞 달이 사례로 잡히고 가격 흐름이 반대인 달도 닮았다고 보는 문제가 있어 v2 로 고쳤습니다.</p>"
-        f"<h2>규칙과 출처</h2><p class=mut>{html.escape(rules)}</p>"
+        + v1_html
+        + f"<h2>규칙과 출처</h2><p class=mut>{html.escape(rules)}</p>"
         f"<p class=mut>출처: 한국은행 경제통계시스템(ECOS) 121Y006·721Y001·161Y005·151Y003·901Y105, 한국부동산원 전국주택가격동향조사"
         f"(ECOS 901Y093·901Y149).</p>"
         f"<p class=foot><a href=\"methodology.html\">방법론 전문</a> · <a href=\"cycles.html\">기준금리 인상 사이클 뒤 지표 변화</a></p>"
