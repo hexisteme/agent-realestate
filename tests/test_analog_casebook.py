@@ -1,4 +1,8 @@
-"""닮은국면사례집(AnalogCasebook) — PREREG v1 규칙 고정. DIKW 검토 2026-10-30 P3."""
+"""닮은국면사례집(AnalogCasebook) — PREREG v2 규칙 고정(v1 은 부록). DIKW 검토 2026-10-30 P3.
+
+R2 = Codex 2라운드 REVISE·agy 2라운드 FAIL 에서 채택한 반증(docs/analog-casebook-prereg-v2.md §v1 에서 찾은 문제).
+"""
+import dataclasses
 import math
 import re
 
@@ -71,12 +75,41 @@ def test_current_month_is_min_of_last_observation_plus_lag():
     assert all(ac.shift_month(cur, -a.lag) <= max(axes[a.key]) for a in ac.AXES) and cur >= want
 
 
-def test_analog_months_count_unjudgeable_axes_as_mismatch_and_exclude_current():
-    b = lambda name: {"band": name}
-    bands = {"2010-01": [b("낮음")] * 5 + [None], "2011-01": [b("낮음")] * 4 + [b("높음"), b("낮음")],
-             "2012-01": [b("낮음")] * 6}
-    assert ac.find_analog_months(bands, "2012-01", 5) == ["2010-01", "2011-01"]
-    assert ac.find_analog_months(bands, "2012-01", 6) == []
+def _rule_bands():
+    """현재 2020-01. 가격 흐름(A1)은 band·value, 나머지는 band 만."""
+    b = lambda name, v=1.0: {"band": name, "value": v}
+    low5 = [b("낮음")] * 5
+    return {
+        "2020-01": [b("높음", 5.0)] + low5,
+        "2015-09": [b("중간", 4.0)] + low5,                          # A1 구간 다름
+        "2015-10": [b("높음", 4.0)] + [b("낮음")] * 4 + [None],      # 판정 불가 축
+        "2015-11": [b("높음", 0.2)] + low5,                          # A1 구간 같고 방향 보합
+        "2015-12": [b("높음", 4.0)] + [b("낮음")] * 4 + [b("높음")],  # A1 같음 + 나머지 4
+        "2016-06": [b("높음", 4.0)] + [b("낮음")] * 4 + [b("높음")],  # 간격 43개월
+    }
+
+
+def test_v2_rule_needs_a1_band_and_direction_all_six_axes_and_48_month_gap():
+    """R2: 대칭 투표가 가격 흐름 반대 달을 닮았다고 함 · 판정 불가 축 섞임 · 현재 국면 자기 매칭."""
+    bands = _rule_bands()
+    assert ac.RULE_MAIN == ac.MatchRule(48, 4) and len(ac.RULE_GRID) == 9 and ac.RULE_MAIN in ac.RULE_GRID
+    assert ac.candidate_months(bands, "2020-01", ac.RULE_MAIN) == ["2015-09", "2015-11", "2015-12"]
+    assert ac.find_analog_months(bands, "2020-01", ac.RULE_MAIN) == ["2015-12"]
+    assert ac.find_analog_months(bands, "2020-01", ac.MatchRule(36, 4)) == ["2015-12", "2016-06"]
+    assert ac.find_analog_months(bands, "2020-01", ac.MatchRule(48, 5)) == []
+
+
+def test_v1_appendix_rule_keeps_symmetric_vote_and_counts_unjudgeable_as_mismatch():
+    bands = _rule_bands()
+    assert ac.find_analog_months(bands, "2020-01", ac.RULE_V1) == ["2015-09", "2015-10", "2015-11", "2015-12", "2016-06"]
+    assert ac.find_analog_months(bands, "2020-01", ac.MatchRule(1, total_k=6)) == ["2015-11"]
+
+
+def test_base_rate_uses_the_same_population_as_the_rule():
+    """R2: 비교 기준은 사례와 같은 모집단(6축 판정 가능·간격) — '아무 달' 아님."""
+    price = {m: 100.0 + i for i, m in enumerate(_months("2015-01", 36))}
+    base = ac.compute_base_rate(_rule_bands(), price, "2020-01", 12, ac.RULE_MAIN)
+    assert (base["n"], base["up"], base["from"], base["to"]) == (3, 3, "2015-09", "2015-12")
 
 
 def test_nonoverlapping_cases_keep_36_months_between_representatives():
@@ -86,35 +119,66 @@ def test_nonoverlapping_cases_keep_36_months_between_representatives():
     assert cases[0]["members"] == ["2010-01", "2010-02", "2012-12"]
 
 
-def test_outcome_is_from_last_known_price_month_and_pending_when_missing():
+def test_outcome_is_pending_after_last_price_month_and_missing_inside_it():
+    """R2: 끝 달이 마지막 가격 관측월 뒤면 미도래, 그 안에서 값이 없으면 결측."""
     price = {m: 100.0 + i for i, m in enumerate(_months("2020-01", 20))}
-    assert ac.outcome_pct(price, "2020-02", 12) == pytest.approx((112 / 100 - 1) * 100)
-    assert ac.outcome_pct(price, "2020-10", 12) is None
+    assert ac.outcome(price, "2020-02", 12) == ("값", pytest.approx((112 / 100 - 1) * 100))
+    assert ac.outcome(price, "2020-10", 12) == ("미도래", None)
+    holed = {m: v for m, v in price.items() if m not in ("2020-06", "2021-02")}
+    assert ac.outcome(holed, "2020-07", 12) == ("결측", None) and ac.outcome(holed, "2020-03", 12) == ("결측", None)
     assert [ac.direction(v) for v in (0.6, 0.5, -0.5, -0.6)] == ["상승", "보합", "보합", "하락"]
 
 
-def test_sentence_is_withheld_below_five_cases_and_never_claims_independence():
-    book = ac.build_analog_casebook(_raw(), "2026-10-30")
-    s = book.stats[ac.K_MAIN][12]
-    sentence = ac.casebook_sentence(book)
-    if s["n"] < ac.MIN_CASES:
-        assert sentence is None
-    else:
-        assert f"{s['n']}건" in sentence and "독립이 아닙니다" in sentence
-    forced = ac.AnalogCasebook(**{**book.__dict__, "stats": {**book.stats, ac.K_MAIN: {
-        12: {"n": 4, "up": 4, "down": 0, "flat": 0, "median": 3.0, "q1": 1.0, "q3": 4.0}, 36: book.stats[ac.K_MAIN][36]}}})
-    assert ac.casebook_sentence(forced) is None
+def _force(book, cases, stats12):
+    """주 규칙 결과만 바꾼 사본 — 격자 안의 주 규칙도 같은 객체로 바꾼다."""
+    main = dataclasses.replace(book.main, cases=cases, stats={**book.main.stats, 12: stats12})
+    grid = [main if v.rule == ac.RULE_MAIN else v for v in book.grid]
+    return dataclasses.replace(book, main=main, grid=grid, loo=[])
 
 
-def test_page_lists_every_case_with_base_rate_sensitivity_and_disclaimer():
+def _fake_cases(book, n):
+    return [{"rep": ac.shift_month("2010-01", 40 * i), "members": [ac.shift_month("2010-01", 40 * i)],
+             "bands": book.current_bands, "outcomes": {12: ("값", 3.0), 36: ("미도래", None)}} for i in range(n)]
+
+
+def _text(page: str) -> str:
+    return re.sub(r"<style.*?</style>|<script.*?</script>|<[^>]+>", " ", page, flags=re.S)
+
+
+def test_counts_are_withheld_below_five_confirmed_cases_in_every_variant():
+    """R2: n<5 게이트는 첫 문장만이 아니라 모든 변형·지평에 — 사례만 적는다."""
     book = ac.build_analog_casebook(_raw(), "2026-10-30")
-    page = ac.render_analogs_page(book, "2026-10-30")
-    text = re.sub(r"<style.*?</style>|<script.*?</script>|<[^>]+>", " ", page, flags=re.S)
-    for word in ("확률", "전망", "예상", "추천", "급등", "급락"):
+    few = _force(book, _fake_cases(book, 4), {"n": 4, "up": 4, "down": 0, "flat": 0, "median": 3.0, "q1": 3.0, "q3": 3.0})
+    s = ac.casebook_sentence(few)
+    assert "줄여 말하지 않고" in s and "건에서" not in s
+    assert not re.search(r"\d+건 중 오름", _text(ac.render_analogs_page(few, "2026-10-30")))
+    many = _force(book, _fake_cases(book, 5), {"n": 5, "up": 5, "down": 0, "flat": 0, "median": 3.0, "q1": 3.0, "q3": 3.0})
+    s = ac.casebook_sentence(many)
+    assert "5건(12개월 뒤 값이 확인된 것) 중 5건에서" in s and "독립이 아닙니다" in s
+    assert "5건 중 오름 5" in _text(ac.render_analogs_page(many, "2026-10-30"))
+    none = _force(book, [], {"n": 0, "up": 0, "down": 0, "flat": 0, "median": None, "q1": None, "q3": None})
+    assert "닮은 달은 없었습니다" in ac.casebook_sentence(none)
+
+
+def test_page_leads_with_base_rate_and_lists_nine_variants_v1_appendix_and_disclosures():
+    book = ac.build_analog_casebook(_raw(), "2026-10-30")
+    text = _text(ac.render_analogs_page(book, "2026-10-30"))
+    for word in ("확률", "전망", "예상", "추천", "급등", "급락", "아무 달"):
         assert word not in text, word
-    for need in (ac.DISCLAIMER, "같은 기간 모든 달", "4개 이상 같음", "6개 이상 같음", "작성자 연쇄", "PREREG v1", ac.PREREG_PATH):
+    for need in (ac.DISCLAIMER, "탐색적 사례집", "규칙을 바꾸면", "부록 — 첫 계산(v1) 결과", "작성자 연쇄", ac.PREREG_PATH,
+                 ac.PREREG_V1_PATH, "지금 이후의 방향을 말하지 않습니다", "정책 대출"):
         assert need in text, need
-    assert text.count("묶인 달") == len(book.cases[ac.K_MAIN])
+    assert len(book.grid) == 9 and text.count("(주 규칙)") == 1
+    assert text.index("지금 이후의 방향을 말하지 않습니다") < text.index("미리 정한 규칙")
+    assert text.count("묶인 달") == len(book.main.cases) + len(book.v1.cases)
+
+
+def test_limits_name_only_the_eras_before_the_first_comparable_month():
+    book = ac.build_analog_casebook(_raw(), "2026-10-30")
+    at = lambda first: ac.limits_text(dataclasses.replace(book, first_judgeable=first))
+    assert all(e in at("2015-01") for e in ("2000년대 중반 상승기", "2008년 금융위기 뒤 하락기", "2010~2013년 침체기"))
+    assert "2000년대 중반 상승기" in at("2009-01") and "2008년 금융위기" not in at("2009-01")
+    assert "비교 대상에 들지 않습니다" not in at("2005-01")
 
 
 def test_build_is_deterministic():
