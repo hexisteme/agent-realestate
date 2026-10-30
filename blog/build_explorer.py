@@ -4,11 +4,12 @@
   · 실명 개별 단지  — 단지명 + 위치 + 전용면적/평형 + 세대수 + 준공연도 + 유형.
   · 공공 실거래만    — 국토부 RTMS 12개월 동일평형 중위(공공데이터라 정확값) + 평단가(파생). MOLIT 매칭 없으면 가격 null.
   · 사설 호가 배제    — 네이버/KB 호가(listing.price_krw)는 dataset 에 일절 미포함(DB권).
-  · 점수 없음        — 자체 구조점수·순위·등급·강점축·세그먼트 전부 미산출/미노출(명예훼손 표면 0 = 아실 모델).
+  · 점수 없음        — 자체 구조점수·순위·등급·강점축·세그먼트 전부 미산출/미노출(아실 모델 — 평가 표현을 빼 명예훼손 위험을 줄인다).
   · 가드 동반         — 면책·CC-BY-NC·출처·이의제기(takedown)를 dataset 루트 + explorer 모든 뷰 고정.
 
-근거: [[reference-korea-re-publishing-legal]] — 공공 실거래가 named 재이용 합법(공공데이터법) · 점수 없으면 사실적시
-명예훼손 구성요건 자체가 사라짐 · 사설 호가 정량 재게시는 DB권(대법 2021도1533)이라 band/배제.
+근거: [[reference-korea-re-publishing-legal]] — 공공 실거래가 named 재이용 합법(공공데이터법) · 점수가 없어도 사실적시
+명예훼손(형법 §307①) 판단은 남는다 — 진실성·공공의 이익(§310)과 제목·배치가 위험을 가르며 면책 문구로 확정되지 않는다
+(Codex 2026-10-30 R1) · 사설 호가 정량 재게시는 DB권(대법 2021도1533)이라 band/배제.
 """
 from __future__ import annotations
 import hashlib, os, re, json, glob, statistics as st
