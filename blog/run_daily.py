@@ -342,6 +342,13 @@ def main():
             macro_ctx = build_macro_context(macro, today)              # 카드 0개·문구 위반이면 None/예외 → 스트립 생략
         except Exception as e:                                   # noqa: BLE001
             print(f"거시 지표 수집 건너뜀: {type(e).__name__}")
+        try:                                                     # 닮은 국면 사례집 입력(DIKW 2026-10-30 P3) — 7일마다 새 판, 실패해도 발행 계속
+            from agent_realestate.collectors.analog_inputs import collect_analog_inputs, is_refresh_due, save_analog_inputs
+            adir = f"{a.out}/snapshots/analogs"
+            if is_refresh_due(today, dir=adir):
+                print(f"사례집 입력: {save_analog_inputs(collect_analog_inputs(today), dir=adir)}")
+        except Exception as e:                                   # noqa: BLE001
+            print(f"사례집 입력 수집 건너뜀: {type(e).__name__}")
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
         support_snapshot = collect_daily_housing_support(today, a.out)
         # 시각 우선 글(2026-10-10) — RE_VISUAL_FIRST=1 일 때만. 대시보드를 못 만들면 기존 본문으로 발행한다.

@@ -481,6 +481,15 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         print(f"[build_site] 사이클 리포트 실패 → 미수집 페이지: {type(e).__name__}: {str(e)[:120]}")
         cycles_html=render_cycles_page(None, today)
     open(f"{SITE}/cycles.html","w").write(cycles_html)
+    from agent_realestate.collectors import analog_inputs                  # 닮은 국면 사례집(DIKW 2026-10-30 P3) — 판이 없거나 실패면 빈 페이지·사이트맵 제외
+    from blog.analog_casebook import build_analog_casebook, render_analogs_page
+    analog_book=None
+    try:
+        analog_raw=analog_inputs.load_analog_inputs_latest(dir=f"{SRC}/snapshots/analogs")
+        analog_book=build_analog_casebook(analog_raw["series"], today) if analog_raw else None
+    except Exception as e:                                                 # noqa: BLE001 — 연쇄 거부·손상 판은 빈 페이지로 두고 조립 계속
+        print(f"[build_site] 사례집 실패 → 빈 페이지: {type(e).__name__}: {str(e)[:120]}")
+    open(f"{SITE}/analogs.html","w").write(render_analogs_page(analog_book, today))
     if ds_all is not None:                                                 # 예산 계산기(DIKW 검토 2026-10-30 P1) — 구 원고 W 층과 같은 엔진
         from blog.reach_calculator import render_reach_page
         open(f"{SITE}/reach.html","w").write(render_reach_page(ds_all, today, written_slugs))
@@ -501,6 +510,7 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
                f"<url><loc>{BASE_URL}/macro.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/housing-support.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/cycles.html</loc><lastmod>{today}</lastmod></url>"
+               + (f"<url><loc>{BASE_URL}/analogs.html</loc><lastmod>{today}</lastmod></url>" if analog_book is not None else "") +
                f"<url><loc>{BASE_URL}/calc.html</loc><lastmod>{today}</lastmod></url>"
                + (f"<url><loc>{BASE_URL}/reach.html</loc><lastmod>{today}</lastmod></url>" if ds_all is not None else "") +
                f"<url><loc>{BASE_URL}/archive.html</loc><lastmod>{today}</lastmod></url>"
