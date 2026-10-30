@@ -563,11 +563,26 @@ def filing_gone_txt(fil: dict) -> str:
             f'해제·정정 등 사유 미확인{pairs}{skipped})')
 
 
+def plain_period_line(d: dict) -> str:
+    """한눈에보기(PlainAnswer) — 결산 첫머리 일반 독자용 한 문단. 아래 '서울 중위'·'가격대 이동'과 같은 숫자를 쉬운 말로만
+    옮긴다. 기준·이번 중위 중 하나라도 없으면 빈 문자열(DIKW 검토 2026-10-30 P0)."""
+    base, cur = d.get("seoul_median_base"), d.get("seoul_median_cur")
+    pct = _pct(cur, base)
+    if pct is None:
+        return ""
+    span = (date.fromisoformat(d["today"]) - date.fromisoformat(d["base_date"])).days
+    moved = "그대로였습니다" if pct == 0 else f"{_eok(cur)}로 {pct:+.1f}% 움직였습니다"
+    return (f"지난 {span}일 동안 두 번 다 집계된 같은 서울 아파트 {d['n_valid']:,}곳의 가격 가운데 값은 {_eok(base)}에서 "
+            f"{moved}. 단지마다 최근 12개월 실거래의 가운데 값을 견준 것이라 이 기간 거래만의 변화는 아닙니다. "
+            f"가격대를 옮긴 단지는 {len(d.get('migrations') or []):,}곳입니다.")
+
+
 def _sections(d: dict, inline: bool, level: int = 0) -> str:
     opt = _TRIM_LEVELS[level]
     label = POST_LABEL[d["kind"]]
     span = (date.fromisoformat(d["today"]) - date.fromisoformat(d["base_date"])).days
-    parts = [_p(f'기준 스냅샷 {d["base_date"]}(실거래 기준일 {d["base_asof"] or "—"}) → 이번 {d["today"]}(기준일 {d["asof"]}), {span}일. '
+    plain = plain_period_line(d)
+    parts = ([_p(f"한눈에 보기 — {plain}", inline)] if plain else []) + [_p(f'기준 스냅샷 {d["base_date"]}(실거래 기준일 {d["base_asof"] or "—"}) → 이번 {d["today"]}(기준일 {d["asof"]}), {span}일. '
                 f'발행 {d["n_base"]} → {d["n_cur"]}단지, 같은 단지로 짝지은 {d["n_pairs"]}단지 기준(중위 비교는 그중 양쪽 집계 게이트 통과 {d["n_valid"]}단지). '
                 f'국토부 실거래 12개월 동일평형 중위의 변화(사실), '
                 f'자체 점수·순위 없음.', inline)]

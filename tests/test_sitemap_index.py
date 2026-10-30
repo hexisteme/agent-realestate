@@ -81,10 +81,11 @@ def test_sitemap_xml_is_a_valid_sitemapindex_with_three_children(tmp_path, monke
 def test_sitemap_core_has_index_methodology_gu_hubs_and_digests(tmp_path, monkeypatch):
     site_dir, _ = _build_fixture(tmp_path, monkeypatch)
     locs = _urlset_locs(site_dir, "sitemap-core.xml")
-    # 필수 안내 7개 + 구허브 3(강남/노원/서초) + 다이제스트 2(날짜본+latest).
-    assert len(locs) == 12 and len(locs) == len(set(locs))
+    # 필수 안내 8개(예산 계산기 포함) + 구허브 3(강남/노원/서초) + 다이제스트 2(날짜본+latest).
+    assert len(locs) == 13 and len(locs) == len(set(locs))
     assert any(loc.endswith("/housing-support.html") for loc in locs)
     assert any(loc.endswith("/calc.html") for loc in locs)
+    assert any(loc.endswith("/reach.html") for loc in locs)                 # 예산 계산기(DIKW 2026-10-30 P1)
     assert any(loc.endswith("/cycles.html") for loc in locs)
     assert any(loc.endswith("/macro.html") for loc in locs)
     assert any(loc.endswith("/") for loc in locs)

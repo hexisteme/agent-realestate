@@ -401,3 +401,21 @@ def test_period_failure_does_not_stop_daily_run(monkeypatch, capsys):
     monkeypatch.setattr(pd, "write_period_post", Mock(side_effect=ValueError("budget")))
     assert run_daily.write_period_post_guarded({}, "2026-10-25", "out", None, None) == {"failed": "ValueError"}
     assert "결산 생성 실패" in capsys.readouterr().err
+
+
+def test_plain_period_line_leads_both_bodies_in_plain_words():
+    # DIKW 검토 2026-10-30 P0 — 결산 첫머리 한눈에 보기. 숫자는 '서울 중위' 줄과 같다.
+    base_rows = [_row("강남", f"단지{i}", 10.0, pos=100) for i in range(12)]
+    cur_rows = [_row("강남", f"단지{i}", 10.0 if i % 2 else 11.0, pos=100) for i in range(12)]
+    d = pd.build_period_delta(_ds(cur_rows, gen="2026-09-20"), _ds(base_rows, gen="2026-09-13"), "weekly", "2026-09-20",
+                              date(2026, 9, 13))
+    line = pd.plain_period_line(d)
+    assert line.startswith(f"지난 7일 동안 두 번 다 집계된 같은 서울 아파트 {d['n_valid']:,}곳의 가격 가운데 값은 ")
+    assert f"{pd._pct(d['seoul_median_cur'], d['seoul_median_base']):+.1f}% 움직였습니다" in line or "그대로였습니다" in line
+    for word in ("게이트", "짝", "중위", "IQR", "전망", "매수"):
+        assert word not in line, word
+    post = pd.render_period_post(d)
+    for body in (post["html"], post["tistory_html"]):
+        assert "<p>한눈에 보기 — 지난 7일" in body
+        assert body.index("한눈에 보기") < body.index("기준 스냅샷")
+    assert pd.plain_period_line({**d, "seoul_median_base": None}) == ""

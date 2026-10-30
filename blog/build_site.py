@@ -234,6 +234,7 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
     intent_count=0
     intent_date=today
     ds_all=None        # 인덱스 재구성(2026-09-06 P0)이 아래 if 밖에서도 참조 — 없으면 None 유지
+    written_slugs: set[str] = set()   # 예산 계산기(reach.html)가 실제로 쓰인 단지 페이지에만 링크를 단다
     ds_path=f"{SITE}/dataset.json"
     if os.path.exists(ds_path):
         import blog.gu_hub as gh
@@ -254,7 +255,6 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
         molit_raw = (json.load(open(mp, encoding="utf-8"))
                      if gated_complexes and mp and os.path.exists(mp) else None)   # 게이트 0개면 로드 스킵(테스트·소형빌드 절약)
         os.makedirs(f"{SITE}/complex", exist_ok=True)
-        written_slugs: set[str] = set()
         for r in gated_complexes:
             gu = r["gu"]; gu_rows = by_gu.get(gu, [])
             peers = cp.select_peers(r, gu_rows)
@@ -481,6 +481,9 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         print(f"[build_site] 사이클 리포트 실패 → 미수집 페이지: {type(e).__name__}: {str(e)[:120]}")
         cycles_html=render_cycles_page(None, today)
     open(f"{SITE}/cycles.html","w").write(cycles_html)
+    if ds_all is not None:                                                 # 예산 계산기(DIKW 검토 2026-10-30 P1) — 구 원고 W 층과 같은 엔진
+        from blog.reach_calculator import render_reach_page
+        open(f"{SITE}/reach.html","w").write(render_reach_page(ds_all, today, written_slugs))
     # 3) sitemap.xml (절대 URL — 서치어드바이저 제출용. lastmod=포스트 자체 날짜)
     #    ★한글 파일명 percent-encode 의무(sitemap 프로토콜 RFC-3986) — 미인코딩 시 구글 '가져올 수 없음'(2026-06-11 실측).
     urls="".join(f"<url><loc>{BASE_URL}/posts/{quote(os.path.basename(p))}</loc><lastmod>{_post_meta(p)[0]}</lastmod></url>" for p in posts)
@@ -499,6 +502,7 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
                f"<url><loc>{BASE_URL}/housing-support.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/cycles.html</loc><lastmod>{today}</lastmod></url>"
                f"<url><loc>{BASE_URL}/calc.html</loc><lastmod>{today}</lastmod></url>"
+               + (f"<url><loc>{BASE_URL}/reach.html</loc><lastmod>{today}</lastmod></url>" if ds_all is not None else "") +
                f"<url><loc>{BASE_URL}/archive.html</loc><lastmod>{today}</lastmod></url>"
                f"{gu_urls}{digest_urls}")
     open(f"{SITE}/sitemap-core.xml","w").write(_urlset(core_body))

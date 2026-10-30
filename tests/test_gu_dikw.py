@@ -301,3 +301,22 @@ def test_W_줄은_대표_평형_기준과_입주_유예_특례를_밝힌다():
     text = " ".join(gd.build_wisdom_lines("송파", _w_rows()))
     assert "대표 평형" in text and "입주" in text and "유예" in text
     assert "일반 주택 신청 기한 2027-12-31" in text and "등록임대" in text      # Codex R2: 등록 매입임대는 15개월 별도 기한
+
+
+@pytest.mark.parametrize("prices,why", [
+    ((3.0, 4.0, 4.5, 30.0), "집값의 40%까지만 빌릴 수 있다"),
+    ((3.0, 4.0, 30.0, 31.0, 32.0, 33.0), "15억이 넘는 집은 대출이 4억까지만 나온다"),
+])
+def test_W_첫_줄은_쉬운_말로_닿는_가격과_이유를_말한다(prices, why):
+    # DIKW 검토 2026-10-30 P0 — 일반 독자용 첫 줄. 숫자는 [가정] 줄과 같다.
+    rows = [_row(f"단지{i}", eok) for i, eok in enumerate(prices)]
+    lines = gd.build_wisdom_lines("송파", rows)
+    e, k, n = gd.pick_title_equity(rows)
+    here = gd.compute_reachable_price(e * gd.EOK, gd.TITLE_INCOME_KRW)
+    first = lines[0]
+    assert first.startswith(f"쉽게 말해 연소득 1억에 모아둔 돈 {e}억(취득세·중개보수 포함)이면 ")
+    assert f"약 {gd._eok(here.price_krw)}짜리 집까지 닿는다" in first and why in first
+    assert f"송파구 단지 {n}곳 중 {k}곳이 이 안이다" in first
+    for word in ("[가정]", "절대한도", "LTV", "DSR", "스트레스 +"):
+        assert word not in first, word
+    assert lines[1].startswith("[가정]")

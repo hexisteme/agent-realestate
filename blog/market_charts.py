@@ -337,6 +337,41 @@ def observation_summary_lines(counts: dict, d: MarketDashboard | None, *, asof: 
     return lines
 
 
+def plain_answer_lines(counts: dict, d: MarketDashboard | None) -> list[str]:
+    """한눈에보기(PlainAnswer) — 일반 독자용 최대 3줄(가격·거래·대출 금리). 관측요약과 같은 숫자를 쉬운 말로만 옮기고,
+    값이 없는 줄은 뺀다. 평가·전망·권유 없음(DIKW 검토 2026-10-30 P0)."""
+    lines = []
+    if all(isinstance(counts.get(k), int) for k in ("n_judged", "up", "down")) and counts["n_judged"] > 0:
+        n, up, down = counts["n_judged"], counts["up"], counts["down"]
+        k, word, other, other_word = (up, "높았습니다", down, "낮아진") if up >= down else (down, "낮았습니다", up, "높아진")
+        share = (k * 200 + n) // (2 * n)   # 반올림(HALF_UP), 정수 연산
+        lines.append(f"가격 — 거래가 충분한 단지 {n:,}곳 중 {k:,}곳({share}%)에서 최근 3개월 가격이 그 전 9개월보다 {word}"
+                     f"({other_word} 곳 {other:,}곳). 같은 집이 아니라 그 기간에 거래된 집들의 가운데 값입니다.")
+    if d and d.trades:
+        month, value = d.trades.latest
+        line = f"거래 — {_month_label(month)} 서울 아파트 매매 신고는 {value:,.0f}호"
+        if d.trades.mom is not None and len(d.trades.points) >= 2:
+            prev = _month_label(d.trades.points[-2][0])
+            line += (f"로 {prev}과 같았습니다." if d.trades.mom == 0 else
+                     f"로 {prev}보다 {abs(d.trades.mom):.1f}% {'많았습니다' if d.trades.mom > 0 else '적었습니다'}.")
+        else:
+            line += "였습니다."
+        lines.append(line)
+    if d and d.mortgage:
+        month, value = d.mortgage.latest
+        line = f"대출 금리 — {_month_label(month)} 새로 나간 주택담보대출 평균 금리는 {value:.2f}%"
+        if d.mortgage.yoy is None:
+            line += "입니다."
+        elif d.mortgage.yoy == 0:
+            line += "로 1년 전과 같습니다."
+        else:
+            line += f"로 1년 전보다 {abs(d.mortgage.yoy):.2f}%p {'높습니다' if d.mortgage.yoy > 0 else '낮습니다'}."
+        lines.append(line + " 내 대출 금리는 은행 심사로 정해집니다.")
+    for line in lines:
+        assert_lead_wording_ok(line, "market_charts:plain_answer")
+    return lines
+
+
 def compose_observation_summary(counts: dict, d: MarketDashboard | None, *, asof: str) -> str:
     """관측요약 한 문단(observation_summary_lines 를 잇는다)."""
     return " ".join(observation_summary_lines(counts, d, asof=asof))

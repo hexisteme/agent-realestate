@@ -82,6 +82,16 @@ def _summary_lines(counts: dict, d, asof: str, ds: dict) -> list[str]:
                                           "funnel": be.compute_observation_funnel(rows)}, d, asof=asof)
 
 
+def _plain_html(counts: dict, d, ds: dict) -> str:
+    """한눈에보기(PlainAnswer) 머리 — 관측요약과 같은 표본기준추세수로 만든 쉬운 말 3줄 + '자세한 집계' 표지(문단 중간). 줄이 없으면 빈 문자열."""
+    gated = count_gated_trends(ds.get("complexes") or [])
+    lines = mch.plain_answer_lines({"n_total": counts.get("n_total"), **gated}, d)
+    if not lines:
+        return ""
+    return ("<br>".join("• " + html.escape(line) for line in lines)   # 문단 첫머리 <b> 는 가짜 제목 — 제목은 '오늘의 관측 요약'
+            + "<br><br><b>자세한 집계</b><br>")
+
+
 def _tiles(ds: dict):
     by_gu: dict[str, list[dict]] = {}
     for r in ds.get("complexes") or []:
@@ -168,7 +178,8 @@ def dashboard_caption(d: mch.MarketDashboard) -> str:
 def render_tistory_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, base_url: str,
                        briefing=()) -> str:
     d = visual.dashboard
-    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds)) + _briefing_html(briefing)
+    summary = (_plain_html(counts, d, ds) + "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds))
+               + _briefing_html(briefing))
     image = visual.image
     td = "padding:4px 2px;text-align:center"
     head = "".join(f'<td style="{_HEAD};{td}"><b>{h}</b></td>'
@@ -260,7 +271,8 @@ def _tip(tip_id: str, text: str) -> str:
 
 def render_site_top(visual: VisualFirst, counts: dict, asof: str, ds: dict, briefing=()) -> str:
     d = visual.dashboard
-    summary = "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds)) + _briefing_html(briefing)
+    summary = (_plain_html(counts, d, ds) + "<br>".join(html.escape(line) for line in _summary_lines(counts, d, asof, ds))
+               + _briefing_html(briefing))
     caption = dashboard_caption(d)
     image = visual.image
     notes = mch.reading_notes(d)

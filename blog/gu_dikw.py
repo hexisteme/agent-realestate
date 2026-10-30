@@ -164,6 +164,44 @@ def build_lever_line(rows: list[dict], equity_eok: int) -> str:
             f"({k_eq}곳), {inc_txt}.")
 
 
+_POLITE_ENDINGS = (("있다", "있습니다"), ("나온다", "나옵니다"))
+
+
+def _plain_binding_reason(binding: str, price_krw: int, polite: bool = False) -> str:
+    """한도를 묶는 것(binding)을 쉬운 말로 — 절대한도는 가격 구간별 한도 금액으로 말한다. polite=True 는 '습니다' 체(계산기)."""
+    if binding == "LTV":
+        text = f"집값의 {LTV_REGULATED * 100:.0f}%까지만 빌릴 수 있다"
+    elif binding == "절대한도":
+        if price_krw > 25 * EOK:
+            text = "25억이 넘는 집은 대출이 2억까지만 나온다"
+        elif price_krw > CAP_EDGE_KRW:
+            text = "15억이 넘는 집은 대출이 4억까지만 나온다"
+        else:
+            text = "15억 이하 집도 대출이 6억까지만 나온다"
+    else:
+        text = "연소득으로 갚을 수 있는 만큼(금리를 3%p 높여 잡은 심사 기준)만 빌릴 수 있다"
+    if polite:
+        for plain, formal in _POLITE_ENDINGS:
+            if text.endswith(plain):
+                return text[: -len(plain)] + formal
+    return text
+
+
+def policy_basis_text() -> str:
+    """정책 근거 문장 — 구 원고 W 블록과 예산 계산기(reach.html)가 같은 문장을 쓴다."""
+    return (f"{fin.FINANCE_CONFIRM_NOTICE} 정책 기준: 10.15 대책(LTV 40%·15억 이하 6억/15~25억 4억/25억 초과 2억·"
+            f"스트레스 가산 {STRESS_PP:g}%p·만기 {TERM_YEARS}년), 확인일 {POLICY_CHECKED}. 취득세·중개보수 포함, 전용 85㎡ 이하 가정.")
+
+
+def build_plain_reach_line(gu: str, rows: list[dict]) -> str:
+    """한눈에보기(PlainAnswer) W 첫 줄 — [가정] 줄과 같은 자리·같은 숫자를 일반 독자 말로(DIKW 검토 2026-10-30 P0)."""
+    e, k, n = pick_title_equity(rows)
+    here = compute_reachable_price(e * EOK, TITLE_INCOME_KRW)
+    return (f"쉽게 말해 연소득 1억에 모아둔 돈 {e}억(취득세·중개보수 포함)이면 대출 {_eok(here.loan_krw)}을 더해 "
+            f"약 {_eok(here.price_krw)}짜리 집까지 닿는다 — {_plain_binding_reason(here.binding, here.price_krw)}. "
+            f"{_label(gu)} 단지 {n}곳 중 {k}곳이 이 안이다. 실제 한도는 은행 심사로 정해진다.")
+
+
 def build_wisdom_lines(gu: str, rows: list[dict]) -> list[str]:
     """W 줄 — 독자 자리 1곳(제목과 같은 자기자본)의 닿는 가격·한도를 묶는 것·레버, 15억 머묾 구간, 넣지 않은 규칙."""
     if not _priced(rows):
@@ -171,7 +209,8 @@ def build_wisdom_lines(gu: str, rows: list[dict]) -> list[str]:
     label = _label(gu)
     e, k, n = pick_title_equity(rows)
     here = compute_reachable_price(e * EOK, TITLE_INCOME_KRW)
-    lines = [f"[가정] 무주택·생애최초 아님·연소득 1억·대출금리 {RATE_PCT:.2f}%(스트레스 +{STRESS_PP:g}%p)·{TERM_YEARS}년이면 "
+    lines = [build_plain_reach_line(gu, rows),
+             f"[가정] 무주택·생애최초 아님·연소득 1억·대출금리 {RATE_PCT:.2f}%(스트레스 +{STRESS_PP:g}%p)·{TERM_YEARS}년이면 "
              f"자기자본 {e}억으로 닿는 가격은 약 {_eok(here.price_krw)}(대출 {_eok(here.loan_krw)}, 한도를 묶는 것은 "
              f"{here.binding}). {label} 단지별 대표 평형의 12개월 실거래 중위 {n}곳 중 {k}곳이 그 안이다(같은 단지의 다른 평형은 "
              f"따로 보지 않았다).",
@@ -462,9 +501,8 @@ def build_dikw_block(gu: str, rows: list[dict], all_rows: list[dict], today: str
                 + _img(by_prefix["reach"], base_url, f"{label} 자기자본별 닿는 단지 수 계단 그래프 — 연소득 7천만·1억·1.5억 가정, "
                                                      f"자기자본 {e}억이면 실거래 {n}곳 중 {k}곳")
                 + "<p>" + "<br>".join(f"• {html.escape(t)}" for t in w_lines) + "</p>"
-                + f'<p style="{mut_style}">{html.escape(fin.FINANCE_CONFIRM_NOTICE)} 정책 기준: 10.15 대책(LTV 40%·15억 이하 6억/'
-                  f'15~25억 4억/25억 초과 2억·스트레스 가산 {STRESS_PP:g}%p·만기 {TERM_YEARS}년), 확인일 {POLICY_CHECKED}. '
-                  f'취득세·중개보수 포함, 전용 85㎡ 이하 가정.</p>')
+                + f'<p><a href="{base_url}/reach.html">내 조건(모아둔 돈·연소득·기존 대출)으로 서울 전체 직접 계산해 보기 →</a></p>'
+                + f'<p style="{mut_style}">{html.escape(policy_basis_text())}</p>')
         used.append(by_prefix["reach"])
     if k_lines and "axis" in by_prefix:
         out += (f'<p><b>{label} 평단가를 가르는 축</b> <span style="{mut_style}">(세대수대·준공연대·전용대별 중위 비교)</span></p>'
