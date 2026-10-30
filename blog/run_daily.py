@@ -350,12 +350,13 @@ def main():
         except Exception as e:                                   # noqa: BLE001
             print(f"사례집 입력 수집 건너뜀: {type(e).__name__}")
         try:                                                     # 도착역 통근 입력(DIKW 2026-10-30 P2) — 30일마다 새 판, 실패하면 이전 판 유지
-            from agent_realestate.collectors.commute_inputs import collect_commute_inputs, is_refresh_due as commute_due, save_commute_inputs
+            from agent_realestate.collectors import commute_inputs as ci
             cdir = f"{a.out}/snapshots/commute"
-            if commute_due(today, dir=cdir):
-                print(f"통근 입력: {save_commute_inputs(collect_commute_inputs(today), dir=cdir)}")
-        except Exception as e:                                   # noqa: BLE001
-            print(f"통근 입력 수집 건너뜀: {type(e).__name__}")
+            if ci.is_refresh_due(today, dir=cdir):
+                prev = ci.load_commute_inputs_latest(dir=cdir)   # 커버리지가 이전 판보다 크게 줄면 저장하지 않는다(Codex R3)
+                print(f"통근 입력: {ci.save_commute_inputs(ci.collect_commute_inputs(today, prev=prev), dir=cdir)}")
+        except Exception as e:                                   # noqa: BLE001 — 문구는 ValueError(파싱·커버리지, 키 없음)만 싣는다
+            print(f"통근 입력 수집 건너뜀: {type(e).__name__}" + (f": {str(e)[:160]}" if isinstance(e, ValueError) else ""))
         prev_ds = load_snapshot_days_ago(7, dir=f"{a.out}/snapshots")   # build_site 가 매일 저장하는 스냅샷(report/blog/snapshots)
         support_snapshot = collect_daily_housing_support(today, a.out)
         # 시각 우선 글(2026-10-10) — RE_VISUAL_FIRST=1 일 때만. 대시보드를 못 만들면 기존 본문으로 발행한다.

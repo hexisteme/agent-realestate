@@ -161,6 +161,7 @@ def stitch_train_runs(trips: list[Trip]) -> tuple[list[tuple[str, str, tuple[Sto
 
 def build_ride_segments(runs: list[tuple[str, str, tuple[Stop, ...]]]) -> dict[tuple[str, str, str, str], tuple[int, int]]:
     """구간 간선 — 창 안에 s 를 출발해 뒤에 t 에 서는 운행마다 (t 도착 − s 출발). {(호선, 방향 표지, s, t): (운행 수, 승차 중위 초)}.
+    중위는 짝수 표본이면 가운데 두 값의 평균, 0.5초는 올린다(Codex R3 — 작은 쪽만 쓰던 median_low 가 45분 경계를 바꿨다).
     방향을 나눠 센다 — 2호선 순환은 두 방향 모두 s→t 에 닿아, 섞으면 짧은 쪽과 한 바퀴 도는 쪽의 승차가 한 중위로 뭉친다.
     같은 역으로 돌아오면(순환) 거기서 끊는다."""
     rides: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
@@ -176,7 +177,7 @@ def build_ride_segments(runs: list[tuple[str, str, tuple[Stop, ...]]]) -> dict[t
                     continue
                 seen.add(t.sid)
                 rides[(line, tag, s.sid, t.sid)].append(t.arr - s.dep)
-    return {k: (len(v), int(st.median_low(sorted(v)))) for k, v in rides.items()}
+    return {k: (len(v), int(st.median(v) + 0.5)) for k, v in rides.items()}
 
 
 def segment_wait(n_runs: int) -> int:

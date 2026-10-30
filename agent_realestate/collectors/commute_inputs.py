@@ -35,6 +35,7 @@ TIMETABLE_COLUMNS = ("LINE", "SI_ID", "STATION_NM", "WEEKTAG", "INOUTTAG", "GUBH
 TRANSFER_COLUMNS = ("호선", "환승역명", "환승노선", "환승거리", "환승소요시간")   # 판마다 단위 꼬리표("(m)"·"(초)")가 붙거나 빠진다
 LINES = tuple(str(n) for n in range(1, 10))
 MIN_ROWS = {"timetable": 30_000, "stations": 600, "apts": 2_000}   # 첫 판 실측 59,957·784·2,854 — 이보다 적으면 부분 응답(Codex R3)
+COVERAGE_KEEP = {"line_rows": 0.7, "line_stations": 0.95, "stations": 0.9, "apts": 0.9}   # 이전 판 대비 이 비율 아래로 줄면 부분 판
 KEEP_FROM_S, KEEP_TO_S = 6 * 3600, 12 * 3600
 
 
@@ -156,8 +157,38 @@ def _openapi_rows(service: str, key: str) -> list[dict]:
     return rows
 
 
-def collect_commute_inputs(today: str, download=_download_file, openapi=_openapi_rows) -> dict:
-    """4개 원천 → 판 dict. 원천 하나라도 실패하면 예외(부분 판 없음)."""
+def _line_profile(payload: dict) -> dict[str, tuple[int, set[str], set[str]]]:
+    out: dict[str, tuple[int, set[str], set[str]]] = {}
+    for line, sid, _nm, tag, *_ in payload["timetable"]["rows"]:
+        n, tags, sids = out.get(line, (0, set(), set()))
+        tags.add(tag)
+        sids.add(sid)
+        out[line] = (n + 1, tags, sids)
+    return out
+
+
+def check_commute_coverage(payload: dict, prev: dict | None = None) -> None:
+    """저장 전 커버리지(Codex R3 — 8·9호선이 빠진 시각표가 행 수 하한을 넘어 새 판이 되던 경로).
+    1~9호선마다 방향 표지 2개 이상. 이전 정상 판이 있으면 호선별 행·역 수와 역사마스터·단지 행 수가 COVERAGE_KEEP 아래로 줄면 ValueError."""
+    now = _line_profile(payload)
+    for line in LINES:
+        tags = now.get(line, (0, set(), set()))[1]
+        if len(tags) < 2:
+            raise ValueError(f"{line}호선 방향 표지 {sorted(tags)} — 부분 시각표")
+    if not prev:
+        return
+    for line, (n0, _, s0) in sorted(_line_profile(prev).items()):
+        n, _, s = now.get(line, (0, set(), set()))
+        if n < n0 * COVERAGE_KEEP["line_rows"] or len(s) < len(s0) * COVERAGE_KEEP["line_stations"]:
+            raise ValueError(f"{line}호선 행 {n}/{n0}·역 {len(s)}/{len(s0)} — 이전 판보다 크게 줄어듦")
+    for key in ("stations", "apts"):
+        if len(payload[key]) < len(prev[key]) * COVERAGE_KEEP[key]:
+            raise ValueError(f"{key} {len(payload[key])}/{len(prev[key])} — 이전 판보다 크게 줄어듦")
+
+
+def collect_commute_inputs(today: str, download=_download_file, openapi=_openapi_rows, prev: dict | None = None) -> dict:
+    """4개 원천 → 판 dict. 원천 하나라도 실패하거나 커버리지(check_commute_coverage)가 모자라면 예외(부분 판 없음).
+    prev = 이전 정상 판(있으면 줄어듦 검사)."""
     key = os.environ.get("SEOUL_OPENAPI_KEY", "")
     if not key:
         raise RuntimeError("SEOUL_OPENAPI_KEY 미설정")
@@ -175,10 +206,12 @@ def collect_commute_inputs(today: str, download=_download_file, openapi=_openapi
     for name, n in (("timetable", len(timetable)), ("stations", len(stations)), ("apts", len(apts))):
         if n < MIN_ROWS[name]:
             raise RuntimeError(f"{name} 행이 너무 적음({n} < {MIN_ROWS[name]}) — 이전 판 유지")
-    return {"asof": today,
-            "timetable": {"file": tt_name, "rows": timetable},
-            "transfers": transfers,                                   # 우선순위 순(최신판 먼저)
-            "stations": stations, "apts": apts}
+    payload = {"asof": today,
+               "timetable": {"file": tt_name, "rows": timetable},
+               "transfers": transfers,                                   # 우선순위 순(최신판 먼저)
+               "stations": stations, "apts": apts}
+    check_commute_coverage(payload, prev)
+    return payload
 
 
 def commute_inputs_path_latest(dir: str = SNAPSHOT_DIR, today: str | None = None) -> str | None:

@@ -506,6 +506,7 @@ def test_collector_parsers_and_vintage_io(tmp_path, monkeypatch):
 def test_collector_assembles_all_sources_without_partial_vintage(monkeypatch):
     monkeypatch.setenv("SEOUL_OPENAPI_KEY", "test-key")
     monkeypatch.setattr(ci, "MIN_ROWS", {"timetable": 1, "stations": 1, "apts": 1})
+    monkeypatch.setattr(ci, "check_commute_coverage", lambda payload, prev=None: None)
     tt = ("LINE,SI_ID,STATION_NM,WEEKTAG,INOUTTAG,GUBHANG,TRAIN_NO,STT,EDT\n"
           "1,0150,서울역,DAY,UP,0,K1,06:58:00,06:58:30\n1,0151,시청,DAY,UP,0,K1,07:00:00,\n").encode("cp949")
     tr = ("호선,환승역명,환승노선,환승거리,환승소요시간\n" + "".join(f"1,역{i},2호선,10,1분\n" for i in range(100))).encode("utf-8-sig")
@@ -526,6 +527,7 @@ def test_collector_assembles_all_sources_without_partial_vintage(monkeypatch):
 def test_codex_r3_thin_api_response_is_not_saved_as_a_new_vintage(monkeypatch):
     # Codex R3: 빈(정상 코드) API 응답이 새 판으로 저장돼 이전 판을 가리던 경로 — 첫 판 실측의 절반 아래면 판을 만들지 않는다
     monkeypatch.setenv("SEOUL_OPENAPI_KEY", "test-key")
+    monkeypatch.setattr(ci, "check_commute_coverage", lambda payload, prev=None: None)
     tt = ("LINE,SI_ID,STATION_NM,WEEKTAG,INOUTTAG,GUBHANG,TRAIN_NO,STT,EDT\n"
           + "".join(f"1,0150,서울역,DAY,UP,0,K{i},07:00:00,07:00:30\n1,0151,시청,DAY,UP,0,K{i},07:02:00,\n" for i in range(20_000))).encode()
     tr = ("호선,환승역명,환승노선,환승거리,환승소요시간\n" + "".join(f"1,역{i},2호선,10,1분\n" for i in range(100))).encode()
@@ -537,6 +539,47 @@ def test_codex_r3_thin_api_response_is_not_saved_as_a_new_vintage(monkeypatch):
     for thin in ({"subwayStationMaster": [], "OpenAptInfo": full["OpenAptInfo"]}, {"subwayStationMaster": st, "OpenAptInfo": []}):
         with pytest.raises(RuntimeError):
             ci.collect_commute_inputs("2026-10-30", download=lambda s: files[s["infId"]], openapi=lambda s, k: thin[s])
+
+
+def _coverage_payload(lines=ci.LINES, rows_per_line=10, sids_per_line=5, n_stations=700, n_apts=2100):
+    half = rows_per_line // 2
+    rows = [[line, f"{line}{(ti * half + k) % sids_per_line:02d}", "역", tag, f"T{k}", "07:00:00", "07:00:30"]
+            for line in lines for ti, tag in enumerate(("UP", "DOWN")) for k in range(half)]
+    return {"timetable": {"rows": rows}, "stations": [[str(i)] for i in range(n_stations)], "apts": [[str(i)] for i in range(n_apts)]}
+
+
+def test_codex_r3_partial_timetable_is_not_accepted_as_a_new_vintage():
+    # Codex R3 2차: 8·9호선을 뺀 시각표(53,364행)가 행 수 하한을 넘어 새 판이 되고, 대우디오빌플러스→여의도가 이내→초과로 바뀌던 경로
+    prev = _coverage_payload()
+    ci.check_commute_coverage(_coverage_payload(), prev)
+    ci.check_commute_coverage(_coverage_payload(), None)
+    with pytest.raises(ValueError, match="8호선"):
+        ci.check_commute_coverage(_coverage_payload(lines=tuple(str(n) for n in range(1, 8))), None)
+    one_way = _coverage_payload()
+    one_way["timetable"]["rows"] = [r for r in one_way["timetable"]["rows"] if not (r[0] == "9" and r[3] == "DOWN")]
+    with pytest.raises(ValueError, match="9호선"):
+        ci.check_commute_coverage(one_way, None)
+    with pytest.raises(ValueError, match="행"):
+        ci.check_commute_coverage(_coverage_payload(rows_per_line=6), prev)          # 호선마다 행 60%
+    with pytest.raises(ValueError, match="역"):
+        ci.check_commute_coverage(_coverage_payload(sids_per_line=4), prev)          # 호선마다 역 80%
+    with pytest.raises(ValueError, match="apts"):
+        ci.check_commute_coverage(_coverage_payload(n_apts=1800), prev)
+    ci.check_commute_coverage(_coverage_payload(rows_per_line=8, n_apts=1900), prev)   # 70%·90% 경계 안
+
+
+def test_codex_r3_even_sample_ride_median_is_the_mean_of_the_middle_two():
+    # Codex R3 2차: median_low 가 짝수 표본에서 작은 쪽(노들→여의도 360·480 중 360)을 써 한강쌍용→개화산 2,717초가 2,657초(이내)로 세지던 경로
+    rows = []
+    for k, ride in enumerate((300, 360, 480, 600)):
+        t = T7 + 600 * k
+        rows += _trip("9", "DOWN", f"N{k}", [("1", "노들", None, t), ("2", "여의도", t + ride, None)])
+    rows += _trip("9", "DOWN", "M0", [("1", "노들", None, T7 + 3000), ("3", "샛강", T7 + 3100, None)])
+    rows += _trip("9", "DOWN", "M1", [("1", "노들", None, T7 + 3600), ("3", "샛강", T7 + 3701, None)])
+    runs, _ = cr.stitch_train_runs(cr.parse_trips(rows)[0])
+    seg = cr.build_ride_segments(runs)
+    assert seg[("9", "DOWN", "1", "2")] == (4, 420)
+    assert seg[("9", "DOWN", "1", "3")] == (2, 101)                             # 100.5초는 올린다
 
 
 def test_codex_r3_switching_station_clears_the_previous_result_while_loading():
@@ -605,6 +648,18 @@ def test_real_branch_walks_come_from_same_line_rows(real_graph):
     v, g = real_graph
     _, branch, _ = cr.resolve_transfer_walks(v["transfers"], {k: {l for l, _ in s} for k, s in g.sids_at.items()})
     assert branch == {("강동", "5"): 16, ("성수", "2"): 19, ("신도림", "2"): 68}
+
+
+def test_real_even_sample_segment_uses_true_median(real_graph):
+    v, g = real_graph
+    if v["asof"] != "2026-10-30":
+        pytest.skip("첫 판(2026-10-30) 고정값")
+    assert g.segments[("9", "DOWN", "4118", "4115")] == (12, 420)
+
+
+def test_real_vintage_passes_its_own_coverage_check(real_graph):
+    v, _ = real_graph
+    ci.check_commute_coverage(v, v)
 
 
 def test_real_missing_transfers_are_pinned(real_graph):
