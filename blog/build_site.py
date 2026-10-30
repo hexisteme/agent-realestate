@@ -492,7 +492,8 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
     open(f"{SITE}/analogs.html","w").write(render_analogs_page(analog_book, today))
     if ds_all is not None:                                                 # 예산 계산기(DIKW 검토 2026-10-30 P1) — 구 원고 W 층과 같은 엔진
         from blog.reach_calculator import render_reach_page
-        open(f"{SITE}/reach.html","w").write(render_reach_page(ds_all, today, written_slugs))
+        commute=_build_commute(ds_all, today)                              # 도착역 통근(P2) — 입력이 없거나 실패면 None(P1 페이지 그대로)
+        open(f"{SITE}/reach.html","w").write(render_reach_page(ds_all, today, written_slugs, commute=commute))
     # 3) sitemap.xml (절대 URL — 서치어드바이저 제출용. lastmod=포스트 자체 날짜)
     #    ★한글 파일명 percent-encode 의무(sitemap 프로토콜 RFC-3986) — 미인코딩 시 구글 '가져올 수 없음'(2026-06-11 실측).
     urls="".join(f"<url><loc>{BASE_URL}/posts/{quote(os.path.basename(p))}</loc><lastmod>{_post_meta(p)[0]}</lastmod></url>" for p in posts)
@@ -557,6 +558,39 @@ K-apt 난방·주차는 단지코드·소재구·이름·세대수·준공연도
         "training: allowed (non-commercial, with attribution)\nprovenance: per-post claims.jsonl\n")
     return {"posts":len(posts),"site":SITE,"complex":complex_count,"intents":intent_count,
             "archived_navigation": archived_navigation}
+
+def _build_commute(ds_all, today):
+    """도착역 통근 묶음(DIKW 2026-10-30 P2)을 만들고 site/reach-commute/<역ID>.json 을 새로 쓴다. 입력(통근 판·MOLIT 아카이브·K-apt)이
+    하나라도 없거나 실패하면 None — reach.html 은 P1 그대로, 옛 파일은 지운다(페이지 판과 다른 파일이 남지 않게)."""
+    import gzip, shutil
+    from agent_realestate.collectors import commute_inputs
+    from blog import commute_reach as cr
+    from blog.reach_calculator import reach_row_ids
+    out_dir=f"{SITE}/reach-commute"
+    shutil.rmtree(out_dir, ignore_errors=True)
+    try:
+        vintage=commute_inputs.load_commute_inputs_latest(dir=f"{SRC}/snapshots/commute", today=today)
+        molits=sorted(p for p in glob.glob(f"{SRC}/snapshots/molit/molit-*.json.gz") if os.path.basename(p)[6:16]<=today)
+        kapt_path=os.environ.get("RE_KAPT_FACILITIES") or "report/enrichment/kapt-facilities.json"
+        if not vintage or not molits or not os.path.exists(kapt_path):
+            print(f"[build_site] 통근 묶음 건너뜀: 판 {bool(vintage)} · MOLIT {len(molits)} · K-apt {os.path.exists(kapt_path)}")
+            return None
+        with gzip.open(molits[-1], "rt", encoding="utf-8") as f:
+            molit=json.load(f)
+        kapt=(json.load(open(kapt_path, encoding="utf-8")).get("complexes") or {})
+        bundle=cr.build_commute_bundle(ds_all.get("complexes") or [], reach_row_ids(ds_all), vintage, molit, kapt)
+        os.makedirs(out_dir, exist_ok=True)
+        for s in bundle.stations:
+            open(f"{out_dir}/{s['id']}.json","w").write(cr.commute_file_json(bundle, s["id"]))
+        m=bundle.meta
+        print(f"[build_site] 통근 묶음 {bundle.version}: 도착역 {len(bundle.stations)} · 좌표 {m['coords']}/{m['rows']} · "
+              f"제외 편 {m['excluded_trips']} · 빠진 환승 {m['missing_transfers']}")
+        return bundle
+    except Exception as e:                                                 # noqa: BLE001 — 통근 실패는 P1 페이지로 두고 조립 계속
+        shutil.rmtree(out_dir, ignore_errors=True)
+        print(f"[build_site] 통근 묶음 실패 → P1 페이지: {type(e).__name__}: {str(e)[:120]}")
+        return None
+
 
 def main(argv=None):
     import argparse
