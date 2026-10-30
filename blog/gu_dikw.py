@@ -39,6 +39,8 @@ DSR_LIMIT = ms.DSR_LIMIT
 TERM_YEARS = ms.DEFAULT_YEARS      # [정책] 주담대 만기 30년 상한(6.27)
 POLICY_CHECKED = "2026-10-22"      # 한도 6억 유지 확인: 뉴스핌 2026-10-06 「주담대 한도 6억 더 줄어드나」(추가 규제는 논의 단계)
 TAX_AREA_M2 = 84.0                 # [가정] 전용 85㎡ 이하 — 농특세 없음
+TAX_AREA_LARGE_M2 = 100.0          # [가정] 전용 85㎡ 초과 — 농특세 포함(예산 계산기가 큰 평형을 따로 판정, Codex R3)
+FARM_TAX_EDGE_M2 = 85.0            # [정책] 농특세는 전용 85㎡ 초과에만 붙는다
 TITLE_INCOME_KRW = 100_000_000
 CURVE_INCOMES_KRW = (70_000_000, 100_000_000, 150_000_000)
 EQUITY_GRID_EOK = tuple(i / 2 for i in range(2, 31))   # 1.0~15.0억, 0.5억 간격
@@ -67,7 +69,8 @@ _SUBJECT = {"LTV": "LTV가", "절대한도": "절대한도가", "스트레스 DS
 
 
 def _eok(krw: int) -> str:
-    return f"{krw / EOK:.1f}억"
+    tenths = (int(krw) + EOK // 20) // (EOK // 10)   # 0.1억 단위 정수 사사오입 — 예산 계산기 JS eokTxt 와 같은 규칙(Codex R3)
+    return f"{tenths // 10}.{tenths % 10}억"
 
 
 def _income_txt(krw: int) -> str:
@@ -88,22 +91,23 @@ def _loan_parts(price_krw: int, income_krw: int) -> tuple[tuple[str, int], ...]:
     return (("LTV", int(price_krw * LTV_REGULATED)), ("절대한도", fin.resolve_loan_abs_cap(price_krw)), ("스트레스 DSR", dsr))
 
 
-def _required_equity(price_krw: int, income_krw: int) -> int:
+def _required_equity(price_krw: int, income_krw: int, area_m2: float = TAX_AREA_M2) -> int:
     """필요자기자본(RequiredEquity) = 매매가 − 대출 + 취득세 + 중개보수. PRICE_STEP_KRW 격자 위에서는 가격에 대해 줄지 않는다
     (이분 탐색 전제, 0~100억 전수 테스트). 1원 단위로는 중개보수 요율 경계(5천만·2억)에서 줄 수 있다(Codex R1 P3)."""
     loan = min(v for _, v in _loan_parts(price_krw, income_krw))
-    return (price_krw - loan + fin.compute_acquisition_tax(price_krw, False, TAX_AREA_M2)
+    return (price_krw - loan + fin.compute_acquisition_tax(price_krw, False, area_m2)
             + fin.compute_broker_fee(price_krw))
 
 
-def compute_reachable_price(equity_krw: int, income_krw: int) -> ReachablePrice:
-    """자기자본으로 닿는 최대 가격(PRICE_STEP_KRW 단위). 필요자기자본이 자기자본 안에 드는 가장 큰 격자 가격."""
+def compute_reachable_price(equity_krw: int, income_krw: int, area_m2: float = TAX_AREA_M2) -> ReachablePrice:
+    """자기자본으로 닿는 최대 가격(PRICE_STEP_KRW 단위). 필요자기자본이 자기자본 안에 드는 가장 큰 격자 가격.
+    area_m2 는 취득세(농특세) 판정용 전용면적 — 기본은 85㎡ 이하 가정."""
     lo, hi = 0, _PRICE_MAX_STEPS
-    if _required_equity(hi * PRICE_STEP_KRW, income_krw) <= equity_krw:
+    if _required_equity(hi * PRICE_STEP_KRW, income_krw, area_m2) <= equity_krw:
         lo = hi
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        if _required_equity(mid * PRICE_STEP_KRW, income_krw) <= equity_krw:
+        if _required_equity(mid * PRICE_STEP_KRW, income_krw, area_m2) <= equity_krw:
             lo = mid
         else:
             hi = mid

@@ -38,7 +38,8 @@ def snap_inputs(equity_eok: float, income_man: float, debt_man: float) -> tuple[
 
 
 def build_reach_grid() -> dict:
-    """닿는가격격자 — cells[자기자본][소득] = [닿는 가격(백만원), 대출(만원, 내림), 이유 번호]. 이유 문장은 reasons."""
+    """닿는가격격자 — cells[자기자본][소득] = [닿는 가격(백만원), 대출(만원, 내림), 이유 번호, 전용 85㎡ 초과 닿는 가격(백만원)].
+    이유 문장은 reasons. 85㎡ 초과는 농특세가 붙어 닿는 가격이 조금 낮다(Codex R3)."""
     equities = [round(k * EQUITY_STEP_EOK, 1) for k in range(int(EQUITY_MAX_EOK / EQUITY_STEP_EOK) + 1)]
     incomes = list(range(0, INCOME_MAX_MAN + 1, INCOME_STEP_MAN))
     reasons: list[str] = []
@@ -50,7 +51,9 @@ def build_reach_grid() -> dict:
             reason = gd._plain_binding_reason(r.binding, r.price_krw, polite=True)
             if reason not in reasons:
                 reasons.append(reason)
-            row.append([r.price_krw // gd.PRICE_STEP_KRW, r.loan_krw // 10_000, reasons.index(reason)])
+            big = gd.compute_reachable_price(int(round(e * gd.EOK)), inc * 10_000, gd.TAX_AREA_LARGE_M2)
+            row.append([r.price_krw // gd.PRICE_STEP_KRW, r.loan_krw // 10_000, reasons.index(reason),
+                        big.price_krw // gd.PRICE_STEP_KRW])
         cells.append(row)
     return {"equity_eok": equities, "income_man": incomes, "equity_step": EQUITY_STEP_EOK,
             "income_step": INCOME_STEP_MAN, "reasons": reasons, "cells": cells}
@@ -68,24 +71,46 @@ def select_reach_rows(ds: dict, written_slugs: set[str]) -> list[dict]:
     return out
 
 
+def _is_large(area_m2) -> bool:
+    """농특세 대상(전용 85㎡ 초과)으로 판정할지. 면적을 모르면 큰 평형으로 본다 — 닿는 범위를 부풀리지 않는다."""
+    return not (area_m2 is not None and area_m2 <= gd.FARM_TAX_EDGE_M2)
+
+
+def count_reach(rows: list[dict], price_krw: int, price_large_krw: int) -> int:
+    """닿는 단지 수 — 85㎡ 이하는 price_krw, 초과(또는 면적 모름)는 price_large_krw 와 12개월 실거래 중위를 견준다."""
+    return sum(1 for r in gd._priced(rows)
+               if round(r["molit_recent_eok"] * gd.EOK) <= (price_large_krw if _is_large(r.get("area_m2")) else price_krw))
+
+
+def _default_rows(rows: list[dict]) -> list[dict]:
+    """정적 표 모집단 — 아파트·주상복합(도생 제외). 페이지 제목 '서울 아파트'와 맞춘다(Codex R3)."""
+    return [r for r in gd._priced(rows) if r.get("product_type") != "도생"]
+
+
+def _prices(e_eok: float, income_man: int) -> tuple[int, int]:
+    eq, inc = int(round(e_eok * gd.EOK)), income_man * 10_000
+    return (gd.compute_reachable_price(eq, inc).price_krw,
+            gd.compute_reachable_price(eq, inc, gd.TAX_AREA_LARGE_M2).price_krw)
+
+
 def build_static_matrix(rows: list[dict]) -> dict[tuple[int, int], tuple[int, int]]:
     """대표 조합 미리 계산 — {(자기자본 억, 연소득 만원): (닿는 가격 원, 닿는 단지 수)}. JS 없이 읽히는 본문용."""
-    priced = gd._priced(rows)
+    base = _default_rows(rows)
     out = {}
     for e in MATRIX_EQUITY_EOK:
         for inc in MATRIX_INCOME_MAN:
-            price = gd.compute_reachable_price(e * gd.EOK, inc * 10_000).price_krw
-            out[(e, inc)] = (price, gd.count_reachable_complexes(priced, price))
+            price, price_large = _prices(e, inc)
+            out[(e, inc)] = (price, count_reach(base, price, price_large))
     return out
 
 
 def _gu_table(rows: list[dict]) -> list[tuple[str, int, list[int]]]:
-    priced = gd._priced(rows)
-    prices = [gd.compute_reachable_price(e * gd.EOK, GU_TABLE_INCOME_MAN * 10_000).price_krw for e in GU_TABLE_EQUITY_EOK]
+    base = _default_rows(rows)
+    prices = [_prices(e, GU_TABLE_INCOME_MAN) for e in GU_TABLE_EQUITY_EOK]
     out = []
-    for gu in sorted({r["gu"] for r in priced}):
-        gu_rows = [r for r in priced if r["gu"] == gu]
-        out.append((gu, len(gu_rows), [gd.count_reachable_complexes(gu_rows, p) for p in prices]))
+    for gu in sorted({r["gu"] for r in base}):
+        gu_rows = [r for r in base if r["gu"] == gu]
+        out.append((gu, len(gu_rows), [count_reach(gu_rows, p, pl) for p, pl in prices]))
     return out
 
 
@@ -100,11 +125,11 @@ function reachLookup(D,equityEok,incomeMan,debtMan){
   var e=Math.min(E[E.length-1],Math.max(0,Math.floor(Math.max(0,equityEok)/g.equity_step+eps)*g.equity_step));
   var i=Math.min(I[I.length-1],Math.max(0,Math.floor(eff/g.income_step+eps)*g.income_step));
   var c=g.cells[Math.round(e/g.equity_step)][Math.round(i/g.income_step)];
-  return {equity_eok:e,income_man:i,price_m:c[0],loan_man:c[1],reason:g.reasons[c[2]]};
+  return {equity_eok:e,income_man:i,price_m:c[0],loan_man:c[1],reason:g.reasons[c[2]],price_l_m:c[3]};
 }
 function manTxt(v){v=Math.round(v);var e=Math.floor(v/10000),r=v%10000;
   return e?e+'억'+(r?' '+r.toLocaleString()+'만원':''):v.toLocaleString()+'만원';}   // 12000 → '1억 2,000만원'
-function eokTxt(v){return (Math.round(v*10)/10).toFixed(1)+'억';}   // 억 단위 값 → '18.3억'(gu_dikw._eok 와 같은 꼴)
+function eokTxt(v){var t=Math.floor((Math.round(v*1e8)+5e6)/1e7);return Math.floor(t/10)+'.'+(t%10)+'억';}   // 억 → '18.3억', gu_dikw._eok 와 같은 정수 사사오입
 function reachRender(){
   var D=JSON.parse(document.getElementById('reach-data').textContent);
   var q=function(id){return document.getElementById(id);};
@@ -113,23 +138,26 @@ function reachRender(){
   var area=q('area').value,gu=q('gu').value,pt=q('ptype').value;
   var rows=D.rows.filter(function(x){
     if(gu&&x.gu!==gu)return false;
-    if(pt==='apt'&&x.type==='도생')return false;
-    if(area==='s'&&!(x.area<60))return false;
-    if(area==='m'&&!(x.area>=60&&x.area<85))return false;
-    if(area==='l'&&!(x.area>=85))return false;
+    if(pt!=='all'&&x.type==='도생')return false;
+    if(area==='s'&&!(x.area!=null&&x.area<60))return false;
+    if(area==='m'&&!(x.area!=null&&x.area>=60&&x.area<=D.farm_edge_m2))return false;
+    if(area==='l'&&!(x.area!=null&&x.area>D.farm_edge_m2))return false;
     return true;});
-  var hit=rows.filter(function(x){return Math.round(x.eok*1e8)<=r.price_m*1e6;});
+  var lim=function(x){return (x.area!=null&&x.area<=D.farm_edge_m2?r.price_m:r.price_l_m)*1e6;};   // 85㎡ 초과·면적 모름은 농특세 포함 가격
+  var reach=function(x){return Math.round(x.eok*1e8)<=lim(x);};
+  var hit=rows.filter(reach);
   var dsrNote=num('debt')>0?'(기존 대출을 빼고 DSR 계산에 쓴 소득 '+manTxt(r.income_man)+')':'';
   q('reach-head').textContent='모아둔 돈 '+r.equity_eok+'억, 연소득 '+manTxt(num('inc'))+dsrNote+
-    '이면 대출 '+eokTxt(r.loan_man/10000)+'을 더해 약 '+eokTxt(r.price_m/100)+'짜리 집까지 닿습니다 — '+r.reason+'.';
+    '이면 대출 '+eokTxt(r.loan_man/10000)+'을 더해 약 '+eokTxt(r.price_m/100)+'짜리 집까지 닿습니다 — '+r.reason+'.'+
+    (r.price_l_m<r.price_m?' 전용 85㎡ 초과는 농어촌특별세가 더해져 약 '+eokTxt(r.price_l_m/100)+'까지입니다.':'');
   q('reach-count').textContent=(gu?gu+'구':'서울')+' 단지 '+rows.length.toLocaleString()+'곳 중 '+hit.length.toLocaleString()+
     '곳이 이 안입니다(단지마다 대표 평형의 최근 12개월 실거래 가운데 값과 견줌). 실제 한도는 은행 심사로 정해집니다.';
-  var by={};rows.forEach(function(x){var b=by[x.gu]||(by[x.gu]={n:0,k:0});b.n++;if(Math.round(x.eok*1e8)<=r.price_m*1e6)b.k++;});
+  var by={};rows.forEach(function(x){var b=by[x.gu]||(by[x.gu]={n:0,k:0});b.n++;if(reach(x))b.k++;});
+  var esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
   q('reach-gu').innerHTML=D.gus.filter(function(g){return by[g];}).map(function(g){var b=by[g],w=Math.round(b.k/b.n*100);
-    return '<div class=bar><span class=bl>'+g+'</span><span class=bt><span class=bf style="width:'+w+'%"></span></span>'+
+    return '<div class=bar><span class=bl>'+esc(g)+'</span><span class=bt><span class=bf style="width:'+w+'%"></span></span>'+
       '<span class=bn>'+b.k+' / '+b.n+'</span></div>';}).join('');
   hit.sort(function(a,b){return b.eok-a.eok||(a.gu<b.gu?-1:1);});
-  var esc=function(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
   q('reach-rows').innerHTML=hit.slice(0,150).map(function(x){
     var nm=x.href?'<a href="'+x.href+'">'+esc(x.name)+'</a>':esc(x.name);
     var rg=(x.p25&&x.p75)?eokTxt(x.p25)+'~'+eokTxt(x.p75):'—';
@@ -160,10 +188,10 @@ def render_reach_page(ds: dict, today: str, written_slugs: set[str]) -> str:
     from blog.daily_digest import _SITE_CSS
     rows = ds.get("complexes") or []
     payload = {"grid": build_reach_grid(), "rows": select_reach_rows(ds, written_slugs), "dsr_limit": gd.DSR_LIMIT,
-               "gus": sorted({r["gu"] for r in gd._priced(rows)})}
+               "gus": sorted({r["gu"] for r in gd._priced(rows)}), "farm_edge_m2": gd.FARM_TAX_EDGE_M2}
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     mat = build_static_matrix(rows)
-    n_all = len(gd._priced(rows))
+    n_all = len(_default_rows(rows))
     mat_rows = "".join(
         f"<tr><td>{e}억</td>" + "".join(f"<td>{gd._eok(mat[(e, inc)][0])} · {mat[(e, inc)][1]:,}곳</td>" for inc in MATRIX_INCOME_MAN)
         + "</tr>" for e in MATRIX_EQUITY_EOK)
@@ -203,9 +231,9 @@ def render_reach_page(ds: dict, today: str, written_slugs: set[str]) -> str:
 <label>모아둔 돈(억) <input id=eq type=number step=0.5 min=0 max={EQUITY_MAX_EOK:g} value=5></label>
 <label>연소득(만원) <input id=inc type=number step=100 min=0 value=8000></label>
 <label>기존 대출 연간 원리금(만원) <input id=debt type=number step=100 min=0 value=0></label>
-<label>전용 면적 <select id=area><option value="">전체</option><option value=s>60㎡ 미만</option><option value=m>60~85㎡</option><option value=l>85㎡ 이상</option></select></label>
+<label>전용 면적 <select id=area><option value="">전체</option><option value=s>60㎡ 미만</option><option value=m>60~85㎡</option><option value=l>85㎡ 초과</option></select></label>
 <label>구 <select id=gu><option value="">서울 전체</option>{gu_opts}</select></label>
-<label>유형 <select id=ptype><option value="">아파트·주상복합·도생 전체</option><option value=apt>도생(도시형생활주택) 빼기</option></select></label>
+<label>유형 <select id=ptype><option value="">아파트·주상복합</option><option value=all>도생(도시형생활주택)도 포함</option></select></label>
 <button type=submit>계산</button>
 </form>
 <div class=answer><p id=reach-head>계산 버튼을 누르면 결과가 여기에 나옵니다.</p><p id=reach-count class=mut></p></div>
@@ -215,14 +243,14 @@ def render_reach_page(ds: dict, today: str, written_slugs: set[str]) -> str:
 <h2>닿는 단지 <span class=mut>(가격이 높은 순 — 평가 순서가 아님)</span></h2>
 <div class=tblwrap><table class=reach-tbl><thead><tr><th>단지 <span class=mut>구·유형·12개월 거래 수</span></th><th>대표 전용</th><th>12개월 실거래 가운데 값 <span class=mut>25~75% 범위</span></th></tr></thead><tbody id=reach-rows></tbody></table></div>
 <p id=reach-more class=mut></p>
-<h2>대표 조합 미리 계산 <span class=mut>(닿는 가격 · 서울 {n_all:,}곳 중 닿는 단지 수)</span></h2>
+<h2>대표 조합 미리 계산 <span class=mut>(닿는 가격 · 아파트·주상복합 기준 서울 {n_all:,}곳 중 닿는 단지 수)</span></h2>
 <div class=tblwrap><table><thead><tr><th>모아둔 돈 \\ 연소득</th>{mat_head}</tr></thead><tbody>{mat_rows}</tbody></table></div>
-<h2>연소득 {_man_txt(GU_TABLE_INCOME_MAN)}일 때 구별로 닿는 단지 수</h2>
+<h2>연소득 {_man_txt(GU_TABLE_INCOME_MAN)}일 때 구별로 닿는 단지 수 <span class=mut>(아파트·주상복합 기준)</span></h2>
 <div class=tblwrap><table><thead><tr><th>구</th>{gu_head}<th>실거래 가격이 있는 단지</th></tr></thead><tbody>{gu_rows}</tbody></table></div>
 <h2>계약 전에 확인할 것</h2>
 <ol>{check_html}</ol>
 <h2>계산 가정과 출처</h2>
-<p class=mut>{html.escape(basis)} 기존 대출은 연간 원리금을 DSR 한도에서 먼저 빼는 방식으로 반영했습니다. 모아둔 돈은 0.5억, 소득은 1천만원 단위로 내려 계산합니다. 대출금리 {gd.RATE_PCT:.2f}%·만기 {gd.TERM_YEARS}년 가정. 실거래는 국토교통부 실거래가 공개시스템(공공데이터), 단지마다 대표 평형 하나만 견줍니다.</p>
+<p class=mut>{html.escape(basis)} 단, 전용 85㎡ 초과 단지는 농어촌특별세(0.2%)를 더한 닿는 가격으로 따로 견주고, 면적을 모르는 단지도 그렇게 봅니다. 기존 대출은 연간 원리금을 DSR 한도에서 먼저 빼는 방식으로 반영했습니다. 모아둔 돈은 0.5억, 소득은 1천만원 단위로 내려 계산합니다. 대출금리 {gd.RATE_PCT:.2f}%·만기 {gd.TERM_YEARS}년 가정. 실거래는 국토교통부 실거래가 공개시스템(공공데이터), 단지마다 대표 평형 하나만 견줍니다.</p>
 <p class=foot><a href="methodology.html">방법론 전문</a> · <a href="{BASE_URL}/reach.html">{BASE_URL}/reach.html</a></p>
 </div>
 <script id=reach-data type="application/json">{data}</script>
