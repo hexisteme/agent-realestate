@@ -140,7 +140,7 @@ def test_transport_failure_is_visible_without_upstream_error_or_carried_active_n
                                                   previous=snapshot(notices=[notice().as_dict("2026-10-03")]))
     assert result["notices"] == []
     assert result["errors"] and "PRIVATE" not in str(result)
-    assert set(result["sources"]) == {"sh", "lh", "applyhome"}
+    assert set(result["sources"]) == {"sh", "lh", "soco", "applyhome"}
 
 
 def test_missing_brief_has_five_guidance_categories_official_links_and_unconfirmed_state():
@@ -295,3 +295,77 @@ def test_date_only_boundary_remains_unconfirmed_with_readable_date_and_time_noti
     payload = snapshot(target_date="2026-10-14", notices=[notice(apply_start="2026-10-14").as_dict("2026-10-14")])
     output = renderer().render_housing_support_page(payload, today="2026-10-14")
     assert "10/14 ~ 10/16 (접수시각 미확인)" in output and "접수중" not in output
+
+
+SOCO_GAEBONG = "https://soco.seoul.go.kr/youth/bbs/BMSR00015/view.do?boardId=6715&menuNo=400008"
+
+
+def soco_list():
+    return (FIXTURES / "soco_notice_list.json").read_text(encoding="utf-8")
+
+
+def test_soco_youth_notices_keep_official_times_and_supply_split():
+    items = {item.url: item for item in collector().parse_soco_notice_list(soco_list())}
+    assert len(items) == 3 and all(item.issuer == "soco" and item.scope == "서울" for item in items.values())
+    gaebong = items[SOCO_GAEBONG]
+    assert gaebong.title == "[민간임대] 개봉역 에드가개봉 추가모집공고" and gaebong.published_on == "2026-10-29"
+    assert (gaebong.apply_start_at, gaebong.apply_end_at) == ("2026-11-02T09:00:00+09:00", "2026-11-04T23:00:00+09:00")
+    assert "일반공급 43세대" in gaebong.eligibility_brief
+    same_day = items[SOCO_GAEBONG.replace("6715", "6717")]
+    assert (same_day.apply_start_at, same_day.apply_end_at) == ("2026-11-02T00:00:00+09:00", "2026-11-02T23:00:00+09:00")
+    assert "특별공급 3세대, 일반공급 1세대" in same_day.eligibility_brief
+    assert collector().notice_status(gaebong, "2026-11-03") == "접수중"
+
+
+def test_soco_unreadable_schedule_keeps_listed_start_day_only():
+    import json
+    data = json.loads(soco_list())
+    data["resultList"] = [row for row in data["resultList"] if row["boardId"] == 6715]
+    data["resultList"][0]["content"] = "<p>자세한 내용은 첨부파일을 확인하시기 바랍니다.</p>"
+    item = collector().parse_soco_notice_list(json.dumps(data))[0]
+    assert (item.apply_start, item.apply_end, item.apply_start_at) == ("2026-11-02", None, None)
+    assert collector().notice_status(item, "2026-11-03") == "미확인"
+
+
+def test_soco_bad_identity_fails_closed():
+    import json
+    data = json.loads(soco_list())
+    data["resultList"][0]["boardId"] = "6715&token=x"
+    for broken in (json.dumps(data), "<html>점검중</html>"):
+        with pytest.raises(ValueError, match="^주거지원 공식 공고 표를 해석할 수 없음$"):
+            collector().parse_soco_notice_list(broken)
+
+
+def test_collection_includes_soco_and_drops_non_seoul_nationwide_lh_before_cap():
+    lh = (FIXTURES / "lh_notice_list.html").read_text().replace(
+        "[서울지역본부] 26년 2차 비분양전환형 든든전세주택 입주자 모집공고", "경남 의령군 화정면 다자녀 매입임대주택 예비입주자 모집공고"
+    ).replace("서울특별시", "전국")
+    def fetch(url, encoding="utf-8"):
+        if "bbsListJson" in url: return soco_list()
+        if "selectWrtancList" in url: return lh
+        raise RuntimeError("unavailable")
+    result = collector().collect_housing_support("2026-10-31", fetch=fetch)
+    assert result["sources"]["soco"]["state"] == "확인"
+    assert {item["issuer"] for item in result["notices"]} == {"soco"}
+    assert all("의령" not in item["title"] for item in result["notices"])
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    ("경남 의령군 화정면 다자녀 매입임대주택 예비입주자 모집공고", False),
+    ("경상남도 거창군 신원면 다자녀 매입임대주택 예비입주자 모집공고", False),
+    ("강원특별자치도 춘천시 행복주택 입주자 모집", False),
+    ("[인천지역본부] 26년 2차 고령자 매입임대주택 예비입주자 모집", False),
+    ("[민간임대] 개봉역 에드가개봉 추가모집공고", True),
+    ("[민간임대] 광진구 세종대로 인근 대전환 청년주택 모집공고", True),
+    ("2026년 국민임대주택 입주자 모집공고", True),
+])
+def test_seoul_relevance_catches_bare_province_prefix(title, expected):
+    assert collector().is_seoul_relevant(title) is expected
+    assert renderer().is_seoul_relevant(title) is expected
+
+
+def test_brief_lists_youth_safe_housing_source_within_budget():
+    item = collector().parse_soco_notice_list(soco_list())[0]
+    output = renderer().render_housing_support_brief(snapshot(target_date="2026-10-31", notices=[item.as_dict("2026-10-31")]), today="2026-10-31")
+    assert "청년안심주택" in output and "soco.seoul.go.kr" in output
+    assert len(output.encode("utf-8")) <= 2200

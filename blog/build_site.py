@@ -320,7 +320,7 @@ def build(today=None, molit_path=None, *, probe_path=None, cohort_path=None):
         f'<a class=card href="macro.html" {macro_entry_attributes("index", "macro")}><h3>📈 거시 지표</h3>'
         '<p>기준금리·코픽스·국고채·환율·금의 관측값, 발표 캘린더, 시차 · 상환·한도·보유세 계산기</p></a>'
         '<a class=card href="housing-support.html"><h3>🏠 청약·주거지원</h3>'
-        '<p>SH·LH·청약홈의 청년·신혼·무주택 지원 요건과 공식 모집공고</p></a>'
+        '<p>SH·LH·청년안심주택·청약홈의 청년·신혼·무주택 지원 요건과 공식 모집공고</p></a>'
         '</div>')
     recent_items = "".join(
         f'<li><a href="posts/{os.path.basename(p)}">{html.escape(_post_meta(p)[1])}</a></li>'

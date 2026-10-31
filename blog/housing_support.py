@@ -9,20 +9,12 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from agent_realestate.collectors.housing_support import (
-    GUIDANCE, MAX_SNAPSHOT_AGE_DAYS, OFFICIAL_SOURCES, VERIFIED_DATE, HousingNotice,
+    GUIDANCE, MAX_SNAPSHOT_AGE_DAYS, OFFICIAL_SOURCES, VERIFIED_DATE, HousingNotice, is_seoul_relevant,
 )
 
 BRIEF_MAX_BYTES = 2200
 _NOTICE_FIELDS = {field.name for field in fields(HousingNotice)}
 _BASE_URL = "https://hexisteme.github.io/seoul-re-snapshot"
-
-
-_NON_SEOUL = re.compile(r"\[(?!서울)[가-힣]{2,4}지역본부\]|(경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|충청|전북|전남|전라|경북|경남|경상|제주)(도|시|광역시|특별자치)")
-
-
-def is_seoul_relevant(title: str) -> bool:
-    """서울 글에 실을 공고인가 — LH 목록의 '전국' 지역 공고 중 제목이 서울 밖 지역본부·시도를 명시한 것은 뺀다(교차검증 A3)."""
-    return not _NON_SEOUL.search(title or "")
 
 
 def _context(snapshot, today):
@@ -127,7 +119,7 @@ def render_housing_support_page(snapshot, *, today=None):
     if ctx["stale"]: warnings.append("오래된 공고 스냅샷입니다. 현재 접수 상태는 미확인입니다.")
     if not ctx["notices"]: warnings.append("실제 모집공고를 확인하지 못했습니다. 아래 공식 공고 목록을 확인하세요.")
     introduction = (f'<p class="meta">공고 확인: {_e(ctx["day"])} · 상태 평가: {_e(ctx["today"])} · 공식 안내 경로 확인: {VERIFIED_DATE}</p>'
-                    '<p>SH·LH는 공급기관의 공고, 청약홈은 한국부동산원이 운영하는 청약 접수·공고 시스템입니다.</p>'
+                    '<p>SH·LH는 공급기관의 공고, 청년안심주택은 서울시가 운영하는 역세권 청년·신혼 임대 공고 게시판, 청약홈은 한국부동산원이 운영하는 청약 접수·공고 시스템입니다.</p>'
                     '<p>공통 안내는 지원 자격 확정이 아닙니다. 공고별 연령·혼인기간·주택소유·소득·자산·거주지역·접수시각을 확인하세요.</p>')
     guidance = "".join(f'<article><h3>{_e(item["label"])}</h3><p>{_e(item["detail"])}</p><a href="{_e(item["url"])}">공식 안내 확인</a></article>' for item in GUIDANCE)
     notices = []
@@ -161,7 +153,7 @@ body{margin:0;background:#f5f7fa;color:#18222f;font:16px/1.7 system-ui,sans-seri
 @media(max-width:800px){.re-support-page .re-support-grid{grid-template-columns:minmax(0,1fr)}.re-support-page h1{font-size:25px}}
 """
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>청년·신혼·생애최초 청약 및 공공임대 공식 안내 | 서울 부동산</title><meta name="description" content="SH·LH·청약홈 공식 공고와 청년·신혼부부·생애최초·무순위·공공임대 확인 항목, 신청 일정과 접수 상태를 확인하세요.">'
+        '<title>청년·신혼·생애최초 청약 및 공공임대 공식 안내 | 서울 부동산</title><meta name="description" content="SH·LH·서울시 청년안심주택·청약홈 공식 공고와 청년·신혼부부·생애최초·무순위·공공임대 확인 항목, 신청 일정과 접수 상태를 확인하세요.">'
         f'<style>{css}</style></head><body><main class="re-support-page"><a href="index.html">서울 부동산으로 돌아가기</a><h1>청약·공공임대 공식 안내</h1>{introduction}'
         + "".join(f'<p class="warning">{_e(warning)}</p>' for warning in warnings)
         + f'<h2>유형별 확인 항목</h2><section class="re-support-grid" aria-label="유형별 확인 항목">{guidance}</section>'
