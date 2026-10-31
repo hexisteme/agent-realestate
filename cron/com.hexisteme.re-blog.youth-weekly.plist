@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hexisteme.re-blog.youth-weekly</string>
+  <!-- 2026-10-31 사용자 결정: 매주 토요일 다음 주 접수 청년안심주택 정리 공개 발행 + 매일 /180 용산 공고 감시.
+       10:35 매일(감시, 토요일은 원고·발행), 토요일 13:35·16:35·20:35 재시도(잠금 충돌·캡차 뒤 공개 확인). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>/Volumes/EXT_SSD/bot/agent_realestate/blog/youth_weekly.sh >> /Users/kimjonghyun/Library/Logs/re-blog-youth-weekly.log 2>&amp;1</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>35</integer></dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
