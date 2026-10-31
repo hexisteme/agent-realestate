@@ -8,6 +8,8 @@ ROOT=/Volumes/EXT_SSD/bot/agent_realestate
 cd "$ROOT" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export TISTORY_CDP_URL="${TISTORY_CDP_URL:-http://127.0.0.1:9334}"
+# 공개된 글 영수증을 마케팅 원장(MP-flokerblog-01)에 넣는다 — 이 래퍼에서만 켠다(사용자 지시 2026-10-31).
+export RE_YOUTH_MARKETING_RECEIPT="${RE_YOUTH_MARKETING_RECEIPT:-1}"
 PUB="--publish"
 [ "${RE_YOUTH_WEEKLY_PUBLISH:-1}" = "1" ] || PUB=""
 if [ -f "$ROOT/.tistory-paused" ]; then

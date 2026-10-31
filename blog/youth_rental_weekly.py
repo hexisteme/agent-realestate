@@ -882,6 +882,8 @@ def main(argv: list[str] | None = None) -> int:
     for back in range(0, 15):   # 캡차로 멈춘 묶음은 재클릭 없이 공개 확인만(오늘 것은 아래 발행 단계가 확인)
         prev = OUTROOT / (day - dt.timedelta(days=back)).isoformat()
         pst = read_state(prev)
+        if back > 0 and pst.get("state") == "PUBLISHED" and not pst.get("marketing_recorded"):
+            _report_outcome(prev, "")
         if back == 0 or pst.get("state") != "PUBLISH_ATTEMPTED":
             continue
         from blog import youth_rental_publish as yp
@@ -901,13 +903,63 @@ def main(argv: list[str] | None = None) -> int:
             notify(f"[청년안심주택 주간] {st.get('note')} — 발행 생략")
             write_state(out_dir, notified=True)
         return 0
-    if not a.publish or st.get("state") == "PUBLISHED":
+    if st.get("state") == "PUBLISHED":
+        _report_outcome(out_dir, "")
+        return 0
+    if not a.publish:
         return 0
     from blog import youth_rental_publish as yp
     out = yp.run_locked(out_dir, publish=True)
     print(out)
     _report_outcome(out_dir, out)
     return 0 if not out.startswith("ERR") else 1
+
+
+MARKETING_ROOT = Path("/Volumes/EXT_SSD/bot/agent_marketing")
+MARKETING_PROBE = "MP-flokerblog-01"
+
+
+def record_marketing_receipt(st: dict) -> str:
+    """공개된 주간 글 영수증을 마케팅 원장(MP-flokerblog-01 분모)에 넣는다 — 첫 영수증이 프로브를 연다.
+
+    launchd 래퍼가 RE_YOUTH_MARKETING_RECEIPT=1 을 줄 때만 실원장에 쓴다(테스트·수동 실행 보호).
+    원장은 같은 URL 을 '중복 영수증'으로 건너뛰고, 반영 0건도 종료 코드 0 이라 출력으로 판정한다."""
+    if os.environ.get("RE_YOUTH_MARKETING_RECEIPT") != "1":
+        return "off"
+    url = st.get("published_url") or ""
+    if not url:
+        return "failed:no_url"
+    post_id = url.rstrip("/").rsplit("/", 1)[-1]
+    event = {"event_type": "execution", "probe_id": MARKETING_PROBE, "action": "청년안심주택 주간 정리 글 발행(토요일)",
+             "count": 1, "occurred_at": st.get("published_at") or dt.datetime.now(KST).isoformat(timespec="seconds"),
+             "receipt": url, "note": f"floker-post-{post_id} {st.get('title', '')}"}
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    try:
+        r = subprocess.run([str(MARKETING_ROOT / ".venv/bin/agent-marketing"), "ingest-events", "--file", f.name],
+                           cwd=MARKETING_ROOT, capture_output=True, text=True, timeout=120)
+        rc, text = r.returncode, (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        rc, text = -1, f"{type(e).__name__}: {str(e)[:120]}"
+    finally:
+        os.unlink(f.name)
+    if rc == 0 and (re.search(r"'execution':\s*[1-9]", text) or "중복 영수증" in text):
+        return "recorded"
+    return f"failed:rc={rc} {' '.join(text.split())[-200:]}"
+
+
+def _record_receipt_once(out_dir: Path, st: dict) -> None:
+    """마케팅 영수증 — 성공할 때까지 다음 실행마다 다시 넣고, 실패 알림은 한 번만."""
+    if st.get("marketing_recorded"):
+        return
+    res = record_marketing_receipt(st)
+    if res == "recorded":
+        write_state(out_dir, marketing_recorded=True, marketing_error=None)
+    elif res.startswith("failed"):
+        if not st.get("marketing_fail_notified"):
+            notify(f"[청년안심주택 주간] 마케팅 원장 영수증 기록 실패(다음 실행에 재시도): {st.get('published_url')}\n{res}")
+        write_state(out_dir, marketing_fail_notified=True, marketing_error=res)
 
 
 def _report_outcome(out_dir: Path, out: str) -> None:
@@ -918,6 +970,8 @@ def _report_outcome(out_dir: Path, out: str) -> None:
         notify(f"[청년안심주택 주간] 발행 완료{'' if ok else ' — 공개 본문 대조 불일치, 확인 필요'}: "
                f"{st.get('title')}\n{st.get('published_url')}")
         write_state(out_dir, notified=True)
+    if st.get("state") == "PUBLISHED":
+        _record_receipt_once(out_dir, read_state(out_dir))
     elif out.startswith(("ERR", "REFUSE")):
         notify(f"[청년안심주택 주간] 발행 실패: {out[:300]}")
     elif st.get("state") == "PUBLISH_ATTEMPTED" and not st.get("stall_notified"):

@@ -4,6 +4,7 @@
 import datetime as dt
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -388,3 +389,67 @@ def test_r5_known_limit_prose_like_line_after_note_is_not_read_as_a_row():
     ('제 19조', '20%, 25%')이 금액 열에 걸치기 때문. 동작이 바뀌면 이 테스트가 알린다."""
     text = "(단위 : 만원)\n공급 전용 호수\n보증금           임대료\n1,000            10\n※ 주석\n900* 5* 일반 공급 잔여\n합 계"
     assert yw.parse_rent_table(text) == yw.RentRange(10_000_000, 10_000_000, 100_000, 100_000, 1, ())
+
+
+# ── 마케팅 원장 영수증(MP-flokerblog-01) — 사용자 지시 2026-10-31 "글주소 넣어요" ──────
+def _published(tmp_path):
+    yw.write_state(tmp_path, state="PUBLISHED", title="2026년 11월 1주차 청년안심주택 정리", notified=True,
+                   published_url="https://floker.tistory.com/190", published_at="2026-11-07T10:41:00+09:00")
+
+
+def _fake_cli(calls, rc=0, out="반영 {'execution': 1, 'outcome': 0}"):
+    def run(cmd, **kw):
+        calls.append({"cmd": cmd, "cwd": kw.get("cwd"), "event": json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))})
+        return subprocess.CompletedProcess(cmd, rc, out, "")
+    return run
+
+
+def test_marketing_receipt_is_off_unless_the_launchd_wrapper_enables_it(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.delenv("RE_YOUTH_MARKETING_RECEIPT", raising=False)
+    monkeypatch.setattr(yw.subprocess, "run", _fake_cli(calls))
+    _published(tmp_path)
+    yw._report_outcome(tmp_path, "")
+    assert calls == [] and not yw.read_state(tmp_path).get("marketing_recorded")
+
+
+def test_published_post_is_recorded_once_in_the_marketing_ledger(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("RE_YOUTH_MARKETING_RECEIPT", "1")
+    monkeypatch.setattr(yw.subprocess, "run", _fake_cli(calls))
+    _published(tmp_path)
+    yw._report_outcome(tmp_path, "")
+    yw._report_outcome(tmp_path, "")
+    assert len(calls) == 1 and yw.read_state(tmp_path)["marketing_recorded"] is True
+    c = calls[0]
+    assert c["cmd"][:2] == [str(yw.MARKETING_ROOT / ".venv/bin/agent-marketing"), "ingest-events"]
+    assert c["cwd"] == yw.MARKETING_ROOT
+    ev = c["event"]
+    assert (ev["event_type"], ev["probe_id"], ev["count"]) == ("execution", "MP-flokerblog-01", 1)
+    assert ev["receipt"] == "https://floker.tistory.com/190" and ev["occurred_at"] == "2026-11-07T10:41:00+09:00"
+    assert ev["note"].startswith("floker-post-190 ")
+
+
+def test_duplicate_receipt_counts_as_recorded(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("RE_YOUTH_MARKETING_RECEIPT", "1")
+    monkeypatch.setattr(yw.subprocess, "run", _fake_cli(calls, out="중복 영수증 — skip\n반영 {'execution': 0}"))
+    _published(tmp_path)
+    yw._report_outcome(tmp_path, "")
+    assert yw.read_state(tmp_path)["marketing_recorded"] is True
+
+
+@pytest.mark.parametrize("rc,out", [(1, "[차단] action 미등록"), (0, "반영 {'execution': 0, 'outcome': 0}")])
+def test_failed_receipt_notifies_once_and_retries_next_run(tmp_path, monkeypatch, rc, out):
+    calls, sent = [], []
+    monkeypatch.setenv("RE_YOUTH_MARKETING_RECEIPT", "1")
+    monkeypatch.setattr(yw, "notify", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(yw.subprocess, "run", _fake_cli(calls, rc=rc, out=out))
+    _published(tmp_path)
+    yw._report_outcome(tmp_path, "")
+    yw._report_outcome(tmp_path, "")
+    assert len(calls) == 2 and len(sent) == 1 and "마케팅 원장" in sent[0]
+    assert not yw.read_state(tmp_path).get("marketing_recorded")
+    monkeypatch.setattr(yw.subprocess, "run", _fake_cli(calls))
+    yw._report_outcome(tmp_path, "")
+    assert yw.read_state(tmp_path)["marketing_recorded"] is True
